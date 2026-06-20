@@ -1,4 +1,7 @@
 import "dotenv/config";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { z } from "zod";
 
 const booleanText = z.string().optional().transform((value) => value === "true");
@@ -12,6 +15,9 @@ const envSchema = z.object({
   WORKCREW_DEV_AUTH: booleanText,
   WORKCREW_DEV_BILLING: booleanText,
   WORKCREW_MOCK_AI: booleanText,
+  AUTH_MODE: z.enum(["local", "supabase"]).default("local"),
+  BILLING_MODE: z.enum(["simulated", "stripe"]).default("simulated"),
+  WORKCREW_LOCAL_AUTH_SECRET: z.string().optional(),
   WORKCREW_ALLOWED_ORIGINS: z.string().default("http://127.0.0.1:5173"),
   WORKCREW_LOG_LEVEL: z.string().default("info"),
   SUPABASE_URL: z.string().url().optional(),
@@ -34,7 +40,6 @@ const env = envSchema.parse(process.env);
 
 if (env.NODE_ENV === "production") {
   const missing = [
-    ["SUPABASE_URL", env.SUPABASE_URL],
     ["STRIPE_SECRET_KEY", env.STRIPE_SECRET_KEY],
     ["STRIPE_WEBHOOK_SECRET", env.STRIPE_WEBHOOK_SECRET],
     ["STRIPE_PRO_MONTHLY_PRICE_ID", env.STRIPE_PRO_MONTHLY_PRICE_ID],
@@ -44,6 +49,11 @@ if (env.NODE_ENV === "production") {
     ["ANTHROPIC_API_KEY", env.ANTHROPIC_API_KEY]
   ].filter(([, value]) => !value).map(([name]) => name);
 
+  // Supabase is only required in production when the Supabase auth provider is
+  // selected. The local provider needs its own signing secret instead.
+  if (env.AUTH_MODE === "supabase" && !env.SUPABASE_URL) missing.push("SUPABASE_URL");
+  if (env.AUTH_MODE === "local" && !env.WORKCREW_LOCAL_AUTH_SECRET) missing.push("WORKCREW_LOCAL_AUTH_SECRET");
+
   if (missing.length > 0) {
     throw new Error(`Production configuration is incomplete: ${missing.join(", ")}`);
   }
@@ -51,7 +61,55 @@ if (env.NODE_ENV === "production") {
   if (env.WORKCREW_DEV_AUTH || env.WORKCREW_DEV_BILLING || env.WORKCREW_MOCK_AI) {
     throw new Error("Development bypasses cannot be enabled in production");
   }
+
+  // The simulated billing provider is a local development convenience and must
+  // never run in production. Real revenue always goes through Stripe.
+  if (env.BILLING_MODE === "simulated") {
+    throw new Error("Simulated billing cannot be used in production; set BILLING_MODE=stripe");
+  }
 }
+
+/**
+ * Resolve the secret used to sign local access tokens. In production it must be
+ * supplied explicitly (already enforced above). Outside production, if no
+ * secret is configured we derive a stable one and persist it next to the
+ * database file so tokens stay valid across restarts during development. The
+ * secret is never logged.
+ */
+function resolveLocalAuthSecret(): string {
+  if (env.WORKCREW_LOCAL_AUTH_SECRET && env.WORKCREW_LOCAL_AUTH_SECRET.length > 0) {
+    return env.WORKCREW_LOCAL_AUTH_SECRET;
+  }
+
+  // In tests we do not want to touch the filesystem. A fresh per-process secret
+  // is fine because tests sign and verify within the same process.
+  if (env.NODE_ENV === "test") {
+    return randomBytes(32).toString("hex");
+  }
+
+  // Persist a generated secret alongside the database. The data URL may be a
+  // remote libsql endpoint, in which case fall back to the working directory.
+  const fileMatch = /^file:(.+)$/.exec(env.WORKCREW_DATA_URL);
+  const dataPath = fileMatch?.[1] ? resolve(fileMatch[1]) : resolve("workcrew.db");
+  const secretPath = resolve(dirname(dataPath), ".local-auth-secret");
+
+  try {
+    if (existsSync(secretPath)) {
+      const existing = readFileSync(secretPath, "utf8").trim();
+      if (existing.length > 0) return existing;
+    }
+    const generated = randomBytes(32).toString("hex");
+    mkdirSync(dirname(secretPath), { recursive: true });
+    writeFileSync(secretPath, generated, { encoding: "utf8", mode: 0o600 });
+    return generated;
+  } catch {
+    // If the filesystem is not writable, fall back to an in-memory secret so
+    // the server still starts. Tokens will not survive a restart in this case.
+    return randomBytes(32).toString("hex");
+  }
+}
+
+const localAuthSecret = resolveLocalAuthSecret();
 
 export const config = {
   nodeEnv: env.NODE_ENV,
@@ -62,6 +120,9 @@ export const config = {
   devAuth: env.WORKCREW_DEV_AUTH,
   devBilling: env.WORKCREW_DEV_BILLING,
   mockAi: env.WORKCREW_MOCK_AI,
+  authMode: env.AUTH_MODE,
+  billingMode: env.BILLING_MODE,
+  localAuthSecret,
   allowedOrigins: new Set(env.WORKCREW_ALLOWED_ORIGINS.split(",").map((item) => item.trim()).filter(Boolean)),
   logLevel: env.WORKCREW_LOG_LEVEL,
   supabaseUrl: env.SUPABASE_URL,

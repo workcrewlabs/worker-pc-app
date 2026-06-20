@@ -93,8 +93,8 @@ function registerIpc(): void {
   ipcMain.handle("app:info", () => ({
     name: APP_NAME,
     version: app.getVersion(),
-    devAuth: process.env.WORKCREW_DEV_AUTH === "true",
-    devBilling: process.env.WORKCREW_DEV_BILLING === "true"
+    authMode: process.env.AUTH_MODE ?? "local",
+    billingMode: process.env.BILLING_MODE ?? "simulated"
   }));
   ipcMain.handle("auth:session", () => auth.getSession());
   ipcMain.handle("auth:sign-in", async (_event, raw) => {
@@ -110,7 +110,9 @@ function registerIpc(): void {
   ipcMain.handle("auth:sign-out", async () => auth.signOut());
 
   ipcMain.handle("api:entitlement", () => api.request("/v1/entitlement"));
-  ipcMain.handle("api:dev-activate", (_event, raw) => api.request("/v1/dev/activate", { method: "POST", body: createCheckoutSchema.parse(raw) }));
+  // Simulated checkout: writes a Stripe-shaped active entitlement through the
+  // backend. Used when BILLING_MODE is "simulated" (no real payment).
+  ipcMain.handle("api:simulate", (_event, raw) => api.request("/v1/billing/simulate", { method: "POST", body: createCheckoutSchema.parse(raw) }));
   ipcMain.handle("api:checkout", async (_event, raw) => {
     const result = await api.request<{ url: string }>("/v1/billing/checkout", { method: "POST", body: createCheckoutSchema.parse(raw) });
     await shell.openExternal(result.url);

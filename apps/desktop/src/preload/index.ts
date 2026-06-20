@@ -10,7 +10,7 @@ import type {
 
 const workcrew = {
   app: {
-    info: (): Promise<{ name: string; version: string; devAuth: boolean; devBilling: boolean }> => ipcRenderer.invoke("app:info")
+    info: (): Promise<{ name: string; version: string; authMode: string; billingMode: string }> => ipcRenderer.invoke("app:info")
   },
   auth: {
     session: (): Promise<{ authenticated: boolean; email?: string }> => ipcRenderer.invoke("auth:session"),
@@ -21,7 +21,7 @@ const workcrew = {
   },
   api: {
     entitlement: (): Promise<SubscriptionState> => ipcRenderer.invoke("api:entitlement"),
-    devActivate: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState> => ipcRenderer.invoke("api:dev-activate", { plan, interval }),
+    simulateCheckout: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState> => ipcRenderer.invoke("api:simulate", { plan, interval }),
     checkout: (plan: PlanId, interval: BillingInterval) => ipcRenderer.invoke("api:checkout", { plan, interval }),
     portal: () => ipcRenderer.invoke("api:portal"),
     createRun: (task: string, model: ModelTier): Promise<{ runId: string }> => ipcRenderer.invoke("api:create-run", { task, model }),

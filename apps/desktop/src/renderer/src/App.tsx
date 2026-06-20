@@ -28,7 +28,7 @@ import { ScheduledPanel } from "./components/ScheduledPanel";
 import { PermissionsPanel } from "./components/PermissionsPanel";
 import { AccountDialog } from "./components/AccountDialog";
 
-type AppInfo = { name: string; version: string; devAuth: boolean; devBilling: boolean };
+type AppInfo = { name: string; version: string; authMode: string; billingMode: string };
 type Phase = "loading" | "auth" | "paywall" | "workspace";
 type Activity = { id: number; title: string; detail?: string; tone?: "good" | "warn" | "bad" };
 type PanelView = "new" | "workflows" | "scheduled" | "history" | "permissions";
@@ -158,12 +158,17 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
   const [interval, setInterval] = useState<BillingInterval>("year");
   const [busy, setBusy] = useState<PlanId | null>(null);
   const [error, setError] = useState("");
+  const simulated = info.billingMode === "simulated";
 
   async function choose(plan: PlanId) {
     setBusy(plan);
     setError("");
     try {
-      if (info.devBilling) onActivated(await window.workcrew.api.devActivate(plan, interval));
+      // In simulated mode the entitlement flips to active locally with no real
+      // payment. Otherwise the system browser opens the real Stripe checkout and
+      // the entitlement arrives later via the webhook (the user re-enters the
+      // app already active).
+      if (simulated) onActivated(await window.workcrew.api.simulateCheckout(plan, interval));
       else await window.workcrew.api.checkout(plan, interval);
     } catch (caught) {
       setError(errorMessage(caught));
@@ -197,7 +202,7 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
               <div className="price"><strong>${price.toFixed(annual ? 2 : 0)}</strong><span>/ month</span></div>
               <p className="billed">{annual ? `$${item.yearlyPriceUsd.toLocaleString()} billed yearly` : "Billed monthly"}</p>
               <button className={plan === "ultra" ? "primary full" : "secondary full"} onClick={() => choose(plan)} disabled={Boolean(busy)}>
-                {busy === plan ? "Preparing" : info.devBilling ? `Activate test ${item.name}` : `Choose ${item.name}`}
+                {busy === plan ? "Preparing" : simulated ? `Activate ${item.name}` : `Subscribe to ${item.name}`}
               </button>
               <ul>
                 <li>{formatMoney(item.monthlyApiBudgetMicrodollars)} monthly Claude allowance</li>
@@ -211,6 +216,7 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
         })}
       </section>
       {error && <p className="error-banner">{error}</p>}
+      {simulated && <p className="paywall-foot">Test activation. This unlocks the workspace with no real payment and no card charged.</p>}
       <p className="paywall-foot">No free tier. No API usage begins until payment is confirmed.</p>
     </main>
   );

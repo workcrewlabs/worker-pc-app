@@ -17,6 +17,15 @@ import rawBody from "fastify-raw-body";
 import { ZodError } from "zod";
 import { authenticate } from "./auth.js";
 import {
+  localAuthProvider,
+  refreshInputSchema,
+  resetInputSchema,
+  signInInputSchema,
+  signOutInputSchema,
+  signUpInputSchema
+} from "./auth-local.js";
+import { simulatedBillingProvider } from "./billing-simulated.js";
+import {
   actionSignature,
   actualCostMicrodollars,
   callModel,
@@ -26,14 +35,13 @@ import {
 } from "./anthropic.js";
 import { createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { getBudgetUsage, getBudgetWindow, planBudget, reserveBudget, settleBudget } from "./budget.js";
-import { config, DEV_USER_ID } from "./config.js";
+import { config } from "./config.js";
 import {
   createRun,
   getRun,
   getSubscription,
   initializeDatabase,
   updateRun,
-  upsertSubscription,
   type SubscriptionRow
 } from "./db.js";
 
@@ -127,32 +135,58 @@ app.get("/health", async () => ({
   ok: true,
   service: "workcrew-api",
   version: APP_VERSION,
-  mode: config.mockAi ? "mock" : "live"
+  mode: config.mockAi ? "mock" : "live",
+  authMode: config.authMode,
+  billingMode: config.billingMode
 }));
+
+// ---------------------------------------------------------------------------
+// Authentication routes (public, pre-auth). These are never behind the
+// entitlement guard. The local provider is real auth; a Supabase provider can
+// be swapped in behind the same routes later.
+// ---------------------------------------------------------------------------
+
+app.post("/v1/auth/sign-up", async (request) => {
+  const body = signUpInputSchema.parse(request.body);
+  return localAuthProvider.signUp(body.email, body.password);
+});
+
+app.post("/v1/auth/sign-in", async (request) => {
+  const body = signInInputSchema.parse(request.body);
+  return { session: await localAuthProvider.signIn(body.email, body.password) };
+});
+
+app.post("/v1/auth/refresh", async (request) => {
+  const body = refreshInputSchema.parse(request.body);
+  return { session: await localAuthProvider.refresh(body.refreshToken) };
+});
+
+app.post("/v1/auth/sign-out", async (request) => {
+  const body = signOutInputSchema.parse(request.body);
+  await localAuthProvider.signOut(body.refreshToken);
+  return { ok: true };
+});
+
+app.post("/v1/auth/reset", async (request) => {
+  // Always returns ok so the response never reveals whether the email exists.
+  const body = resetInputSchema.parse(request.body);
+  await localAuthProvider.reset(body.email);
+  return { ok: true };
+});
 
 app.get("/v1/entitlement", async (request) => subscriptionState(await authenticate(request)));
 
-app.post("/v1/dev/activate", async (request) => {
+// Simulated checkout. Requires authentication, is allowed only when the
+// simulated billing mode is selected, and never in production. It writes an
+// active, Stripe-shaped entitlement through the same upsert path the real
+// Stripe webhook uses, then returns the resulting entitlement state.
+app.post("/v1/billing/simulate", async (request) => {
   const userId = await authenticate(request);
-  if (!config.devBilling || config.nodeEnv === "production" || userId !== DEV_USER_ID) {
-    throw Object.assign(new Error("Development billing is disabled"), { statusCode: 404, code: "NOT_FOUND" });
+  if (config.billingMode !== "simulated" || config.nodeEnv === "production") {
+    throw Object.assign(new Error("Simulated billing is disabled"), { statusCode: 404, code: "NOT_FOUND" });
   }
   const body = createCheckoutSchema.parse(request.body);
-  const now = Date.now();
-  const end = new Date(now);
-  if (body.interval === "year") end.setUTCFullYear(end.getUTCFullYear() + 1);
-  else end.setUTCMonth(end.getUTCMonth() + 1);
-  await upsertSubscription({
-    userId,
-    stripeCustomerId: null,
-    stripeSubscriptionId: null,
-    plan: body.plan,
-    interval: body.interval,
-    status: "active",
-    active: true,
-    budgetAnchorMs: now,
-    currentPeriodEndMs: end.getTime()
-  });
+  await simulatedBillingProvider.activate(userId, body.plan, body.interval);
   return subscriptionState(userId);
 });
 

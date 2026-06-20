@@ -1,31 +1,33 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { app, safeStorage } from "electron";
 
+// The session shape returned by the WorkCrew auth backend. The vault stores this
+// verbatim (encrypted) so a refresh or sign-out can be performed on next launch.
 export type StoredSession = {
   accessToken: string;
   refreshToken: string;
-  expiresAt: number;
-  email?: string;
+  expiresAtMs: number;
+  userId: string;
+  email: string;
 };
 
-type SupabaseSessionResponse = {
-  access_token?: string;
-  refresh_token?: string;
-  expires_in?: number;
-  user?: { email?: string };
-  error_description?: string;
-  msg?: string;
+type AuthResponse = {
+  session?: StoredSession;
+  needsVerification?: boolean;
+  error?: string;
+  code?: string;
 };
 
 export class AuthVault {
   private session: StoredSession | null = null;
-  private readonly apiUrl = process.env.SUPABASE_URL;
-  private readonly anonKey = process.env.SUPABASE_ANON_KEY;
+  private readonly baseUrl = (process.env.WORKCREW_API_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 
   private get filePath(): string {
     return `${app.getPath("userData")}\\session.bin`;
   }
 
+  // Load any previously stored session from disk. The session is encrypted with
+  // Electron safeStorage, which is bound to the OS user account.
   async load(): Promise<void> {
     if (!safeStorage.isEncryptionAvailable()) return;
     try {
@@ -36,80 +38,85 @@ export class AuthVault {
     }
   }
 
+  // The renderer only ever learns whether a session exists and which email it
+  // belongs to. It never receives the tokens. A stored session that is expired
+  // but still has a refresh token counts as authenticated, because the next API
+  // call will refresh it transparently.
   getSession(): { authenticated: boolean; email?: string } {
-    if (process.env.WORKCREW_DEV_AUTH === "true") return { authenticated: true, email: "local@workcrew.test" };
     return { authenticated: Boolean(this.session), email: this.session?.email };
   }
 
-  async accessToken(): Promise<string | null> {
-    if (process.env.WORKCREW_DEV_AUTH === "true") return "workcrew-local-development-only";
+  // Return a usable access token for the API client, refreshing first if the
+  // stored token is within one minute of expiry. Returns null when there is no
+  // session at all (the renderer should then show the auth screen).
+  async getAccessToken(): Promise<string | null> {
     if (!this.session) return null;
-    if (this.session.expiresAt <= Date.now() + 60_000) await this.refresh();
-    return this.session?.accessToken ?? null;
+    if (this.session.expiresAtMs <= Date.now() + 60_000) {
+      try {
+        return await this.refresh();
+      } catch {
+        return this.session?.accessToken ?? null;
+      }
+    }
+    return this.session.accessToken;
   }
 
-  private requireSupabase(): { url: string; key: string } {
-    if (!this.apiUrl || !this.anonKey) throw new Error("WorkCrew authentication is not configured");
-    return { url: this.apiUrl.replace(/\/$/, ""), key: this.anonKey };
-  }
-
-  private async request(path: string, body: unknown, token?: string): Promise<SupabaseSessionResponse> {
-    const { url, key } = this.requireSupabase();
-    const response = await fetch(`${url}/auth/v1/${path}`, {
+  private async request(path: string, body: unknown): Promise<AuthResponse> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        apikey: key,
-        authorization: `Bearer ${token ?? key}`
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(20_000)
     });
-    const payload = await response.json() as SupabaseSessionResponse;
-    if (!response.ok) throw new Error(payload.error_description ?? payload.msg ?? "Authentication failed");
+    const payload = await response.json() as AuthResponse;
+    if (!response.ok) {
+      throw Object.assign(new Error(payload.error ?? "Authentication failed"), { code: payload.code });
+    }
     return payload;
   }
 
-  private async save(payload: SupabaseSessionResponse): Promise<void> {
-    if (!payload.access_token || !payload.refresh_token) return;
+  private async store(session: StoredSession): Promise<void> {
     if (!safeStorage.isEncryptionAvailable()) throw new Error("Windows secure storage is unavailable");
-    this.session = {
-      accessToken: payload.access_token,
-      refreshToken: payload.refresh_token,
-      expiresAt: Date.now() + (payload.expires_in ?? 3_600) * 1_000,
-      email: payload.user?.email
-    };
-    await writeFile(this.filePath, safeStorage.encryptString(JSON.stringify(this.session)), { mode: 0o600 });
+    this.session = session;
+    await writeFile(this.filePath, safeStorage.encryptString(JSON.stringify(session)), { mode: 0o600 });
   }
 
   async signIn(email: string, password: string): Promise<void> {
-    const payload = await this.request("token?grant_type=password", { email, password });
-    await this.save(payload);
+    const payload = await this.request("/v1/auth/sign-in", { email, password });
+    if (!payload.session) throw new Error("Sign in did not return a session");
+    await this.store(payload.session);
   }
 
   async signUp(email: string, password: string): Promise<{ needsVerification: boolean }> {
-    const payload = await this.request("signup", { email, password });
-    await this.save(payload);
-    return { needsVerification: !payload.access_token };
+    const payload = await this.request("/v1/auth/sign-up", { email, password });
+    // When verification is required the backend returns no session. Otherwise it
+    // returns a session and the user proceeds straight to the paywall.
+    if (payload.session) await this.store(payload.session);
+    return { needsVerification: payload.needsVerification === true || !payload.session };
   }
 
   async sendPasswordReset(email: string): Promise<void> {
-    await this.request("recover", { email, redirect_to: "workcrew://auth/recovery" });
+    await this.request("/v1/auth/reset", { email });
   }
 
-  async updatePassword(password: string, recoveryToken: string): Promise<void> {
-    await this.request("user", { password }, recoveryToken);
-  }
-
-  private async refresh(): Promise<void> {
-    if (!this.session) return;
-    const payload = await this.request("token?grant_type=refresh_token", { refresh_token: this.session.refreshToken });
-    await this.save(payload);
+  // POST the stored refresh token, persist the new session, and return the new
+  // access token. The API client calls this on a 401 to retry once.
+  async refresh(): Promise<string> {
+    if (!this.session) throw new Error("Sign in is required");
+    const payload = await this.request("/v1/auth/refresh", { refreshToken: this.session.refreshToken });
+    if (!payload.session) throw new Error("Refresh did not return a session");
+    await this.store(payload.session);
+    return payload.session.accessToken;
   }
 
   async signOut(): Promise<void> {
-    if (this.session) {
-      try { await this.request("logout", {}, this.session.accessToken); } catch { /* Local revocation still proceeds. */ }
+    const refreshToken = this.session?.refreshToken;
+    if (refreshToken) {
+      try {
+        await this.request("/v1/auth/sign-out", { refreshToken });
+      } catch {
+        // The local session is cleared regardless of the server result.
+      }
     }
     this.session = null;
     await rm(this.filePath, { force: true });
