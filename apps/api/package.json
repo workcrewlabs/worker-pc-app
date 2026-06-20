@@ -1,0 +1,31 @@
+{
+  "name": "@workcrew/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "cross-env DOTENV_CONFIG_PATH=../../.env tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "cross-env DOTENV_CONFIG_PATH=../../.env node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/cors": "latest",
+    "@fastify/helmet": "latest",
+    "@fastify/rate-limit": "latest",
+    "@libsql/client": "latest",
+    "@workcrew/contracts": "0.1.0",
+    "dotenv": "latest",
+    "fastify": "latest",
+    "fastify-raw-body": "latest",
+    "jose": "latest",
+    "stripe": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "tsx": "latest",
+    "vitest": "latest"
+  }
+}

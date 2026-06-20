@@ -1,0 +1,36 @@
+{
+  "name": "workcrew",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "concurrently -k -n API,DESKTOP -c blue,magenta \"npm run dev -w @workcrew/api\" \"npm run dev -w @workcrew/desktop\"",
+    "dev:api": "npm run dev -w @workcrew/api",
+    "dev:desktop": "npm run dev -w @workcrew/desktop",
+    "pretest": "npm run build -w @workcrew/contracts",
+    "test": "npm run test --workspaces --if-present",
+    "pretypecheck": "npm run build -w @workcrew/contracts",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "latest",
+    "cross-env": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "overrides": {
+    "tsx": {
+      "esbuild": "0.28.1"
+    },
+    "vite@7.3.5": {
+      "esbuild": "0.28.1"
+    }
+  }
+}

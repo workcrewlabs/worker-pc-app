@@ -1,0 +1,53 @@
+{
+  "name": "@workcrew/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "predev": "npm run build -w @workcrew/contracts",
+    "dev": "cross-env DOTENV_CONFIG_PATH=../../.env electron-vite dev",
+    "prebuild": "npm run build -w @workcrew/contracts",
+    "build": "electron-vite build",
+    "package": "npm run build && electron-builder --win nsis",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@playwright/cli": "latest",
+    "@workcrew/contracts": "0.1.0",
+    "dotenv": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "5.1.4",
+    "electron": "latest",
+    "electron-builder": "latest",
+    "electron-vite": "latest",
+    "typescript": "latest",
+    "vite": "7.3.5",
+    "vitest": "latest"
+  },
+  "build": {
+    "appId": "com.workcrew.desktop",
+    "productName": "WorkCrew",
+    "asar": true,
+    "files": ["out/**/*", "package.json"],
+    "asarUnpack": ["node_modules/@playwright/**/*", "node_modules/playwright-core/**/*"],
+    "protocols": [{ "name": "WorkCrew", "schemes": ["workcrew"] }],
+    "win": {
+      "target": ["nsis"],
+      "artifactName": "WorkCrew-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
