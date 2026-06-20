@@ -25,14 +25,14 @@ services:
         value: app://workcrew
       - key: WORKCREW_LOCAL_AUTH_SECRET
         generateValue: true
-      # Persistent database (use a remote libSQL such as Turso, since the Render
-      # disk is wiped on each deploy). Paste both in the dashboard.
-      - key: WORKCREW_DATA_URL
-        sync: false
-      - key: WORKCREW_DATA_AUTH_TOKEN
+      # Production database is Supabase Postgres. Paste the Supabase Postgres
+      # connection URI (it contains the database password). Backend only.
+      - key: DATABASE_URL
         sync: false
       # Secrets, paste in the dashboard only.
       - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
