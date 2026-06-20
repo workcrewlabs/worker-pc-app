@@ -33,6 +33,8 @@ test.beforeAll(async () => {
     }
   });
   page = await app.firstWindow();
+  // Surface any uncaught renderer error so a blank-screen crash is diagnosable.
+  page.on("pageerror", (err) => console.log("PAGEERROR:", err.message));
   await page.waitForLoadState("domcontentloaded");
 });
 
@@ -89,6 +91,18 @@ test("activating Pro unlocks the workspace and shows upgrade prompts", async () 
   await expect(effort).toContainText("Quick answer");
   await expect(effort).not.toContainText("Haiku");
   await page.screenshot({ path: "workcrew-workspace.png" });
+});
+
+test("sending a message streams an assistant reply", async () => {
+  const composer = page.getByPlaceholder(/Ask WorkCrew/i);
+  await composer.click();
+  await composer.fill("Hello there");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".turn-user")).toContainText("Hello there");
+  const assistant = page.locator(".turn-assistant .assistant-body").first();
+  await expect(assistant).toBeVisible();
+  await expect(assistant).not.toBeEmpty();
+  await page.screenshot({ path: "workcrew-chat.png" });
 });
 
 test("upgrading to Ultra removes the upgrade prompts", async () => {

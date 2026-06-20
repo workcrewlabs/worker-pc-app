@@ -1,43 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   PLAN_CATALOG,
-  type AutomationAction,
   type BillingInterval,
+  type ConversationSummary,
   type ModelTier,
   type PlanId,
   type SubscriptionState
 } from "@workcrew/contracts";
-import { actionNeedsApproval, redactResult } from "./security";
-import {
-  type HistoryEntry,
-  type PermissionState,
-  type RunOutcome,
-  type Schedule,
-  type Workflow,
-  addHistory,
-  clearHistory,
-  formatTokens,
-  loadHistory,
-  loadPermissions,
-  loadSchedules,
-  loadWorkflows
-} from "./lib/storage";
-import { ApprovalModal } from "./components/ApprovalModal";
-import { HistoryPanel } from "./components/HistoryPanel";
-import { WorkflowsPanel } from "./components/WorkflowsPanel";
-import { ScheduledPanel } from "./components/ScheduledPanel";
+import { formatTokens } from "./lib/storage";
+import { DEFAULT_CHAT_MODEL, turnsFromMessages } from "./lib/chat";
+import { useChatStream } from "./hooks/useChatStream";
+import { ChatView } from "./components/ChatView";
 import { PermissionsPanel } from "./components/PermissionsPanel";
 import { AccountDialog } from "./components/AccountDialog";
+import { loadPermissions, type PermissionState } from "./lib/storage";
 
 type AppInfo = { name: string; version: string; authMode: string; billingMode: string };
 type Phase = "loading" | "auth" | "paywall" | "workspace";
-type Activity = { id: number; title: string; detail?: string; tone?: "good" | "warn" | "bad" };
-type PanelView = "new" | "workflows" | "scheduled" | "history" | "permissions";
-type PendingApproval = {
-  action: AutomationAction;
-  label: string;
-  resolve: (approved: boolean) => void;
-};
+type PanelView = "chat" | "permissions";
 
 const EMPTY_ENTITLEMENT: SubscriptionState = {
   active: false,
@@ -55,21 +35,6 @@ const EMPTY_ENTITLEMENT: SubscriptionState = {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong";
 }
-
-function actionLabel(action: AutomationAction): string {
-  if (action.kind === "finish") return "Finished";
-  if (action.kind === "browser") return `Browser: ${action.command}`;
-  return `Windows: ${action.command}`;
-}
-
-// User-facing model names. The underlying tiers stay as values; we never show
-// provider or model brand names in the interface.
-const MODEL_LABELS: Record<ModelTier, string> = {
-  auto: "Auto",
-  haiku: "Quick answer",
-  sonnet: "Medium effort",
-  opus: "High effort"
-};
 
 function LogoMark() {
   return (
@@ -230,133 +195,68 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
 }
 
 function Workspace({ entitlement, onSignOut, onUpgrade }: { entitlement: SubscriptionState; onSignOut: () => Promise<void>; onUpgrade: () => Promise<void> }) {
-  const [task, setTask] = useState("");
-  const [model, setModel] = useState<ModelTier>("auto");
-  const [running, setRunning] = useState(false);
-  const [attachments, setAttachments] = useState<{ path: string; name: string; size: number }[]>([]);
+  const [model, setModel] = useState<ModelTier>(DEFAULT_CHAT_MODEL);
   const [upgrading, setUpgrading] = useState(false);
   const isUltra = entitlement.plan === "ultra";
-  const [activities, setActivities] = useState<Activity[]>([]);
-  const [usage, setUsage] = useState(entitlement.usedMicrodollars);
-  const [view, setView] = useState<PanelView>("new");
+  const [view, setView] = useState<PanelView>("chat");
   const [accountOpen, setAccountOpen] = useState(false);
-  const [pending, setPending] = useState<PendingApproval | null>(null);
-  const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
-  const [workflows, setWorkflows] = useState<Workflow[]>(() => loadWorkflows());
-  const [schedules, setSchedules] = useState<Schedule[]>(() => loadSchedules());
   const [permissions, setPermissions] = useState<PermissionState>(() => loadPermissions());
-  const stopRef = useRef(false);
-  const activityId = useRef(0);
-  const activityCount = useRef(0);
-  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const [recents, setRecents] = useState<ConversationSummary[]>([]);
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+
+  const chat = useChatStream();
+  const { conversationId, usedTokens } = chat;
+
+  // Usage shown in the header. It starts from the entitlement and updates to the
+  // latest value reported by a completed chat turn (done frame usage).
+  const usage = usedTokens ?? entitlement.usedMicrodollars;
   const percent = Math.min(100, ((usage + entitlement.reservedMicrodollars) / entitlement.budgetMicrodollars) * 100 || 0);
 
-  function addActivity(title: string, detail?: string, tone?: Activity["tone"]) {
-    activityId.current += 1;
-    activityCount.current += 1;
-    setActivities((current) => [...current, { id: activityId.current, title, detail, tone }]);
-  }
-
-  // Open the approval modal and wait for the user to allow or decline.
-  function requestApproval(action: AutomationAction): Promise<boolean> {
-    return new Promise((resolve) => {
-      setPending({
-        action,
-        label: actionLabel(action),
-        resolve: (approved) => {
-          setPending(null);
-          resolve(approved);
-        }
-      });
-    });
-  }
-
-  function loadIntoComposer(nextTask: string) {
-    setTask(nextTask);
-    setView("new");
-    setAccountOpen(false);
-    requestAnimationFrame(() => composerRef.current?.focus());
-  }
-
-  async function runTask(taskText: string = task) {
-    const trimmed = taskText.trim();
-    if (trimmed.length < 3 || running) return;
-    setView("new");
-    setRunning(true);
-    stopRef.current = false;
-    setActivities([]);
-    activityCount.current = 0;
-    addActivity("Task received", trimmed);
-    let outcome: RunOutcome = "failed";
+  // Load the Recents list. Failures are non-fatal: the chat surface still works
+  // even if the conversations endpoint is unavailable.
+  async function refreshRecents() {
     try {
-      const created = await window.workcrew.api.createRun(trimmed, model);
-      let result: { toolUseId: string; ok: boolean; output: string } | undefined;
-      for (let count = 0; count < 24 && !stopRef.current; count += 1) {
-        addActivity("Planning next step");
-        const step = await window.workcrew.api.nextRun(created.runId, result);
-        if (step.usage) setUsage(step.usage.usedMicrodollars);
-        if (step.status === "complete" || step.action?.kind === "finish") {
-          addActivity("Task complete", step.message ?? (step.action?.kind === "finish" ? step.action.summary : undefined), "good");
-          outcome = "complete";
-          return;
-        }
-        if (!step.action || !step.toolUseId) throw new Error("The task service returned an incomplete step");
-        addActivity(actionLabel(step.action));
-        let approved = true;
-        if (actionNeedsApproval(step.action)) {
-          approved = await requestApproval(step.action);
-        }
-        if (!approved) {
-          addActivity("Action declined", actionLabel(step.action), "warn");
-          result = { toolUseId: step.toolUseId, ok: false, output: "The user declined this action." };
-          continue;
-        }
-        try {
-          const output = redactResult(await window.workcrew.automation.execute(step.action));
-          addActivity("Action completed", output.slice(0, 500), "good");
-          result = { toolUseId: step.toolUseId, ok: true, output };
-        } catch (error) {
-          const message = errorMessage(error);
-          addActivity("Action could not complete", message, "bad");
-          result = { toolUseId: step.toolUseId, ok: false, output: message };
-        }
-      }
-      if (stopRef.current) {
-        addActivity("Task stopped", "No further actions will run.", "warn");
-        outcome = "stopped";
-      } else {
-        throw new Error("WorkCrew stopped the run after reaching the safety step limit");
-      }
-    } catch (error) {
-      addActivity("Run stopped", errorMessage(error), "bad");
-      outcome = stopRef.current ? "stopped" : "failed";
-    } finally {
-      setRunning(false);
-      // Persist the run to local history. The activity count is tracked in a
-      // ref so the recorded number matches what the user saw in the timeline.
-      setHistory(addHistory({ task: trimmed, timestamp: Date.now(), outcome, activityCount: activityCount.current }));
+      const list = await window.workcrew.conversations.list();
+      setRecents(Array.isArray(list) ? list : []);
+    } catch {
+      setRecents([]);
     }
   }
 
-  async function stop() {
-    stopRef.current = true;
-    await window.workcrew.automation.stop();
-    setRunning(false);
+  useEffect(() => {
+    void refreshRecents();
+  }, []);
+
+  // Refresh Recents after a conversation finishes its first turn so a brand new
+  // chat appears in the sidebar.
+  useEffect(() => {
+    if (conversationId) void refreshRecents();
+  }, [conversationId]);
+
+  function startNewChat() {
+    chat.reset();
+    setView("chat");
+    setAccountOpen(false);
   }
 
-  // Open the native file picker and add the chosen files as attachment chips.
-  async function addFiles() {
-    if (running) return;
-    const picked = await window.workcrew.files.pick();
-    if (picked.length === 0) return;
-    setAttachments((current) => {
-      const seen = new Set(current.map((file) => file.path));
-      return [...current, ...picked.filter((file) => !seen.has(file.path))];
-    });
+  // Load a saved conversation into the transcript.
+  async function openConversation(id: string) {
+    if (loadingId) return;
+    setLoadingId(id);
+    setView("chat");
+    setAccountOpen(false);
+    try {
+      const detail = await window.workcrew.conversations.get(id);
+      chat.reset(turnsFromMessages(detail.messages), detail.id);
+    } catch {
+      // Leave the current transcript in place if the load fails.
+    } finally {
+      setLoadingId(null);
+    }
   }
 
-  function removeFile(path: string) {
-    setAttachments((current) => current.filter((file) => file.path !== path));
+  function send(text: string) {
+    void chat.send({ text, model });
   }
 
   async function handleUpgrade() {
@@ -369,38 +269,43 @@ function Workspace({ entitlement, onSignOut, onUpgrade }: { entitlement: Subscri
     }
   }
 
-  const suggestions = [
-    "Organize the files in my Downloads folder",
-    "Open a website and collect the key details",
-    "Prepare a report from a downloaded file"
-  ];
-
-  const navItems: { id: PanelView; glyph: string; label: string }[] = [
-    { id: "new", glyph: "+", label: "New task" },
-    { id: "workflows", glyph: "W", label: "Workflows" },
-    { id: "scheduled", glyph: "S", label: "Scheduled" },
-    { id: "history", glyph: "H", label: "History" },
-    { id: "permissions", glyph: "P", label: "Permissions" }
-  ];
-
   const planLabel = entitlement.plan ? PLAN_CATALOG[entitlement.plan].name : "No plan";
 
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <Brand compact />
+        <button className="new-chat" onClick={startNewChat} aria-label="New chat">
+          <span className="new-chat-spark"><LogoMark /></span> New chat
+        </button>
         <nav aria-label="Workspace sections">
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              className={view === item.id ? "nav-active" : ""}
-              aria-current={view === item.id ? "page" : undefined}
-              onClick={() => setView(item.id)}
-            >
-              <span>{item.glyph}</span> {item.label}
-            </button>
-          ))}
+          <button
+            className={view === "permissions" ? "nav-active" : ""}
+            aria-current={view === "permissions" ? "page" : undefined}
+            onClick={() => setView("permissions")}
+          >
+            <span>P</span> Permissions
+          </button>
         </nav>
+        <div className="recents" aria-label="Recent conversations">
+          <span className="recents-title">Recents</span>
+          {recents.length === 0 ? (
+            <p className="recents-empty">Your conversations appear here.</p>
+          ) : (
+            <div className="recents-list">
+              {recents.map((item) => (
+                <button
+                  key={item.id}
+                  className={item.id === conversationId ? "recent-active" : ""}
+                  onClick={() => void openConversation(item.id)}
+                  title={item.title}
+                >
+                  {item.title || "New conversation"}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         {!isUltra && (
           <button className="upgrade-card" onClick={handleUpgrade} disabled={upgrading} aria-label="Upgrade to Ultra">
             <span className="upgrade-spark"><LogoMark /></span>
@@ -432,76 +337,21 @@ function Workspace({ entitlement, onSignOut, onUpgrade }: { entitlement: Subscri
             </div>
           </div>
         </header>
-        <div className="workspace-content">
-          <p className="eyebrow">YOUR WINDOWS WORK CREW</p>
-          <h1>{running ? "WorkCrew is on it" : "What should WorkCrew handle?"}</h1>
-          <p className="workspace-subtitle">Describe an outcome. WorkCrew will plan the steps and ask before making changes.</p>
-          <div className={`composer ${running ? "composer-running" : ""}`}>
-            <textarea ref={composerRef} value={task} onChange={(event) => setTask(event.target.value)} placeholder="Ask WorkCrew to complete a task on your PC..." disabled={running} />
-            {attachments.length > 0 && (
-              <div className="attachment-row">
-                {attachments.map((file) => (
-                  <span className="attachment-chip" key={file.path} title={file.path}>
-                    <span className="attachment-name">{file.name}</span>
-                    <button onClick={() => removeFile(file.path)} aria-label={`Remove ${file.name}`}>x</button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="composer-tools">
-              <button className="tool-button" onClick={addFiles} disabled={running} title="Add files or photos" aria-label="Add files or photos">+</button>
-              <select value={model} onChange={(event) => setModel(event.target.value as ModelTier)} disabled={running} aria-label="Answer effort">
-                {(["auto", "haiku", "sonnet", "opus"] as ModelTier[]).map((tier) => (
-                  <option key={tier} value={tier}>{MODEL_LABELS[tier]}</option>
-                ))}
-              </select>
-              {running ? <button className="stop-button" onClick={stop}>Stop</button> : <button className="run-button" onClick={() => runTask()} disabled={task.trim().length < 3}>Run task</button>}
-            </div>
-          </div>
-          {activities.length > 0 ? (
-            <section className="activity-panel" aria-live="polite">
-              <div className="activity-title"><h2>Live run</h2><span>{running ? "Running" : "Ended"}</span></div>
-              {activities.map((item) => <div className={`activity-row ${item.tone ?? ""}`} key={item.id}><span className="activity-dot" /><div><strong>{item.title}</strong>{item.detail && <p>{item.detail}</p>}</div></div>)}
-            </section>
-          ) : (
-            <section className="suggestions">
-              <span>Start with a task</span>
-              {suggestions.map((suggestion) => <button key={suggestion} onClick={() => setTask(suggestion)}><span className="suggestion-icon">A</span>{suggestion}<span className="arrow">&gt;</span></button>)}
-            </section>
-          )}
-        </div>
-        <footer>WorkCrew can make mistakes. Review important actions before approving them.</footer>
+        <ChatView
+          turns={chat.turns}
+          streaming={chat.streaming}
+          model={model}
+          onModelChange={setModel}
+          onSend={send}
+          onStop={chat.stop}
+        />
+        <footer>WorkCrew can make mistakes. Check important details.</footer>
       </section>
 
-      {view === "workflows" && (
-        <WorkflowsPanel
-          workflows={workflows}
-          currentTask={task}
-          onClose={() => setView("new")}
-          onChange={setWorkflows}
-          onRun={(workflowTask) => loadIntoComposer(workflowTask)}
-        />
-      )}
-      {view === "scheduled" && (
-        <ScheduledPanel
-          schedules={schedules}
-          currentTask={task}
-          onClose={() => setView("new")}
-          onChange={setSchedules}
-        />
-      )}
-      {view === "history" && (
-        <HistoryPanel
-          entries={history}
-          onClose={() => setView("new")}
-          onReuse={(historyTask) => loadIntoComposer(historyTask)}
-          onCleared={() => setHistory(clearHistory())}
-        />
-      )}
       {view === "permissions" && (
         <PermissionsPanel
           permissions={permissions}
-          onClose={() => setView("new")}
+          onClose={() => setView("chat")}
           onChange={setPermissions}
         />
       )}
@@ -512,9 +362,6 @@ function Workspace({ entitlement, onSignOut, onUpgrade }: { entitlement: Subscri
           onClose={() => setAccountOpen(false)}
           onSignOut={onSignOut}
         />
-      )}
-      {pending && (
-        <ApprovalModal action={pending.action} label={pending.label} onDecide={pending.resolve} />
       )}
     </main>
   );

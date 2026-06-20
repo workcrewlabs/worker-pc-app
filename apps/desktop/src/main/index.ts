@@ -3,9 +3,12 @@ import { join } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 import {
   APP_NAME,
+  chatSendSchema,
+  chatDeltaFrameSchema,
   createCheckoutSchema,
   createRunSchema,
-  nextRunStepSchema
+  nextRunStepSchema,
+  type ChatDeltaFrame
 } from "@workcrew/contracts";
 import { z } from "zod";
 import { ApiClient } from "./api-client.js";
@@ -19,7 +22,108 @@ const browserCli = new BrowserCli();
 const windowsAgent = new WindowsAgent();
 let mainWindow: BrowserWindow | null = null;
 
+// One AbortController per in-flight chat stream, keyed by the renderer-supplied
+// request id so chat:stop can cancel exactly the right stream.
+const chatStreams = new Map<string, AbortController>();
+
+const API_BASE_URL = (process.env.WORKCREW_API_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+
 console.info("[WorkCrew] main process loaded");
+
+// The shape the renderer sends for a chat turn. requestId is generated in the
+// preload; the rest matches chatSendSchema so the body can be validated before
+// it leaves the desktop.
+const chatSendIpcSchema = chatSendSchema.extend({
+  requestId: z.string().min(1).max(200)
+}).strict();
+
+// Deliver a single frame for a request id to the renderer. The webContents may
+// have gone away (window closed), in which case the send is simply dropped.
+function sendChatFrame(requestId: string, frame: ChatDeltaFrame): void {
+  const target = mainWindow ?? BrowserWindow.getAllWindows()[0];
+  if (target && !target.isDestroyed()) {
+    target.webContents.send("chat:delta", { requestId, frame });
+  }
+}
+
+// Open the streaming chat endpoint, read the text/event-stream body, split it on
+// blank lines, parse each "data:" line as a ChatDeltaFrame, and forward every
+// frame to the renderer. Any failure is reported to the renderer as an error
+// frame carrying the same request id so the UI can recover.
+async function streamChat(requestId: string, body: unknown): Promise<void> {
+  const controller = new AbortController();
+  chatStreams.set(requestId, controller);
+  try {
+    const token = await auth.getAccessToken();
+    if (!token) throw new Error("Sign in is required");
+
+    const response = await fetch(`${API_BASE_URL}/v1/chat`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "text/event-stream"
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+
+    if (!response.ok || !response.body) {
+      let message = "The chat service is unavailable";
+      try {
+        const text = await response.text();
+        const parsed = JSON.parse(text) as { error?: string };
+        if (parsed.error) message = parsed.error;
+      } catch {
+        // Non-JSON or empty error body; keep the generic message.
+      }
+      throw new Error(message);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    // Frames are separated by a blank line. We accumulate bytes and flush each
+    // complete event (everything up to the next blank line) as it arrives.
+    const flush = (chunk: string): void => {
+      const events = chunk.split(/\n\n/);
+      for (const event of events) {
+        const line = event.split(/\n/).find((entry) => entry.startsWith("data:"));
+        if (!line) continue;
+        const json = line.slice(5).trim();
+        if (!json) continue;
+        try {
+          const frame = chatDeltaFrameSchema.parse(JSON.parse(json));
+          sendChatFrame(requestId, frame);
+        } catch {
+          // A malformed or unrecognized frame is skipped rather than aborting
+          // the whole stream.
+        }
+      }
+    };
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const boundary = buffer.lastIndexOf("\n\n");
+      if (boundary !== -1) {
+        flush(buffer.slice(0, boundary));
+        buffer = buffer.slice(boundary + 2);
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim().length > 0) flush(buffer);
+  } catch (error) {
+    // An abort is an intentional stop, not a failure, so no error frame is sent.
+    if (controller.signal.aborted) return;
+    const message = error instanceof Error ? error.message : "The chat request failed";
+    sendChatFrame(requestId, { type: "error", message });
+  } finally {
+    chatStreams.delete(requestId);
+  }
+}
 
 const credentialsSchema = z.object({
   email: z.string().email().max(320),
@@ -149,6 +253,41 @@ function registerIpc(): void {
     }));
   });
 
+  // Chat streaming. The renderer fires chat:send and then listens on the
+  // chat:delta channel for frames carrying the matching request id. chat:stop
+  // aborts the in-flight stream for a request id.
+  ipcMain.handle("chat:send", (_event, raw) => {
+    const value = chatSendIpcSchema.parse(raw);
+    const { requestId, ...payload } = value;
+    // Fire and forget: frames are pushed to the renderer as they arrive. The
+    // promise here only needs to resolve so the invoke settles immediately.
+    void streamChat(requestId, payload);
+    return { requestId };
+  });
+  ipcMain.handle("chat:stop", (_event, requestId) => {
+    const id = z.string().min(1).max(200).parse(requestId);
+    chatStreams.get(id)?.abort();
+    chatStreams.delete(id);
+    return { stopped: true };
+  });
+
+  // Conversations proxy to the backend JSON API for the Recents list and reload.
+  // The backend wraps the list and nests the conversation, so normalize both
+  // here to the flat shapes the renderer and preload types expect.
+  ipcMain.handle("conversations:list", async () => {
+    const result = await api.request("/v1/conversations") as { conversations?: unknown[] };
+    return Array.isArray(result?.conversations) ? result.conversations : [];
+  });
+  ipcMain.handle("conversations:get", async (_event, id) => {
+    const safeId = z.string().uuid().parse(id);
+    const result = await api.request(`/v1/conversations/${safeId}`) as { conversation?: Record<string, unknown>; messages?: unknown[] };
+    return { ...(result?.conversation ?? {}), messages: Array.isArray(result?.messages) ? result.messages : [] };
+  });
+  ipcMain.handle("conversations:delete", (_event, id) => {
+    const safeId = z.string().uuid().parse(id);
+    return api.request(`/v1/conversations/${safeId}`, { method: "DELETE" });
+  });
+
   ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));
   ipcMain.handle("automation:windows", (_event, action) => windowsAgent.execute(action));
   ipcMain.handle("automation:stop", async () => {
@@ -187,6 +326,8 @@ else {
 }
 
 app.on("before-quit", () => {
+  for (const controller of chatStreams.values()) controller.abort();
+  chatStreams.clear();
   void browserCli.stop();
   void windowsAgent.stop();
 });

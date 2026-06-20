@@ -132,7 +132,33 @@ export async function initializeDatabase(db: Client = client): Promise<void> {
       used_at_ms INTEGER,
       replaced_by TEXT
     )`,
-    `CREATE INDEX IF NOT EXISTS idx_refresh_session ON refresh_tokens(session_id)`
+    `CREATE INDEX IF NOT EXISTS idx_refresh_session ON refresh_tokens(session_id)`,
+    // A chat conversation. project_id is nullable so a conversation can live
+    // outside any project. title is a short label derived from the first user
+    // message. model records the tier the conversation was started with.
+    `CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT,
+      title TEXT NOT NULL,
+      model TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_conversations_user
+      ON conversations(user_id, updated_at_ms DESC)`,
+    // A single chat message. content_json holds the full Anthropic content block
+    // array (text, thinking, citations, tool_use, and any attachment refs on the
+    // user turn) so a reload preserves everything exactly.
+    `CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+      content_json TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_conversation
+      ON messages(conversation_id, created_at_ms ASC)`
   ], "write");
 
   // Migrate databases created before the run safety columns existed. SQLite
@@ -507,6 +533,167 @@ export async function revokeSession(sessionId: string): Promise<void> {
     sql: "UPDATE sessions SET revoked_at_ms = ? WHERE id = ? AND revoked_at_ms IS NULL",
     args: [Date.now(), sessionId]
   });
+}
+
+// ---------------------------------------------------------------------------
+// Chat: conversations and messages
+// ---------------------------------------------------------------------------
+
+export type ConversationRow = {
+  id: string;
+  userId: string;
+  projectId: string | null;
+  title: string;
+  model: ModelTier;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+export type MessageRow = {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant";
+  /** The full Anthropic content block array for this turn. */
+  content: unknown[];
+  createdAtMs: number;
+};
+
+function mapConversation(row: Record<string, unknown>): ConversationRow {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    projectId: row.project_id == null ? null : String(row.project_id),
+    title: String(row.title),
+    model: String(row.model) as ModelTier,
+    createdAtMs: asNumber(row.created_at_ms),
+    updatedAtMs: asNumber(row.updated_at_ms)
+  };
+}
+
+function mapMessage(row: Record<string, unknown>): MessageRow {
+  return {
+    id: String(row.id),
+    conversationId: String(row.conversation_id),
+    role: String(row.role) as "user" | "assistant",
+    content: JSON.parse(String(row.content_json)) as unknown[],
+    createdAtMs: asNumber(row.created_at_ms)
+  };
+}
+
+/** Insert a new conversation. created_at and updated_at start equal. */
+export async function createConversation(input: {
+  id: string;
+  userId: string;
+  projectId?: string | null;
+  title: string;
+  model: ModelTier;
+}): Promise<ConversationRow> {
+  const now = Date.now();
+  await client.execute({
+    sql: `INSERT INTO conversations(
+        id, user_id, project_id, title, model, created_at_ms, updated_at_ms
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [input.id, input.userId, input.projectId ?? null, input.title, input.model, now, now]
+  });
+  return {
+    id: input.id,
+    userId: input.userId,
+    projectId: input.projectId ?? null,
+    title: input.title,
+    model: input.model,
+    createdAtMs: now,
+    updatedAtMs: now
+  };
+}
+
+/** Fetch a conversation owned by the given user, or null. Filters by user_id. */
+export async function getConversation(id: string, userId: string): Promise<ConversationRow | null> {
+  const result = await client.execute({
+    sql: "SELECT * FROM conversations WHERE id = ? AND user_id = ? LIMIT 1",
+    args: [id, userId]
+  });
+  const row = result.rows[0] as unknown as Record<string, unknown> | undefined;
+  return row ? mapConversation(row) : null;
+}
+
+/** List a user's conversations newest first. Filters by user_id. */
+export async function listConversations(userId: string): Promise<ConversationRow[]> {
+  const result = await client.execute({
+    sql: "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at_ms DESC",
+    args: [userId]
+  });
+  return result.rows.map((row) => mapConversation(row as unknown as Record<string, unknown>));
+}
+
+/** Append a message to a conversation. content is stored as a JSON block array. */
+export async function addMessage(input: {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant";
+  content: unknown[];
+}): Promise<MessageRow> {
+  const now = Date.now();
+  await client.execute({
+    sql: `INSERT INTO messages(id, conversation_id, role, content_json, created_at_ms)
+      VALUES (?, ?, ?, ?, ?)`,
+    args: [input.id, input.conversationId, input.role, JSON.stringify(input.content), now]
+  });
+  return {
+    id: input.id,
+    conversationId: input.conversationId,
+    role: input.role,
+    content: input.content,
+    createdAtMs: now
+  };
+}
+
+/** All messages in a conversation, oldest first, for replay and reload. */
+export async function getMessages(conversationId: string): Promise<MessageRow[]> {
+  const result = await client.execute({
+    sql: "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at_ms ASC, rowid ASC",
+    args: [conversationId]
+  });
+  return result.rows.map((row) => mapMessage(row as unknown as Record<string, unknown>));
+}
+
+/**
+ * Bump a conversation's updated_at timestamp, optionally renaming it. Used after
+ * each turn so the Recents list orders by most recent activity. Filters by
+ * user_id so one user can never touch another user's conversation.
+ */
+export async function touchConversation(input: {
+  id: string;
+  userId: string;
+  title?: string;
+}): Promise<void> {
+  const now = Date.now();
+  if (input.title === undefined) {
+    await client.execute({
+      sql: "UPDATE conversations SET updated_at_ms = ? WHERE id = ? AND user_id = ?",
+      args: [now, input.id, input.userId]
+    });
+    return;
+  }
+  await client.execute({
+    sql: "UPDATE conversations SET updated_at_ms = ?, title = ? WHERE id = ? AND user_id = ?",
+    args: [now, input.title, input.id, input.userId]
+  });
+}
+
+/**
+ * Delete a conversation and all of its messages. Filters by user_id so deletion
+ * is scoped to the owner. Returns true when a conversation was actually removed.
+ * Messages are removed first so no orphan rows remain even without a foreign key.
+ */
+export async function deleteConversation(id: string, userId: string): Promise<boolean> {
+  const owned = await getConversation(id, userId);
+  if (!owned) return false;
+  await client.batch([
+    { sql: "DELETE FROM messages WHERE conversation_id = ?", args: [id] },
+    { sql: "DELETE FROM conversations WHERE id = ? AND user_id = ?", args: [id, userId] }
+  ], "write");
+  return true;
 }
 
 export { client };

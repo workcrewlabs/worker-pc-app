@@ -6,9 +6,11 @@ import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import {
   PLAN_CATALOG,
+  chatSendSchema,
   createCheckoutSchema,
   createRunSchema,
   nextRunStepSchema,
+  type ConversationSummary,
   type RunStepResponse,
   type SubscriptionState
 } from "@workcrew/contracts";
@@ -35,12 +37,17 @@ import {
 } from "./anthropic.js";
 import { createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { getBudgetUsage, getBudgetWindow, planBudget, reserveBudget, settleBudget } from "./budget.js";
+import { streamChat } from "./chat.js";
 import { config } from "./config.js";
 import {
   createRun,
+  deleteConversation,
+  getConversation,
+  getMessages,
   getRun,
   getSubscription,
   initializeDatabase,
+  listConversations,
   updateRun,
   type SubscriptionRow
 } from "./db.js";
@@ -81,7 +88,7 @@ await app.register(cors, {
     if (!origin || config.allowedOrigins.has(origin)) return callback(null, true);
     callback(new Error("Origin is not allowed"), false);
   },
-  methods: ["GET", "POST"],
+  methods: ["GET", "POST", "DELETE"],
   allowedHeaders: ["authorization", "content-type", "stripe-signature"],
   maxAge: 600
 });
@@ -332,6 +339,107 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", async (request):
     await updateRun(run);
     throw error;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Chat routes. POST /v1/chat streams Server Sent Events, the conversation
+// routes back the Recents list and reload.
+// ---------------------------------------------------------------------------
+
+app.post("/v1/chat", async (request, reply) => {
+  const userId = await authenticate(request);
+  const subscription = requireActive(await getSubscription(userId));
+  const body = chatSendSchema.parse(request.body);
+
+  // Set the SSE headers and take over the raw response. Each frame is written as
+  // a single `data: <json>` line followed by a blank line, which is the shared
+  // wire contract the desktop is built against.
+  reply.raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+
+  // Stop iterating as soon as the client hangs up so we do not keep spending on
+  // a stream nobody is reading.
+  let clientGone = false;
+  const onClose = (): void => {
+    clientGone = true;
+  };
+  reply.raw.on("close", onClose);
+
+  try {
+    for await (const frame of streamChat({ userId, subscription, body })) {
+      if (clientGone) break;
+      reply.raw.write(`data: ${JSON.stringify(frame)}\n\n`);
+    }
+  } catch (error) {
+    // streamChat is contracted to yield an error frame rather than throw, but if
+    // anything still escapes we emit a final error frame so the client is never
+    // left hanging on an open stream.
+    if (!clientGone) {
+      const message = error instanceof Error ? error.message : "The chat request could not be completed";
+      reply.raw.write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);
+    }
+    request.log.error({ err: error }, "Chat stream failed");
+  } finally {
+    reply.raw.off("close", onClose);
+    if (!clientGone) reply.raw.end();
+  }
+
+  // Tell Fastify the reply has already been handled on the raw socket.
+  return reply;
+});
+
+app.get("/v1/conversations", async (request) => {
+  const userId = await authenticate(request);
+  const conversations = await listConversations(userId);
+  const summaries: ConversationSummary[] = conversations.map((conversation) => ({
+    id: conversation.id,
+    title: conversation.title,
+    model: conversation.model,
+    createdAtMs: conversation.createdAtMs,
+    updatedAtMs: conversation.updatedAtMs,
+    projectId: conversation.projectId
+  }));
+  return { conversations: summaries };
+});
+
+app.get<{ Params: { id: string } }>("/v1/conversations/:id", async (request) => {
+  const userId = await authenticate(request);
+  const conversation = await getConversation(request.params.id, userId);
+  if (!conversation) {
+    throw Object.assign(new Error("Conversation not found"), { statusCode: 404, code: "CONVERSATION_NOT_FOUND" });
+  }
+  const stored = await getMessages(conversation.id);
+  const messages = stored.map((message) => ({
+    id: message.id,
+    conversationId: message.conversationId,
+    role: message.role,
+    contentJson: message.content,
+    createdAtMs: message.createdAtMs
+  }));
+  return {
+    conversation: {
+      id: conversation.id,
+      title: conversation.title,
+      model: conversation.model,
+      createdAtMs: conversation.createdAtMs,
+      updatedAtMs: conversation.updatedAtMs,
+      projectId: conversation.projectId
+    },
+    messages
+  };
+});
+
+app.delete<{ Params: { id: string } }>("/v1/conversations/:id", async (request) => {
+  const userId = await authenticate(request);
+  const removed = await deleteConversation(request.params.id, userId);
+  if (!removed) {
+    throw Object.assign(new Error("Conversation not found"), { statusCode: 404, code: "CONVERSATION_NOT_FOUND" });
+  }
+  return { ok: true };
 });
 
 app.setErrorHandler((error, request, reply) => {

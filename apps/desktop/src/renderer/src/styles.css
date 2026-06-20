@@ -172,7 +172,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .composer { overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--panel-2); transition: border .2s, box-shadow .2s; }
 .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .composer-running { border-color: var(--accent); }
-.composer textarea { width: 100%; min-height: 92px; resize: none; padding: 18px 18px 6px; border: 0; outline: 0; color: var(--text); background: transparent; font-size: var(--fs-body); line-height: 1.5; }
+.composer textarea { width: 100%; min-height: 52px; max-height: 220px; resize: none; padding: 16px 18px 6px; border: 0; outline: 0; color: var(--text); background: transparent; font-size: var(--fs-body); line-height: 1.5; }
+/* The empty-state composer sits a touch taller for a roomier first prompt. */
+.chat-empty .composer textarea { min-height: 84px; }
 .composer textarea::placeholder { color: var(--muted); }
 .composer-tools { display: flex; align-items: center; gap: 8px; padding: 11px 13px; border-top: 1px solid var(--line); }
 .composer-tools select { margin-left: auto; padding: 7px 10px; border: 0; outline: 0; color: var(--muted); background: var(--panel); border-radius: 8px; font-size: var(--fs-small); }
@@ -198,6 +200,45 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .activity-row strong { font-size: 12px; }
 .activity-row p { margin: 5px 0 0; color: #7f8996; white-space: pre-wrap; font: 10px/1.45 Consolas, monospace; }
 .workspace footer { position: relative; z-index: 1; padding: 10px; text-align: center; color: #535c67; font-size: 10px; }
+
+/* Sidebar: New chat button and Recents list -------------------------------- */
+.new-chat { display: flex; align-items: center; gap: 10px; width: 100%; margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; text-align: left; color: var(--text); background: var(--panel-2); font-size: var(--fs-ui); font-weight: 650; }
+.new-chat:hover { border-color: var(--accent); }
+.new-chat-spark { width: 20px; height: 20px; flex: none; display: grid; place-items: center; }
+.recents { display: flex; flex-direction: column; min-height: 0; flex: 1; margin-top: 14px; overflow: hidden; }
+.recents-title { padding: 0 4px 8px; color: var(--muted); font-size: var(--fs-eyebrow); font-weight: 700; letter-spacing: .6px; }
+.recents-empty { margin: 0; padding: 0 4px; color: #6b6359; font-size: var(--fs-small); line-height: 1.5; }
+.recents-list { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
+.recents-list button { width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; cursor: pointer; text-align: left; color: var(--muted); background: transparent; font-size: var(--fs-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recents-list button:hover { color: var(--text); background: var(--panel-2); }
+.recents-list .recent-active { color: var(--text); background: var(--panel-2); }
+
+/* Chat empty state: a single centered cluster (greeting, composer, chips). */
+.chat-empty { position: relative; z-index: 1; flex: 1; min-height: 0; width: min(720px, calc(100% - 64px)); margin: 0 auto; padding: 24px 0; display: flex; flex-direction: column; justify-content: center; gap: 18px; }
+.greeting { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 0 0 4px; font-family: var(--font-serif); font-size: var(--fs-greeting); font-weight: 500; line-height: 1.2; letter-spacing: normal; }
+.greeting-spark { width: 26px; height: 26px; color: var(--accent-soft); }
+.suggestion-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.suggestion-chips button { padding: 8px 14px; border: 1px solid var(--line); border-radius: 99px; cursor: pointer; color: var(--muted); background: transparent; font-size: var(--fs-small); }
+.suggestion-chips button:hover { color: var(--text); border-color: var(--muted); background: rgba(255,255,255,.015); }
+
+/* Active chat: scrolling transcript with the composer docked at the bottom. */
+.chat-active { position: relative; z-index: 1; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.message-list { width: min(720px, calc(100% - 64px)); margin: 0 auto; padding: 28px 0 16px; display: flex; flex-direction: column; gap: 22px; }
+.turn { display: flex; flex-direction: column; }
+.turn-user { align-items: flex-end; }
+.user-bubble { max-width: 80%; padding: 11px 15px; border: 1px solid var(--line); border-radius: 14px 14px 4px 14px; color: var(--text); background: var(--panel-2); font-size: var(--fs-body); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Assistant body in the serif voice, generous line height, no avatar. */
+.assistant-body { font-family: var(--font-serif); font-size: 15px; line-height: 1.65; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.stream-cursor { display: inline-block; width: 7px; height: 16px; margin-left: 2px; vertical-align: text-bottom; border-radius: 1px; background: var(--accent-soft); animation: cursor-blink 1s steps(2) infinite; }
+@keyframes cursor-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+.thinking-block { margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(16,19,23,.6); }
+.thinking-block summary { cursor: pointer; color: var(--accent-soft); font-size: var(--fs-small); font-weight: 650; }
+.thinking-block p { margin: 8px 0 0; color: var(--muted); font-size: var(--fs-small); line-height: 1.55; white-space: pre-wrap; }
+.turn-error { margin: 10px 0 0; padding: 10px 12px; border: 1px solid #6e3e43; border-radius: 9px; color: #ffc3c3; background: #281619; font-size: var(--fs-small); line-height: 1.5; }
+/* Composer dock: sticky bottom with a fade above it. */
+.composer-dock { position: relative; z-index: 1; width: min(720px, calc(100% - 64px)); margin: 0 auto; padding: 8px 0 14px; }
+.composer-dock::before { content: ""; position: absolute; left: 0; right: 0; top: -28px; height: 28px; pointer-events: none; background: linear-gradient(to top, var(--bg), transparent); }
 
 /* Side panels (Workflows, Scheduled, History, Permissions) */
 .panel-overlay { position: absolute; inset: 0; z-index: 20; display: flex; justify-content: flex-end; background: rgba(6,8,11,.5); backdrop-filter: blur(2px); animation: overlay-in .16s ease; }
