@@ -30,12 +30,13 @@ function createWindow(): void {
   console.info("[WorkCrew] creating main window");
   mainWindow = new BrowserWindow({
     title: APP_NAME,
+    icon: join(__dirname, "../../resources/icon.ico"),
     width: 1_440,
     height: 920,
     minWidth: 1_040,
     minHeight: 700,
     show: false,
-    backgroundColor: "#0b0d10",
+    backgroundColor: "#1F1E1D",
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, "../preload/index.cjs"),
@@ -150,6 +151,7 @@ else {
 
   void app.whenReady().then(async () => {
     console.info("[WorkCrew] Electron ready");
+    app.setAppUserModelId("com.workcrew.desktop");
     if (process.defaultApp && process.argv[1]) app.setAsDefaultProtocolClient("workcrew", process.execPath, [process.argv[1]]);
     else app.setAsDefaultProtocolClient("workcrew");
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));

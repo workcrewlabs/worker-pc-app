@@ -84,7 +84,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .auth-links button:hover { color: var(--lime); }
 .notice { padding: 11px; border: 1px solid #3b444f; border-radius: 8px; color: #cdd2da; background: #181d23; font-size: 13px; }
 
-.paywall-shell { min-height: 100%; overflow-y: auto; padding: 28px 48px 44px; background: radial-gradient(circle at 50% -15%, rgba(139,92,246,.14), transparent 35%), var(--bg); }
+.paywall-shell { height: 100%; overflow-y: auto; padding: 28px 48px 44px; background: radial-gradient(circle at 50% -15%, rgba(139,92,246,.14), transparent 35%), var(--bg); }
 .paywall-header { max-width: 1050px; margin: auto; display: flex; justify-content: space-between; align-items: center; }
 .secure-pill { padding: 7px 11px; border: 1px solid #3a3450; border-radius: 99px; color: #b9b0d0; background: #16131f; font-size: 11px; font-weight: 700; }
 .pricing-intro { text-align: center; max-width: 690px; margin: 62px auto 34px; }

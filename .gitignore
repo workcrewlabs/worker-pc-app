@@ -11,6 +11,9 @@ out/
 *.log
 coverage/
 release/
+playwright-report/
+test-results/
+.playwright/
 .playwright-cli/
 python/windows-agent/.venv/
 python/windows-agent/build/

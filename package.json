@@ -13,12 +13,18 @@
     "dev:desktop": "npm run dev -w @workcrew/desktop",
     "pretest": "npm run build -w @workcrew/contracts",
     "test": "npm run test --workspaces --if-present",
+    "pretest:e2e": "npm run build -w @workcrew/contracts && npm run build -w @workcrew/desktop",
+    "test:e2e": "playwright test",
+    "make:icon": "node scripts/make-icon.cjs",
     "pretypecheck": "npm run build -w @workcrew/contracts",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.0",
+    "@resvg/resvg-js": "^2.6.2",
     "concurrently": "latest",
     "cross-env": "latest",
+    "png-to-ico": "^3.0.1",
     "typescript": "latest",
     "vitest": "latest"
   },

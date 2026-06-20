@@ -37,11 +37,12 @@
     "appId": "com.workcrew.desktop",
     "productName": "WorkCrew",
     "asar": true,
-    "files": ["out/**/*", "package.json"],
+    "files": ["out/**/*", "resources/**/*", "package.json"],
     "asarUnpack": ["node_modules/@playwright/**/*", "node_modules/playwright-core/**/*"],
     "protocols": [{ "name": "WorkCrew", "schemes": ["workcrew"] }],
     "win": {
       "target": ["nsis"],
+      "icon": "resources/icon.ico",
       "artifactName": "WorkCrew-Setup-${version}.${ext}"
     },
     "nsis": {

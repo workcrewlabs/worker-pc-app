@@ -199,7 +199,7 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
               {plan === "ultra" && <span className="popular">MOST CAPABLE</span>}
               <h2>{item.name}</h2>
               <p className="plan-for">{plan === "pro" ? "For focused personal workflows" : "For demanding daily automation"}</p>
-              <div className="price"><strong>${price.toFixed(annual ? 2 : 0)}</strong><span>/ month</span></div>
+              <div className="price"><strong>${Math.round(price)}</strong><span>/ month</span></div>
               <p className="billed">{annual ? `$${item.yearlyPriceUsd.toLocaleString()} billed yearly` : "Billed monthly"}</p>
               <button className={plan === "ultra" ? "primary full" : "secondary full"} onClick={() => choose(plan)} disabled={Boolean(busy)}>
                 {busy === plan ? "Preparing" : simulated ? `Activate ${item.name}` : `Subscribe to ${item.name}`}
