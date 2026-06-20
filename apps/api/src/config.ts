@@ -39,9 +39,12 @@ const envSchema = z.object({
 const env = envSchema.parse(process.env);
 
 if (env.NODE_ENV === "production") {
+  // STRIPE_WEBHOOK_SECRET is intentionally not required at boot. It is only
+  // available after the backend is deployed and a webhook endpoint is created
+  // in Stripe, so the server must start without it and then be redeployed once
+  // the secret is added. The webhook handler rejects events until it is set.
   const missing = [
     ["STRIPE_SECRET_KEY", env.STRIPE_SECRET_KEY],
-    ["STRIPE_WEBHOOK_SECRET", env.STRIPE_WEBHOOK_SECRET],
     ["STRIPE_PRO_MONTHLY_PRICE_ID", env.STRIPE_PRO_MONTHLY_PRICE_ID],
     ["STRIPE_PRO_YEARLY_PRICE_ID", env.STRIPE_PRO_YEARLY_PRICE_ID],
     ["STRIPE_ULTRA_MONTHLY_PRICE_ID", env.STRIPE_ULTRA_MONTHLY_PRICE_ID],
@@ -114,7 +117,9 @@ const localAuthSecret = resolveLocalAuthSecret();
 export const config = {
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
-  host: env.HOST,
+  // In production (for example on Render) the service must listen on all
+  // interfaces. Locally it stays on the loopback address for safety.
+  host: env.NODE_ENV === "production" ? (process.env.HOST ?? "0.0.0.0") : env.HOST,
   dataUrl: env.WORKCREW_DATA_URL,
   dataAuthToken: env.WORKCREW_DATA_AUTH_TOKEN,
   devAuth: env.WORKCREW_DEV_AUTH,

@@ -4,6 +4,14 @@ out/
 .vite/
 .env
 .env.local
+.env.*.local
+# Never commit secret files of any kind.
+*secret*.txt
+*SECRET*.txt
+*.key
+*_KEY.txt
+WORKCREW_BACKEND_URL.txt
+STRIPE_WEBHOOK_SECRET.txt
 *.db
 *.db-shm
 *.db-wal
