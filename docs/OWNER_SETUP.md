@@ -81,10 +81,13 @@ Right now the backend (the part that holds the AI key, the database, and the
 payment logic) runs on your own PC. For a real launched product with many users
 and real payments, that backend must run on a server with a public address.
 
-- Choose a host for the backend service (Railway, Render, or Fly.io are simple
-  options). I will provide the deployment configuration.
-- Choose a database for production (the current local database can move to a
-  hosted libSQL or Turso, or to the Supabase Postgres database).
+- Host the backend on Render (decided). A render.yaml blueprint and exact
+  commands are in docs/RENDER_DEPLOY.md.
+- Database for production is Supabase Postgres (decided). From the Supabase
+  project collect, for the backend only: the Postgres connection string (Project
+  Settings, then Database, then Connection string, the URI form, which contains
+  the database password) and the service_role key (Project Settings, then API).
+  The desktop app uses only the public Project URL and anon key.
 - Buy a domain name (for the backend, the marketing and legal pages, and email).
 - Collect: the host account, the domain, and (once deployed) the public backend
   URL to point the desktop app at.
