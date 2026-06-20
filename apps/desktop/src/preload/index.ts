@@ -34,6 +34,9 @@ const workcrew = {
       return Promise.resolve(action.summary);
     },
     stop: () => ipcRenderer.invoke("automation:stop")
+  },
+  files: {
+    pick: (): Promise<{ path: string; name: string; size: number }[]> => ipcRenderer.invoke("dialog:open-files")
   }
 };
 

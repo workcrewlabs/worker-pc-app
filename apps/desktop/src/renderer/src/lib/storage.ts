@@ -218,6 +218,25 @@ export function savePermissions(state: PermissionState): PermissionState {
   return next;
 }
 
+// Token display -------------------------------------------------------------
+
+// The monthly allowance is tracked internally as a usage budget. For the user
+// we present it as a plain monthly token balance, never as a money figure and
+// never tied to any provider name.
+export function tokensFromBudget(internalUnits: number): number {
+  return Math.max(0, Math.round(internalUnits));
+}
+
+export function formatTokens(internalUnits: number): string {
+  const tokens = tokensFromBudget(internalUnits);
+  if (tokens >= 1_000_000) {
+    const millions = tokens / 1_000_000;
+    return `${millions >= 10 ? Math.round(millions) : Number(millions.toFixed(2))}M`;
+  }
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return String(tokens);
+}
+
 // Time formatting ------------------------------------------------------------
 
 export function formatAbsoluteTime(timestamp: number): string {

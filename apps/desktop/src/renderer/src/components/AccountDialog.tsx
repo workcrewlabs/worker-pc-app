@@ -1,13 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { PLAN_CATALOG, type SubscriptionState } from "@workcrew/contracts";
-
-function formatMoney(microdollars: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2
-  }).format(microdollars / 1_000_000);
-}
+import { formatTokens } from "../lib/storage";
 
 function formatDate(value: string | null): string {
   if (!value) return "Not scheduled";
@@ -93,12 +86,12 @@ export function AccountDialog({
 
         <div className="account-usage">
           <div className="account-usage-head">
-            <span className="field-label">AI allowance</span>
-            <span>{formatMoney(remaining)} remaining</span>
+            <span className="field-label">Monthly tokens</span>
+            <span>{formatTokens(remaining)} left</span>
           </div>
           <div className="usage-track"><span style={{ width: `${percent}%` }} /></div>
           <div className="account-usage-foot">
-            <span>{formatMoney(used)} used of {formatMoney(budget)}</span>
+            <span>{formatTokens(used)} used of {formatTokens(budget)}</span>
             <span>Resets {formatDate(entitlement.budgetPeriodEnd)}</span>
           </div>
         </div>

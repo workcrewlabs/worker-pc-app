@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { join } from "node:path";
-import { app, BrowserWindow, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 import {
   APP_NAME,
   createCheckoutSchema,
@@ -128,6 +128,25 @@ function registerIpc(): void {
   ipcMain.handle("api:next-run", (_event, runId, raw) => {
     const safeRunId = z.string().uuid().parse(runId);
     return api.request(`/v1/runs/${safeRunId}/next`, { method: "POST", body: nextRunStepSchema.parse(raw ?? {}) });
+  });
+
+  ipcMain.handle("dialog:open-files", async () => {
+    if (!mainWindow) return [];
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Add files or photos",
+      buttonLabel: "Add",
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: "Documents and images", extensions: ["pdf", "txt", "md", "csv", "doc", "docx", "xls", "xlsx", "png", "jpg", "jpeg", "gif", "webp"] },
+        { name: "All files", extensions: ["*"] }
+      ]
+    });
+    if (result.canceled) return [];
+    const fs = await import("node:fs/promises");
+    return Promise.all(result.filePaths.map(async (filePath) => {
+      const stat = await fs.stat(filePath).catch(() => null);
+      return { path: filePath, name: filePath.split(/[\\/]/).pop() ?? filePath, size: stat?.size ?? 0 };
+    }));
   });
 
   ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));

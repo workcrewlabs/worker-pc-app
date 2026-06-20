@@ -52,6 +52,11 @@ test("a new account can sign up and reaches the paywall", async () => {
   await page.getByRole("button", { name: /create account/i }).click();
   await expect(page.locator(".paywall-shell")).toBeVisible();
   await expect(page.getByText("Put routine work on autopilot")).toBeVisible();
+  // No provider or model brand names are shown to the user.
+  await expect(page.locator(".paywall-shell")).not.toContainText("Claude");
+  await expect(page.locator(".paywall-shell")).not.toContainText("Playwright");
+  await expect(page.locator(".paywall-shell")).not.toContainText("pywinauto");
+  await expect(page.getByText(/tokens every month/i).first()).toBeVisible();
   await page.screenshot({ path: "workcrew-paywall.png", fullPage: true });
 });
 
@@ -72,12 +77,24 @@ test("the paywall can scroll to the footer", async () => {
   await expect(foot).toBeVisible();
 });
 
-test("activating a plan unlocks the workspace", async () => {
-  await page.getByRole("button", { name: /Activate Ultra/ }).click();
+test("activating Pro unlocks the workspace and shows upgrade prompts", async () => {
+  await page.getByRole("button", { name: /Activate Pro/ }).click();
   await expect(page.locator(".app-shell")).toBeVisible();
-  // The Ultra allowance and the composer should be present.
   await expect(page.getByPlaceholder(/Ask WorkCrew/i)).toBeVisible();
+  // A plan below Ultra sees upgrade prompts in the header and the sidebar.
+  await expect(page.locator(".upgrade-pill")).toBeVisible();
+  await expect(page.locator(".upgrade-card")).toBeVisible();
+  // The effort selector uses plain names, not model brands.
+  const effort = page.locator(".composer-tools select");
+  await expect(effort).toContainText("Quick answer");
+  await expect(effort).not.toContainText("Haiku");
   await page.screenshot({ path: "workcrew-workspace.png" });
+});
+
+test("upgrading to Ultra removes the upgrade prompts", async () => {
+  await page.locator(".upgrade-pill").click();
+  await expect(page.locator(".upgrade-pill")).toHaveCount(0);
+  await expect(page.locator(".upgrade-card")).toHaveCount(0);
 });
 
 test("the session persists and the account can sign out", async () => {

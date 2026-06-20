@@ -16,6 +16,7 @@ import {
   type Workflow,
   addHistory,
   clearHistory,
+  formatTokens,
   loadHistory,
   loadPermissions,
   loadSchedules,
@@ -55,15 +56,20 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong";
 }
 
-function formatMoney(microdollars: number): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(microdollars / 1_000_000);
-}
-
 function actionLabel(action: AutomationAction): string {
   if (action.kind === "finish") return "Finished";
   if (action.kind === "browser") return `Browser: ${action.command}`;
   return `Windows: ${action.command}`;
 }
+
+// User-facing model names. The underlying tiers stay as values; we never show
+// provider or model brand names in the interface.
+const MODEL_LABELS: Record<ModelTier, string> = {
+  auto: "Auto",
+  haiku: "Quick answer",
+  sonnet: "Medium effort",
+  opus: "High effort"
+};
 
 function LogoMark() {
   return (
@@ -205,11 +211,12 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
                 {busy === plan ? "Preparing" : simulated ? `Activate ${item.name}` : `Subscribe to ${item.name}`}
               </button>
               <ul>
-                <li>{formatMoney(item.monthlyApiBudgetMicrodollars)} monthly Claude allowance</li>
+                <li>{formatTokens(item.monthlyApiBudgetMicrodollars)} tokens every month</li>
                 <li>{item.devices} Windows {item.devices === 1 ? "device" : "devices"}</li>
-                <li>Playwright CLI browser automation</li>
-                <li>Secure pywinauto desktop actions</li>
-                <li>Saved and scheduled workflows</li>
+                <li>Automate anything in your browser</li>
+                <li>Automate your Windows apps and files</li>
+                <li>Save tasks and run them on a schedule</li>
+                {plan === "ultra" && <li>Priority automation and support</li>}
               </ul>
             </article>
           );
@@ -222,10 +229,13 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
   );
 }
 
-function Workspace({ entitlement, onSignOut }: { entitlement: SubscriptionState; onSignOut: () => Promise<void> }) {
+function Workspace({ entitlement, onSignOut, onUpgrade }: { entitlement: SubscriptionState; onSignOut: () => Promise<void>; onUpgrade: () => Promise<void> }) {
   const [task, setTask] = useState("");
   const [model, setModel] = useState<ModelTier>("auto");
   const [running, setRunning] = useState(false);
+  const [attachments, setAttachments] = useState<{ path: string; name: string; size: number }[]>([]);
+  const [upgrading, setUpgrading] = useState(false);
+  const isUltra = entitlement.plan === "ultra";
   const [activities, setActivities] = useState<Activity[]>([]);
   const [usage, setUsage] = useState(entitlement.usedMicrodollars);
   const [view, setView] = useState<PanelView>("new");
@@ -334,6 +344,31 @@ function Workspace({ entitlement, onSignOut }: { entitlement: SubscriptionState;
     setRunning(false);
   }
 
+  // Open the native file picker and add the chosen files as attachment chips.
+  async function addFiles() {
+    if (running) return;
+    const picked = await window.workcrew.files.pick();
+    if (picked.length === 0) return;
+    setAttachments((current) => {
+      const seen = new Set(current.map((file) => file.path));
+      return [...current, ...picked.filter((file) => !seen.has(file.path))];
+    });
+  }
+
+  function removeFile(path: string) {
+    setAttachments((current) => current.filter((file) => file.path !== path));
+  }
+
+  async function handleUpgrade() {
+    if (upgrading) return;
+    setUpgrading(true);
+    try {
+      await onUpgrade();
+    } finally {
+      setUpgrading(false);
+    }
+  }
+
   const suggestions = [
     "Organize the files in my Downloads folder",
     "Open a website and collect the key details",
@@ -366,6 +401,15 @@ function Workspace({ entitlement, onSignOut }: { entitlement: SubscriptionState;
             </button>
           ))}
         </nav>
+        {!isUltra && (
+          <button className="upgrade-card" onClick={handleUpgrade} disabled={upgrading} aria-label="Upgrade to Ultra">
+            <span className="upgrade-spark"><LogoMark /></span>
+            <span>
+              <strong>{upgrading ? "Upgrading..." : "Upgrade to Ultra"}</strong>
+              <small>More devices and the largest token allowance</small>
+            </span>
+          </button>
+        )}
         <div className="sidebar-security"><span className="shield">S</span><div><strong>Protected locally</strong><small>Write actions ask first</small></div></div>
         <button className="account-button" onClick={() => setAccountOpen(true)} aria-label="Open account">
           <span className="avatar">A</span>
@@ -376,9 +420,16 @@ function Workspace({ entitlement, onSignOut }: { entitlement: SubscriptionState;
       <section className="workspace">
         <header className="workspace-header">
           <Brand compact />
-          <div className="usage-box">
-            <div><span>AI allowance</span><strong>{formatMoney(Math.max(0, entitlement.budgetMicrodollars - usage))} left</strong></div>
-            <div className="usage-track"><span style={{ width: `${percent}%` }} /></div>
+          <div className="header-right">
+            {!isUltra && (
+              <button className="upgrade-pill" onClick={handleUpgrade} disabled={upgrading}>
+                {upgrading ? "Upgrading..." : "Upgrade"}
+              </button>
+            )}
+            <div className="usage-box">
+              <div><span>Tokens</span><strong>{formatTokens(Math.max(0, entitlement.budgetMicrodollars - usage))} left</strong></div>
+              <div className="usage-track"><span style={{ width: `${percent}%` }} /></div>
+            </div>
           </div>
         </header>
         <div className="workspace-content">
@@ -387,13 +438,22 @@ function Workspace({ entitlement, onSignOut }: { entitlement: SubscriptionState;
           <p className="workspace-subtitle">Describe an outcome. WorkCrew will plan the steps and ask before making changes.</p>
           <div className={`composer ${running ? "composer-running" : ""}`}>
             <textarea ref={composerRef} value={task} onChange={(event) => setTask(event.target.value)} placeholder="Ask WorkCrew to complete a task on your PC..." disabled={running} />
+            {attachments.length > 0 && (
+              <div className="attachment-row">
+                {attachments.map((file) => (
+                  <span className="attachment-chip" key={file.path} title={file.path}>
+                    <span className="attachment-name">{file.name}</span>
+                    <button onClick={() => removeFile(file.path)} aria-label={`Remove ${file.name}`}>x</button>
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="composer-tools">
-              <button className="tool-button" title="Attachments are added in the next release" aria-label="Add attachment">+</button>
-              <select value={model} onChange={(event) => setModel(event.target.value as ModelTier)} disabled={running} aria-label="Model preference">
-                <option value="auto">Auto model</option>
-                <option value="haiku">Haiku</option>
-                <option value="sonnet">Sonnet</option>
-                <option value="opus">Opus</option>
+              <button className="tool-button" onClick={addFiles} disabled={running} title="Add files or photos" aria-label="Add files or photos">+</button>
+              <select value={model} onChange={(event) => setModel(event.target.value as ModelTier)} disabled={running} aria-label="Answer effort">
+                {(["auto", "haiku", "sonnet", "opus"] as ModelTier[]).map((tier) => (
+                  <option key={tier} value={tier}>{MODEL_LABELS[tier]}</option>
+                ))}
               </select>
               {running ? <button className="stop-button" onClick={stop}>Stop</button> : <button className="run-button" onClick={() => runTask()} disabled={task.trim().length < 3}>Run task</button>}
             </div>
@@ -489,5 +549,14 @@ export default function App() {
   if (phase === "loading" || !info) return <main className="loading-shell"><Brand /><div className="loading-line" /><p>{loadingMessage}</p>{fatal && <button className="secondary" onClick={() => { setFatal(""); void refresh(); }}>Try again</button>}</main>;
   if (phase === "auth") return <AuthScreen onReady={refresh} />;
   if (phase === "paywall") return <Paywall info={info} onActivated={(state) => { setEntitlement(state); setPhase("workspace"); }} />;
-  return <Workspace entitlement={entitlement} onSignOut={async () => { await window.workcrew.auth.signOut(); setPhase("auth"); }} />;
+  return (
+    <Workspace
+      entitlement={entitlement}
+      onSignOut={async () => { await window.workcrew.auth.signOut(); setPhase("auth"); }}
+      onUpgrade={async () => {
+        if (info.billingMode === "simulated") setEntitlement(await window.workcrew.api.simulateCheckout("ultra", "year"));
+        else await window.workcrew.api.checkout("ultra", "year");
+      }}
+    />
+  );
 }

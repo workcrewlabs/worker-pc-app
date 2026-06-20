@@ -139,12 +139,30 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .workspace::before { content: ""; position: absolute; inset: 72px 0 35px; pointer-events: none; opacity: .05; background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 30px 30px; mask-image: linear-gradient(to bottom, transparent, #000 25%, #000 75%, transparent); }
 .workspace-header { position: relative; z-index: 1; min-height: 66px; display: flex; align-items: center; justify-content: space-between; padding: 12px 25px; border-bottom: 1px solid var(--line); }
 .workspace-header > .brand { opacity: .88; }
+.header-right { display: flex; align-items: center; gap: 14px; }
+.upgrade-pill { padding: 7px 14px; border: 0; border-radius: 99px; cursor: pointer; font-size: 12px; font-weight: 700; color: var(--accent-ink); background: var(--accent); }
+.upgrade-pill:hover { background: var(--accent-soft); }
 .usage-box { width: 185px; }
 .usage-box > div:first-child { display: flex; justify-content: space-between; font-size: 10px; color: #79828f; }
 .usage-box strong { color: #c6ccd4; font-weight: 650; }
 /* Usage meter track warm-neutral, fill in the purple accent. */
 .usage-track { height: 3px; margin-top: 7px; border-radius: 5px; overflow: hidden; background: var(--line); }
 .usage-track span { display: block; height: 100%; background: var(--accent); }
+
+/* Upgrade card in the sidebar, shown to plans below Ultra. */
+.upgrade-card { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 12px; border: 1px solid #4a3d77; border-radius: 12px; cursor: pointer; text-align: left; color: var(--text); background: linear-gradient(180deg, rgba(139,92,246,.18), rgba(139,92,246,.06)); }
+.upgrade-card:hover { border-color: var(--accent); }
+.upgrade-card .upgrade-spark { width: 26px; height: 26px; flex: none; display: grid; place-items: center; }
+.upgrade-card strong, .upgrade-card small { display: block; }
+.upgrade-card strong { font-size: 12px; }
+.upgrade-card small { margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+
+/* Attachment chips above the composer tools row. */
+.attachment-row { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 14px 4px; }
+.attachment-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 220px; padding: 5px 8px 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font-size: 12px; }
+.attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-chip button { border: 0; cursor: pointer; color: var(--muted); background: none; font-size: 12px; line-height: 1; padding: 0 2px; }
+.attachment-chip button:hover { color: var(--text); }
 .workspace-content { position: relative; z-index: 1; width: min(760px, calc(100% - 64px)); margin: auto; padding: 40px 0 22px; }
 /* Empty-state greeting is a modest one-line heading, not a hero.
    Serif body voice, weight 500, normal letter spacing (spec 2.1). */
