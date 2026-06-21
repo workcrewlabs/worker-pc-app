@@ -13,12 +13,13 @@ import { DEFAULT_CHAT_MODEL, turnsFromMessages } from "./lib/chat";
 import { useChatStream } from "./hooks/useChatStream";
 import { ChatView } from "./components/ChatView";
 import { PermissionsPanel } from "./components/PermissionsPanel";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { AccountDialog } from "./components/AccountDialog";
 import { loadPermissions, type PermissionState } from "./lib/storage";
 
 type AppInfo = { name: string; version: string; authMode: string; billingMode: string };
 type Phase = "loading" | "auth" | "paywall" | "workspace";
-type PanelView = "chat" | "permissions";
+type PanelView = "chat" | "permissions" | "settings";
 
 const EMPTY_ENTITLEMENT: SubscriptionState = {
   active: false,
@@ -195,7 +196,7 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
   );
 }
 
-function Workspace({ entitlement, onSignOut, onUpgrade }: { entitlement: SubscriptionState; onSignOut: () => Promise<void>; onUpgrade: () => Promise<void> }) {
+function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo; entitlement: SubscriptionState; onSignOut: () => Promise<void>; onUpgrade: () => Promise<void> }) {
   const [model, setModel] = useState<ModelTier>(DEFAULT_CHAT_MODEL);
   const [upgrading, setUpgrading] = useState(false);
   const isUltra = entitlement.plan === "ultra";
@@ -287,6 +288,13 @@ function Workspace({ entitlement, onSignOut, onUpgrade }: { entitlement: Subscri
           >
             <span>P</span> Permissions
           </button>
+          <button
+            className={view === "settings" ? "nav-active" : ""}
+            aria-current={view === "settings" ? "page" : undefined}
+            onClick={() => setView("settings")}
+          >
+            <span>S</span> Settings
+          </button>
         </nav>
         <div className="recents" aria-label="Recent conversations">
           <span className="recents-title">Recents</span>
@@ -356,6 +364,7 @@ function Workspace({ entitlement, onSignOut, onUpgrade }: { entitlement: Subscri
           onChange={setPermissions}
         />
       )}
+      {view === "settings" && <SettingsPanel info={info} onClose={() => setView("chat")} />}
       {accountOpen && (
         <AccountDialog
           entitlement={entitlement}
@@ -399,6 +408,7 @@ export default function App() {
   if (phase === "paywall") return <Paywall info={info} onActivated={(state) => { setEntitlement(state); setPhase("workspace"); }} />;
   return (
     <Workspace
+      info={info}
       entitlement={entitlement}
       onSignOut={async () => { await window.workcrew.auth.signOut(); setPhase("auth"); }}
       onUpgrade={async () => {

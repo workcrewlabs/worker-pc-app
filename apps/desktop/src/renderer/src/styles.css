@@ -164,6 +164,10 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .attachment-chip button { border: 0; cursor: pointer; color: var(--muted); background: none; font-size: 12px; line-height: 1; padding: 0 2px; }
 .attachment-chip button:hover { color: var(--text); }
 .attach-error { align-self: center; color: #d98a93; font-size: 12px; }
+/* Settings: read-only info rows (version, sign in mode, billing mode). */
+.settings-info { margin-top: 18px; }
+.settings-info .record-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.settings-info .record-sub { color: var(--muted); font-size: var(--fs-small); }
 /* Attachment chips shown above a sent user message, aligned with the bubble. */
 .bubble-attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-bottom: 6px; }
 .workspace-content { position: relative; z-index: 1; width: min(760px, calc(100% - 64px)); margin: auto; padding: 40px 0 22px; }

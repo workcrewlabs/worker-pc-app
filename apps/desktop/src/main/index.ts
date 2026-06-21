@@ -14,6 +14,7 @@ import { z } from "zod";
 import { ApiClient } from "./api-client.js";
 import { AuthVault } from "./auth-vault.js";
 import { BrowserCli } from "./browser-cli.js";
+import { getBackendUrl, setBackendUrl } from "./settings.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -25,8 +26,6 @@ let mainWindow: BrowserWindow | null = null;
 // One AbortController per in-flight chat stream, keyed by the renderer-supplied
 // request id so chat:stop can cancel exactly the right stream.
 const chatStreams = new Map<string, AbortController>();
-
-const API_BASE_URL = (process.env.WORKCREW_API_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 
 console.info("[WorkCrew] main process loaded");
 
@@ -57,7 +56,7 @@ async function streamChat(requestId: string, body: unknown): Promise<void> {
     const token = await auth.getAccessToken();
     if (!token) throw new Error("Sign in is required");
 
-    const response = await fetch(`${API_BASE_URL}/v1/chat`, {
+    const response = await fetch(`${getBackendUrl()}/v1/chat`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
@@ -235,6 +234,11 @@ function registerIpc(): void {
     authMode: process.env.AUTH_MODE ?? "local",
     billingMode: process.env.BILLING_MODE ?? "simulated"
   }));
+
+  // Settings: the user-configurable backend URL. get returns the active URL,
+  // set validates and persists a new one (taking effect on the next request).
+  ipcMain.handle("settings:get-backend-url", () => getBackendUrl());
+  ipcMain.handle("settings:set-backend-url", (_event, raw) => setBackendUrl(z.string().min(1).max(2_048).parse(raw)));
   ipcMain.handle("auth:session", () => auth.getSession());
   ipcMain.handle("auth:sign-in", async (_event, raw) => {
     const value = credentialsSchema.parse(raw);

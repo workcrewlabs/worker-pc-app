@@ -1,4 +1,5 @@
 import type { AuthVault } from "./auth-vault.js";
+import { getBackendUrl } from "./settings.js";
 
 // Thrown when the session cannot be refreshed after a 401. The renderer treats
 // this as a signal to return to the auth screen.
@@ -10,7 +11,11 @@ export class AuthExpiredError extends Error {
 }
 
 export class ApiClient {
-  private readonly baseUrl = (process.env.WORKCREW_API_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+  // Resolved per request so a backend URL saved in Settings takes effect without
+  // an app restart.
+  private get baseUrl(): string {
+    return getBackendUrl();
+  }
 
   constructor(private readonly auth: AuthVault) {}
 

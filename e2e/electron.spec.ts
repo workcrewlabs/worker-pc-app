@@ -113,6 +113,14 @@ test("upgrading to Ultra removes the upgrade prompts", async () => {
   await expect(page.locator(".upgrade-card")).toHaveCount(0);
 });
 
+test("settings shows the backend address and app version", async () => {
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.getByLabel("Backend address")).toBeVisible();
+  await expect(page.getByText("App version")).toBeVisible();
+  await page.getByRole("button", { name: "Close panel" }).click();
+  await expect(page.locator(".app-shell")).toBeVisible();
+});
+
 test("the session persists and the account can sign out", async () => {
   // Open the account dialog from the sidebar footer and sign out.
   await page.locator(".account-button").click();

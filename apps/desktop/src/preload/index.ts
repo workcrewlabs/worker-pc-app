@@ -42,6 +42,10 @@ const workcrew = {
   app: {
     info: (): Promise<{ name: string; version: string; authMode: string; billingMode: string }> => ipcRenderer.invoke("app:info")
   },
+  settings: {
+    getBackendUrl: (): Promise<string> => ipcRenderer.invoke("settings:get-backend-url"),
+    setBackendUrl: (url: string): Promise<string> => ipcRenderer.invoke("settings:set-backend-url", url)
+  },
   auth: {
     session: (): Promise<{ authenticated: boolean; email?: string }> => ipcRenderer.invoke("auth:session"),
     signIn: (email: string, password: string) => ipcRenderer.invoke("auth:sign-in", { email, password }),

@@ -1,5 +1,6 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { app, safeStorage } from "electron";
+import { getBackendUrl } from "./settings.js";
 
 // The session shape returned by the WorkCrew auth backend. The vault stores this
 // verbatim (encrypted) so a refresh or sign-out can be performed on next launch.
@@ -20,7 +21,12 @@ type AuthResponse = {
 
 export class AuthVault {
   private session: StoredSession | null = null;
-  private readonly baseUrl = (process.env.WORKCREW_API_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+
+  // Resolved per request so a backend URL saved in Settings takes effect without
+  // an app restart.
+  private get baseUrl(): string {
+    return getBackendUrl();
+  }
 
   private get filePath(): string {
     return `${app.getPath("userData")}\\session.bin`;
