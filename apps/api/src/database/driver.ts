@@ -1,6 +1,21 @@
 import { createClient } from "@libsql/client";
-import type { Pool as PgPool, PoolClient as PgPoolClient } from "pg";
 import { config } from "../config.js";
+
+// Minimal structural types for the slice of node-postgres this code uses. They
+// let the production build compile without @types/pg (a dev dependency that is
+// not guaranteed to be present in a production install). The pg package itself
+// is a runtime dependency and is loaded lazily, only when Postgres is selected.
+type PgQueryResult = { rows: Record<string, unknown>[]; rowCount: number | null };
+interface PgClientLike {
+  query(text: string, values?: unknown[]): Promise<PgQueryResult>;
+}
+interface PgPoolClientLike extends PgClientLike {
+  release(): void;
+}
+interface PgPoolLike extends PgClientLike {
+  connect(): Promise<PgPoolClientLike>;
+}
+type PgModule = { Pool: new (options: { connectionString?: string; max?: number }) => PgPoolLike };
 
 // A single, minimal database surface the rest of the API codes against, so the
 // same query functions run unchanged on either SQLite/libSQL (local development
@@ -55,10 +70,13 @@ function createLibsqlClient(): DatabaseClient {
 function createPostgresClient(): DatabaseClient {
   // The pool is created lazily on first use so the SQLite path never loads the
   // pg driver, and so importing this module has no side effects.
-  let poolPromise: Promise<PgPool> | null = null;
-  async function getPool(): Promise<PgPool> {
+  let poolPromise: Promise<PgPoolLike> | null = null;
+  async function getPool(): Promise<PgPoolLike> {
     if (!poolPromise) {
-      poolPromise = import("pg").then((mod) => {
+      // A specifier typed as a plain string keeps TypeScript from resolving pg's
+      // type declarations at build time; Node resolves the package at runtime.
+      const specifier: string = "pg";
+      poolPromise = import(specifier).then((mod: { default?: PgModule } & PgModule) => {
         const Pool = (mod.default ?? mod).Pool;
         return new Pool({ connectionString: config.databaseUrl, max: 8 });
       });
@@ -66,7 +84,7 @@ function createPostgresClient(): DatabaseClient {
     return poolPromise;
   }
 
-  const run = async (executor: { query: (text: string, values: unknown[]) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }> }, statement: DbStatement): Promise<DbResult> => {
+  const run = async (executor: PgClientLike, statement: DbStatement): Promise<DbResult> => {
     const { sql, args } = statementParts(statement);
     const result = await executor.query(toPostgresText(sql), args);
     return { rows: result.rows ?? [], rowsAffected: result.rowCount ?? 0 };
@@ -80,7 +98,7 @@ function createPostgresClient(): DatabaseClient {
     },
     async batch(statements) {
       const pool = await getPool();
-      const client: PgPoolClient = await pool.connect();
+      const client = await pool.connect();
       try {
         await client.query("BEGIN");
         const results: DbResult[] = [];

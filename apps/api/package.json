@@ -27,7 +27,6 @@
   },
   "devDependencies": {
     "@types/node": "latest",
-    "@types/pg": "^8.11.10",
     "tsx": "latest",
     "vitest": "latest"
   }
