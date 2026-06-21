@@ -31,7 +31,16 @@ function AssistantTurn({ turn }: { turn: ChatTurn }) {
 function UserTurn({ turn }: { turn: ChatTurn }) {
   return (
     <div className="turn turn-user">
-      <div className="user-bubble">{turn.text}</div>
+      {turn.attachments && turn.attachments.length > 0 && (
+        <div className="bubble-attachments">
+          {turn.attachments.map((attachment, index) => (
+            <span className="attachment-chip" key={`${attachment.filename}-${index}`}>
+              <span className="attachment-name" title={attachment.filename}>{attachment.filename}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {turn.text.length > 0 && <div className="user-bubble">{turn.text}</div>}
     </div>
   );
 }

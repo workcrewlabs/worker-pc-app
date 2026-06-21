@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ModelTier } from "@workcrew/contracts";
+import type { AttachmentRef, ModelTier } from "@workcrew/contracts";
 import type { ChatTurn } from "../lib/chat";
 import { MessageList } from "./MessageList";
 
@@ -51,10 +51,13 @@ export function ChatView({
   streaming: boolean;
   model: ModelTier;
   onModelChange: (model: ModelTier) => void;
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments: AttachmentRef[]) => void;
   onStop: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [attachError, setAttachError] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const hasConversation = turns.length > 0;
 
@@ -64,11 +67,40 @@ export function ChatView({
     if (!streaming) composerRef.current?.focus();
   }, [streaming]);
 
+  // Open the native file picker, upload the chosen files, and add a chip for
+  // each one that stored successfully. Errors surface as a small inline notice.
+  async function addFiles() {
+    if (uploading || streaming) return;
+    setAttachError("");
+    let picked: { path: string; name: string; size: number }[];
+    try {
+      picked = await window.workcrew.files.pick();
+    } catch {
+      return;
+    }
+    if (picked.length === 0) return;
+    setUploading(true);
+    try {
+      const refs = await window.workcrew.attachments.upload(picked);
+      setAttachments((current) => [...current, ...refs].slice(0, 20));
+    } catch (error) {
+      setAttachError(error instanceof Error ? error.message : "The file could not be added.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function removeAttachment(attachmentId: string) {
+    setAttachments((current) => current.filter((item) => item.attachmentId !== attachmentId));
+  }
+
   function submit(text: string) {
     const trimmed = text.trim();
-    if (!trimmed || streaming) return;
-    onSend(trimmed);
+    if ((!trimmed && attachments.length === 0) || streaming || uploading) return;
+    onSend(trimmed, attachments);
     setDraft("");
+    setAttachments([]);
+    setAttachError("");
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -78,6 +110,8 @@ export function ChatView({
       submit(draft);
     }
   }
+
+  const canSend = (draft.trim().length > 0 || attachments.length > 0) && !uploading;
 
   const composer = (
     <div className={`composer ${streaming ? "composer-running" : ""}`}>
@@ -89,9 +123,29 @@ export function ChatView({
         placeholder="Ask WorkCrew anything..."
         rows={hasConversation ? 1 : 3}
       />
+      {(attachments.length > 0 || attachError) && (
+        <div className="attachment-row">
+          {attachments.map((item) => (
+            <span className="attachment-chip" key={item.attachmentId}>
+              <span className="attachment-name" title={item.filename}>{item.filename}</span>
+              <button type="button" aria-label={`Remove ${item.filename}`} onClick={() => removeAttachment(item.attachmentId)}>
+                ×
+              </button>
+            </span>
+          ))}
+          {attachError && <span className="attach-error">{attachError}</span>}
+        </div>
+      )}
       <div className="composer-tools">
-        <button className="tool-button" type="button" title="Add files or photos" aria-label="Add files or photos" disabled>
-          +
+        <button
+          className="tool-button"
+          type="button"
+          title="Add files or photos"
+          aria-label="Add files or photos"
+          onClick={() => void addFiles()}
+          disabled={uploading || streaming}
+        >
+          {uploading ? "…" : "+"}
         </button>
         <select
           value={model}
@@ -109,7 +163,7 @@ export function ChatView({
             Stop
           </button>
         ) : (
-          <button className="run-button" type="button" onClick={() => submit(draft)} disabled={draft.trim().length === 0}>
+          <button className="run-button" type="button" onClick={() => submit(draft)} disabled={!canSend}>
             Send
           </button>
         )}

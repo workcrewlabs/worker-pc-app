@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   PLAN_CATALOG,
+  type AttachmentRef,
   type BillingInterval,
   type ConversationSummary,
   type ModelTier,
@@ -255,8 +256,8 @@ function Workspace({ entitlement, onSignOut, onUpgrade }: { entitlement: Subscri
     }
   }
 
-  function send(text: string) {
-    void chat.send({ text, model });
+  function send(text: string, attachments: AttachmentRef[]) {
+    void chat.send({ text, model, attachments });
   }
 
   async function handleUpgrade() {

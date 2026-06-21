@@ -130,6 +130,40 @@ const credentialsSchema = z.object({
   password: z.string().min(10).max(128)
 }).strict();
 
+// The list of picked files the renderer asks to upload.
+const pickedFilesSchema = z.array(z.object({
+  path: z.string().min(1).max(4_096),
+  name: z.string().min(1).max(500),
+  size: z.number().int().min(0)
+}).strict()).max(20);
+
+// Largest file the desktop will read and upload, mirroring the backend limit so
+// an oversized file is rejected with a clear message before any network call.
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+// A small extension to mime-type guess. The backend classifies primarily by
+// extension, so this is a friendly hint rather than the source of truth.
+const MIME_BY_EXTENSION: Record<string, string> = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  txt: "text/plain",
+  md: "text/markdown",
+  csv: "text/csv",
+  json: "application/json",
+  html: "text/html",
+  xml: "text/xml"
+};
+
+function guessMimeType(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  const ext = dot === -1 ? "" : filename.slice(dot + 1).toLowerCase();
+  return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
+}
+
 function createWindow(): void {
   console.info("[WorkCrew] creating main window");
   mainWindow = new BrowserWindow({
@@ -251,6 +285,31 @@ function registerIpc(): void {
       const stat = await fs.stat(filePath).catch(() => null);
       return { path: filePath, name: filePath.split(/[\\/]/).pop() ?? filePath, size: stat?.size ?? 0 };
     }));
+  });
+
+  // Read each picked file from disk, guard its size, and post its bytes to the
+  // backend, returning a reference per successfully stored file. Files are read
+  // sequentially so a large selection cannot spike memory all at once.
+  ipcMain.handle("attachments:upload", async (_event, raw) => {
+    const files = pickedFilesSchema.parse(raw);
+    const fs = await import("node:fs/promises");
+    const refs = [];
+    for (const file of files) {
+      const buffer = await fs.readFile(file.path);
+      if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+        throw new Error(`${file.name} is too large. The limit is 10 MB per file.`);
+      }
+      const ref = await api.request("/v1/attachments", {
+        method: "POST",
+        body: {
+          filename: file.name,
+          mimeType: guessMimeType(file.name),
+          base64: buffer.toString("base64")
+        }
+      });
+      refs.push(ref);
+    }
+    return refs;
   });
 
   // Chat streaming. The renderer fires chat:send and then listens on the

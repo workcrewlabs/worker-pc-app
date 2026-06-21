@@ -2,15 +2,21 @@
 // React state as a flat list of turns. Each assistant turn collects streamed
 // text and an optional thinking summary as deltas arrive.
 
-import type { ChatDeltaFrame, Message, ModelTier } from "@workcrew/contracts";
+import type { AttachmentKind, ChatDeltaFrame, Message, ModelTier } from "@workcrew/contracts";
 
 export type ChatRole = "user" | "assistant";
+
+// A file shown as a chip on a user turn. Only the display fields are kept here;
+// the full reference lives on the send payload.
+export type TurnAttachment = { filename: string; kind: AttachmentKind };
 
 export type ChatTurn = {
   // A local id, stable for the lifetime of the turn in the transcript.
   id: string;
   role: ChatRole;
   text: string;
+  // Files attached to this (user) turn, shown as chips above the bubble.
+  attachments?: TurnAttachment[];
   // Streamed thinking summary, shown above the answer while present.
   thinking?: string;
   // True while the assistant turn is actively receiving deltas.
@@ -47,14 +53,30 @@ export function textFromContent(content: unknown[]): { text: string; thinking: s
   return { text, thinking };
 }
 
+// Pull attachment chips out of a stored content block array. The backend stores
+// each attached file as an "attachment_ref" block carrying its metadata.
+export function attachmentsFromContent(content: unknown[]): TurnAttachment[] {
+  const out: TurnAttachment[] = [];
+  for (const raw of content) {
+    if (!raw || typeof raw !== "object") continue;
+    const block = raw as { type?: string; attachment?: { filename?: string; kind?: AttachmentKind } };
+    if (block.type === "attachment_ref" && block.attachment?.filename) {
+      out.push({ filename: block.attachment.filename, kind: block.attachment.kind ?? "text" });
+    }
+  }
+  return out;
+}
+
 // Build the renderer transcript from a reloaded conversation's messages.
 export function turnsFromMessages(messages: Message[]): ChatTurn[] {
   return messages.map((message) => {
     const { text, thinking } = textFromContent(message.contentJson);
+    const attachments = attachmentsFromContent(message.contentJson);
     return {
       id: message.id,
       role: message.role,
       text,
+      attachments: attachments.length > 0 ? attachments : undefined,
       thinking: thinking || undefined
     } satisfies ChatTurn;
   });

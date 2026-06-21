@@ -163,6 +163,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-chip button { border: 0; cursor: pointer; color: var(--muted); background: none; font-size: 12px; line-height: 1; padding: 0 2px; }
 .attachment-chip button:hover { color: var(--text); }
+.attach-error { align-self: center; color: #d98a93; font-size: 12px; }
+/* Attachment chips shown above a sent user message, aligned with the bubble. */
+.bubble-attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-bottom: 6px; }
 .workspace-content { position: relative; z-index: 1; width: min(760px, calc(100% - 64px)); margin: auto; padding: 40px 0 22px; }
 /* Empty-state greeting is a modest one-line heading, not a hero.
    Serif body voice, weight 500, normal letter spacing (spec 2.1). */

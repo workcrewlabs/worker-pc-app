@@ -6,6 +6,7 @@ import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import {
   PLAN_CATALOG,
+  attachmentUploadSchema,
   chatSendSchema,
   createCheckoutSchema,
   createRunSchema,
@@ -35,6 +36,7 @@ import {
   maximumReservationMicrodollars,
   modelRequestPayload
 } from "./anthropic.js";
+import { processAndStoreAttachment } from "./attachments.js";
 import { createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { getBudgetUsage, getBudgetWindow, planBudget, reserveBudget, settleBudget } from "./budget.js";
 import { streamChat } from "./chat.js";
@@ -339,6 +341,26 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", async (request):
     await updateRun(run);
     throw error;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Attachment upload. The desktop reads a file locally and posts its bytes as
+// base64; the backend validates, decodes, stores, and returns a reference the
+// desktop attaches to its next chat turn. A larger body limit applies to this
+// route only, since the global limit is sized for small JSON payloads.
+// ---------------------------------------------------------------------------
+
+app.post("/v1/attachments", { bodyLimit: 16 * 1024 * 1024 }, async (request) => {
+  const userId = await authenticate(request);
+  requireActive(await getSubscription(userId));
+  const body = attachmentUploadSchema.parse(request.body);
+  return processAndStoreAttachment({
+    userId,
+    conversationId: body.conversationId,
+    filename: body.filename,
+    mimeType: body.mimeType,
+    base64: body.base64
+  });
 });
 
 // ---------------------------------------------------------------------------

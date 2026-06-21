@@ -158,7 +158,26 @@ export async function initializeDatabase(db: Client = client): Promise<void> {
       created_at_ms INTEGER NOT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS idx_messages_conversation
-      ON messages(conversation_id, created_at_ms ASC)`
+      ON messages(conversation_id, created_at_ms ASC)`,
+    // An uploaded file the user attached to a chat turn. Text files store their
+    // decoded text in content_text; images and PDFs store canonical base64 in
+    // content_base64. The bytes live here (not on local disk) so the backend can
+    // feed them to the model from any host. conversation_id is optional.
+    `CREATE TABLE IF NOT EXISTS attachments (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      conversation_id TEXT,
+      filename TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('pdf', 'image', 'text')),
+      media_type TEXT NOT NULL,
+      content_text TEXT,
+      content_base64 TEXT,
+      created_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_attachments_user
+      ON attachments(user_id, created_at_ms DESC)`
   ], "write");
 
   // Migrate databases created before the run safety columns existed. SQLite
@@ -694,6 +713,76 @@ export async function deleteConversation(id: string, userId: string): Promise<bo
     { sql: "DELETE FROM conversations WHERE id = ? AND user_id = ?", args: [id, userId] }
   ], "write");
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+export type AttachmentRow = {
+  id: string;
+  userId: string;
+  conversationId: string | null;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  kind: "pdf" | "image" | "text";
+  mediaType: string;
+  /** Decoded text for text files, otherwise null. */
+  contentText: string | null;
+  /** Canonical base64 for images and PDFs, otherwise null. */
+  contentBase64: string | null;
+  createdAtMs: number;
+};
+
+function mapAttachment(row: Record<string, unknown>): AttachmentRow {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    conversationId: row.conversation_id == null ? null : String(row.conversation_id),
+    filename: String(row.filename),
+    mimeType: String(row.mime_type),
+    sizeBytes: asNumber(row.size_bytes),
+    kind: String(row.kind) as "pdf" | "image" | "text",
+    mediaType: String(row.media_type),
+    contentText: row.content_text == null ? null : String(row.content_text),
+    contentBase64: row.content_base64 == null ? null : String(row.content_base64),
+    createdAtMs: asNumber(row.created_at_ms)
+  };
+}
+
+/** Persist an uploaded attachment together with its stored content. */
+export async function createAttachment(input: AttachmentRow): Promise<void> {
+  await client.execute({
+    sql: `INSERT INTO attachments(
+        id, user_id, conversation_id, filename, mime_type, size_bytes,
+        kind, media_type, content_text, content_base64, created_at_ms
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      input.id,
+      input.userId,
+      input.conversationId,
+      input.filename,
+      input.mimeType,
+      input.sizeBytes,
+      input.kind,
+      input.mediaType,
+      input.contentText,
+      input.contentBase64,
+      input.createdAtMs
+    ]
+  });
+}
+
+/** Fetch an attachment owned by the given user, or null. Scoped by user_id. */
+export async function getAttachment(id: string, userId: string): Promise<AttachmentRow | null> {
+  const result = await client.execute({
+    sql: "SELECT * FROM attachments WHERE id = ? AND user_id = ? LIMIT 1",
+    args: [id, userId]
+  });
+  const row = result.rows[0] as unknown as Record<string, unknown> | undefined;
+  return row ? mapAttachment(row) : null;
 }
 
 export { client };

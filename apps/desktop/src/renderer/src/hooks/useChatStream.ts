@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ModelTier } from "@workcrew/contracts";
+import type { AttachmentRef, ModelTier } from "@workcrew/contracts";
 import {
   DEFAULT_CHAT_EFFORT,
   localId,
@@ -15,6 +15,8 @@ export type SendOptions = {
   conversationId?: string;
   effort?: ChatEffort;
   thinking?: boolean;
+  // Files already uploaded and ready to attach to this turn.
+  attachments?: AttachmentRef[];
 };
 
 export type UseChatStream = {
@@ -91,10 +93,18 @@ export function useChatStream(): UseChatStream {
   const send = useCallback(
     async (options: SendOptions) => {
       const text = options.text.trim();
-      if (!text || streaming) return;
+      const attachments = options.attachments ?? [];
+      // Allow a turn with attachments but no text (an image or document on its
+      // own), and block re-entry while a stream is in flight.
+      if ((!text && attachments.length === 0) || streaming) return;
 
       const assistantId = localId();
-      const userTurn: ChatTurn = { id: localId(), role: "user", text };
+      const userTurn: ChatTurn = {
+        id: localId(),
+        role: "user",
+        text,
+        attachments: attachments.length > 0 ? attachments.map((a) => ({ filename: a.filename, kind: a.kind })) : undefined
+      };
       const assistantTurn: ChatTurn = { id: assistantId, role: "assistant", text: "", streaming: true };
 
       setTurns((current) => [...current, userTurn, assistantTurn]);
@@ -107,7 +117,8 @@ export function useChatStream(): UseChatStream {
           model: options.model,
           conversationId: options.conversationId ?? conversationId,
           effort: options.effort ?? DEFAULT_CHAT_EFFORT,
-          thinking: options.thinking ?? false
+          thinking: options.thinking ?? false,
+          attachments
         });
         activeRequestId.current = requestId;
       } catch (error) {

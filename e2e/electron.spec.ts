@@ -90,6 +90,8 @@ test("activating Pro unlocks the workspace and shows upgrade prompts", async () 
   const effort = page.locator(".composer-tools select");
   await expect(effort).toContainText("Quick answer");
   await expect(effort).not.toContainText("Haiku");
+  // The add-files button is live (no longer a disabled placeholder).
+  await expect(page.getByRole("button", { name: "Add files or photos" })).toBeEnabled();
   await page.screenshot({ path: "workcrew-workspace.png" });
 });
 

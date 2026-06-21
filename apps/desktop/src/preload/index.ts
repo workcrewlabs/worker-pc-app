@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  AttachmentRef,
   AutomationAction,
   BillingInterval,
   ChatDeltaFrame,
@@ -10,6 +11,9 @@ import type {
   RunStepResponse,
   SubscriptionState
 } from "@workcrew/contracts";
+
+// A file the user picked locally, before it is uploaded.
+type PickedFile = { path: string; name: string; size: number };
 
 // What the renderer passes to chat.send. The request id is generated here and
 // returned so the caller can correlate streamed frames and issue a stop.
@@ -84,7 +88,12 @@ const workcrew = {
     stop: () => ipcRenderer.invoke("automation:stop")
   },
   files: {
-    pick: (): Promise<{ path: string; name: string; size: number }[]> => ipcRenderer.invoke("dialog:open-files")
+    pick: (): Promise<PickedFile[]> => ipcRenderer.invoke("dialog:open-files")
+  },
+  attachments: {
+    // Upload picked files and return a reference for each successfully stored
+    // file. The bytes are read in the main process and posted to the backend.
+    upload: (files: PickedFile[]): Promise<AttachmentRef[]> => ipcRenderer.invoke("attachments:upload", files)
   }
 };
 

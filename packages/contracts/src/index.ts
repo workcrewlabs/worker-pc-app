@@ -170,6 +170,23 @@ export const attachmentRefSchema = z.object({
 }).strict();
 export type AttachmentRef = z.infer<typeof attachmentRefSchema>;
 
+// The kinds of file WorkCrew can currently read into a chat turn.
+export const attachmentKindSchema = z.enum(["pdf", "image", "text"]);
+export type AttachmentKind = z.infer<typeof attachmentKindSchema>;
+
+// Request to upload one file. The desktop reads the file from local disk and
+// sends its bytes as base64, because in production the backend has no access to
+// the user's machine. The base64 ceiling here is a coarse guard; the backend
+// enforces the real per-file byte limit after decoding. conversationId is
+// optional association metadata.
+export const attachmentUploadSchema = z.object({
+  filename: z.string().min(1).max(500),
+  mimeType: z.string().min(1).max(200),
+  base64: z.string().min(1).max(14_000_000),
+  conversationId: z.string().uuid().optional()
+}).strict();
+export type AttachmentUpload = z.infer<typeof attachmentUploadSchema>;
+
 // Payload for sending a chat turn. modelTierSchema stays as it is (auto,
 // haiku, sonnet, opus) but the chat default is sonnet.
 export const chatSendSchema = z.object({

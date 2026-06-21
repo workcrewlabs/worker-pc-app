@@ -7,17 +7,20 @@ import {
   type ChatSend
 } from "@workcrew/contracts";
 import { actualCostMicrodollars, maximumReservationMicrodollars } from "./anthropic.js";
+import { blocksForRow, estimateMediaTokens } from "./attachments.js";
 import { getBudgetUsage, reserveBudget, settleBudget } from "./budget.js";
 import { config } from "./config.js";
 import {
   addMessage,
   createConversation,
+  getAttachment,
   getConversation,
   getMessages,
   touchConversation,
+  type AttachmentRow,
   type SubscriptionRow
 } from "./db.js";
-import { chooseModel, modelId, type ConcreteModelTier } from "./model-registry.js";
+import { MODEL_PRICES, chooseModel, modelId, type ConcreteModelTier } from "./model-registry.js";
 
 /**
  * Maximum output tokens for a chat turn. This caps the worst case budget
@@ -94,21 +97,82 @@ function toModelText(content: unknown[]): string {
   return parts.join("\n").trim();
 }
 
+type ModelMessage = { role: "user" | "assistant"; content: unknown[] };
+type ReservationMessage = { role: "user" | "assistant"; content: { type: "text"; text: string }[] };
+
 /**
- * Build the Anthropic messages array from stored messages. Each stored message
- * becomes a single text content block keyed by its role. Empty turns are skipped
- * so the request never carries a blank block.
+ * Build the Anthropic messages array from stored messages, expanding any
+ * attachment refs on user turns into real content blocks (image, document, or
+ * inline text) loaded from the attachments table and scoped to the owner.
+ *
+ * Returns two parallel arrays plus a media token estimate:
+ *  - modelMessages: the actual request content, including base64 media blocks.
+ *  - reservationMessages: a text-only mirror used to size the budget reservation
+ *    without serializing megabytes of base64 (which would wildly overestimate).
+ *  - mediaTokens: a bounded upper bound on input tokens added by images and PDFs.
+ *
+ * Assistant turns are collapsed to a single text block, matching the prior
+ * behavior. Missing or non-owned attachments are dropped silently.
  */
-function buildAnthropicMessages(
-  stored: { role: "user" | "assistant"; content: unknown[] }[]
-): { role: "user" | "assistant"; content: { type: "text"; text: string }[] }[] {
-  const messages: { role: "user" | "assistant"; content: { type: "text"; text: string }[] }[] = [];
+async function buildModelMessages(
+  stored: { role: "user" | "assistant"; content: unknown[] }[],
+  userId: string
+): Promise<{ modelMessages: ModelMessage[]; reservationMessages: ReservationMessage[]; mediaTokens: number }> {
+  const modelMessages: ModelMessage[] = [];
+  const reservationMessages: ReservationMessage[] = [];
+  const cache = new Map<string, AttachmentRow | null>();
+  let mediaTokens = 0;
+
   for (const message of stored) {
-    const text = toModelText(message.content);
-    if (text.length === 0) continue;
-    messages.push({ role: message.role, content: [{ type: "text", text }] });
+    if (message.role === "assistant") {
+      const text = toModelText(message.content);
+      if (text.length === 0) continue;
+      modelMessages.push({ role: "assistant", content: [{ type: "text", text }] });
+      reservationMessages.push({ role: "assistant", content: [{ type: "text", text }] });
+      continue;
+    }
+
+    const blocks: unknown[] = [];
+    const reservationParts: string[] = [];
+    for (const raw of message.content) {
+      if (!raw || typeof raw !== "object") continue;
+      const block = raw as { type?: string; text?: string; attachment?: { attachmentId?: string } };
+
+      if (block.type === "text" && typeof block.text === "string") {
+        if (block.text.length === 0) continue;
+        blocks.push({ type: "text", text: block.text });
+        reservationParts.push(block.text);
+        continue;
+      }
+
+      if (block.type === "attachment_ref" && block.attachment?.attachmentId) {
+        const attachmentId = block.attachment.attachmentId;
+        let row = cache.get(attachmentId);
+        if (row === undefined) {
+          row = await getAttachment(attachmentId, userId);
+          cache.set(attachmentId, row);
+        }
+        if (!row) continue;
+        const attachmentBlocks = blocksForRow(row);
+        if (!attachmentBlocks) continue;
+        blocks.push(...attachmentBlocks);
+        if (row.kind === "text" && row.contentText !== null) {
+          reservationParts.push(`Attached file "${row.filename}":\n\n${row.contentText}`);
+        } else {
+          mediaTokens += estimateMediaTokens(row);
+        }
+      }
+    }
+
+    if (blocks.length === 0) continue;
+    modelMessages.push({ role: "user", content: blocks });
+    reservationMessages.push({
+      role: "user",
+      content: [{ type: "text", text: reservationParts.join("\n") || "(attachment)" }]
+    });
   }
-  return messages;
+
+  return { modelMessages, reservationMessages, mediaTokens };
 }
 
 type StreamChatInput = {
@@ -162,16 +226,20 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
   });
 
   // Build the model input from the full stored history (which now includes the
-  // user turn just written).
+  // user turn just written), expanding attachments into real content blocks.
   const stored = await getMessages(conversationId);
-  const anthropicMessages = buildAnthropicMessages(stored);
+  const { modelMessages, reservationMessages, mediaTokens } = await buildModelMessages(stored, input.userId);
 
   // Reserve the worst case cost up front, mirroring the runs path: an input
-  // upper bound from the serialized payload plus the full output token budget.
-  // The ledger SQL enforces the hard cap, so a reservation that would breach the
-  // cycle budget is rejected here.
-  const reservationPayload = { model: modelId(tier), system: SYSTEM_PROMPT, messages: anthropicMessages };
-  const reservationAmount = maximumReservationMicrodollars(tier, reservationPayload, MAX_OUTPUT_TOKENS);
+  // upper bound from the serialized payload plus the full output token budget,
+  // plus a bounded allowance for image and PDF tokens (estimated separately so
+  // megabytes of base64 do not inflate the text estimate). The ledger SQL
+  // enforces the hard cap, so a reservation that would breach the cycle budget
+  // is rejected here.
+  const reservationPayload = { model: modelId(tier), system: SYSTEM_PROMPT, messages: reservationMessages };
+  const reservationAmount =
+    maximumReservationMicrodollars(tier, reservationPayload, MAX_OUTPUT_TOKENS) +
+    mediaTokens * MODEL_PRICES[tier].input;
 
   let reservationId: string | null = null;
   let reservationWindow: { startMs: number; endMs: number } | null = null;
@@ -203,9 +271,16 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
 
     if (useMock) {
       // MOCK PATH: emit the canned answer as several small text frames, then
-      // settle a small fixed cost.
+      // settle a small fixed cost. When the turn carries attachments, prepend a
+      // short acknowledgement so the offline experience reflects that the files
+      // were received (the real path actually reads them).
+      const chunks = [...MOCK_ANSWER_CHUNKS];
+      if (body.attachments.length > 0) {
+        const noun = body.attachments.length === 1 ? "file" : "files";
+        chunks.unshift(`I received your ${body.attachments.length} ${noun}. `);
+      }
       const pieces: { type: "text"; text: string }[] = [];
-      for (const chunk of MOCK_ANSWER_CHUNKS) {
+      for (const chunk of chunks) {
         pieces.push({ type: "text", text: chunk });
         yield { type: "text", text: chunk };
       }
@@ -220,7 +295,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
         model: modelId(tier),
         max_tokens: MAX_OUTPUT_TOKENS,
         system: SYSTEM_PROMPT,
-        messages: anthropicMessages
+        messages: modelMessages as Anthropic.Messages.MessageParam[]
       });
 
       try {
