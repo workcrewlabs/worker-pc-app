@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "cross-env DOTENV_CONFIG_PATH=../../.env tsx watch src/server.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "start": "cross-env DOTENV_CONFIG_PATH=../../.env node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
