@@ -677,6 +677,37 @@ export async function updateUserPassword(userId: string, passwordHash: string, p
   });
 }
 
+/**
+ * Apply a password reset as a single transaction: mark the token used, set the
+ * new password, and revoke every existing session. Doing all three in one batch
+ * means the whole unit either commits or rolls back together, and the driver can
+ * safely retry the entire transaction if the connection drops, instead of
+ * leaving the token consumed but the password unchanged. The token's single use
+ * is enforced by the caller's prior lookup, so the consume here is best-effort.
+ */
+export async function applyPasswordReset(input: {
+  tokenId: string;
+  userId: string;
+  passwordHash: string;
+  passwordSalt: string;
+  nowMs: number;
+}): Promise<void> {
+  await client.batch([
+    {
+      sql: "UPDATE email_tokens SET used_at_ms = ? WHERE id = ? AND used_at_ms IS NULL",
+      args: [input.nowMs, input.tokenId]
+    },
+    {
+      sql: "UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?",
+      args: [input.passwordHash, input.passwordSalt, input.userId]
+    },
+    {
+      sql: "UPDATE sessions SET revoked_at_ms = ? WHERE user_id = ? AND revoked_at_ms IS NULL",
+      args: [input.nowMs, input.userId]
+    }
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // Chat: conversations and messages
 // ---------------------------------------------------------------------------

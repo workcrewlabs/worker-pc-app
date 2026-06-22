@@ -11,6 +11,7 @@ import { z } from "zod";
 import { config } from "./config.js";
 import { emailProvider, resetEmailMessage, sendEmail, verifyEmailMessage } from "./email.js";
 import {
+  applyPasswordReset,
   consumeEmailToken,
   createEmailToken,
   createSession,
@@ -20,10 +21,8 @@ import {
   getUserByEmail,
   getUserById,
   revokeSession,
-  revokeUserSessions,
   rotateRefreshToken,
   setUserEmailVerified,
-  updateUserPassword,
   type UserRow
 } from "./db.js";
 
@@ -370,17 +369,19 @@ export class LocalAuthProvider implements AuthProvider {
   async confirmReset(rawToken: string, newPassword: string): Promise<void> {
     const hash = createHash("sha256").update(rawToken).digest("hex");
     const token = await getEmailToken(hash, "reset");
+    // The lookup enforces single use and expiry: an already-used or expired token
+    // is rejected here before any write happens.
     if (!token || token.usedAtMs != null || token.expiresAtMs <= Date.now()) {
       throw authError("This reset link is invalid or has expired.", 400, "INVALID_TOKEN");
-    }
-    if (!(await consumeEmailToken(token.id))) {
-      throw authError("This reset link was already used.", 400, "INVALID_TOKEN");
     }
     try {
       const salt = randomBytes(SCRYPT_SALT_BYTES).toString("hex");
       const passwordHash = await hashPassword(newPassword, salt);
-      await updateUserPassword(token.userId, passwordHash, salt);
-      await revokeUserSessions(token.userId);
+      // One atomic transaction: consume the token, set the password, revoke
+      // sessions. The driver can retry the whole unit on a dropped connection
+      // without leaving a half-applied reset, which was the cause of the
+      // intermittent 500 on a flaky pooled connection.
+      await applyPasswordReset({ tokenId: token.id, userId: token.userId, passwordHash, passwordSalt: salt, nowMs: Date.now() });
     } catch (error) {
       // Surface the real cause in the server log; the client still gets a clean
       // 500. This is the step to inspect if a valid reset link ever fails.

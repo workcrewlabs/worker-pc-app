@@ -148,7 +148,12 @@ async function synchronizeSubscription(subscription: Stripe.Subscription): Promi
   }
 
   const period = subscriptionPeriod(subscription);
-  const active = subscription.status === "active";
+  // Treat trialing and past_due as still entitled. "past_due" is Stripe's grace
+  // window while it retries a payment, and "trialing" is a live trial, so a
+  // paying customer is not locked out the instant a renewal or an in-place plan
+  // upgrade is briefly not "active". A truly ended subscription becomes
+  // canceled/unpaid, which correctly falls through to inactive.
+  const active = ["active", "trialing", "past_due"].includes(subscription.status);
   const row: SubscriptionRow = {
     userId,
     stripeCustomerId: stringId(subscription.customer),
