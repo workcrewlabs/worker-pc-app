@@ -309,6 +309,9 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
   // An example automation the user clicked on the home screen, carried into the
   // Automation panel as its starting task.
   const [automationSeed, setAutomationSeed] = useState("");
+  // A task being turned into a routine via "Save as a routine", carried into the
+  // Routines form.
+  const [routineSeed, setRoutineSeed] = useState("");
   // Auto-update status, surfaced as a sidebar button when an update is ready.
   const [update, setUpdate] = useState<{ state: string; version?: string; percent?: number } | null>(null);
 
@@ -380,6 +383,13 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
   function startAutomation(task: string) {
     setAutomationSeed(task);
     setView("automation");
+    setAccountOpen(false);
+  }
+
+  // Carry a just-run automation into the Routines form so it can be scheduled.
+  function saveAsRoutine(task: string) {
+    setRoutineSeed(task);
+    setView("routines");
     setAccountOpen(false);
   }
 
@@ -468,7 +478,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
           <button
             className={view === "routines" ? "nav-active" : ""}
             aria-current={view === "routines" ? "page" : undefined}
-            onClick={() => setView("routines")}
+            onClick={() => { setRoutineSeed(""); setView("routines"); }}
           >
             <span>R</span> Routines
           </button>
@@ -567,9 +577,9 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
           onChange={setPermissions}
         />
       )}
-      {view === "automation" && <AutomationPanel runner={runner} model={model} initialTask={automationSeed} onClose={() => setView("chat")} />}
+      {view === "automation" && <AutomationPanel runner={runner} model={model} initialTask={automationSeed} onSaveRoutine={saveAsRoutine} onClose={() => setView("chat")} />}
       {view === "routines" && (
-        <RoutinesPanel runner={runner} model={model} routines={routines} onChange={setRoutines} onClose={() => setView("chat")} />
+        <RoutinesPanel runner={runner} model={model} routines={routines} initialTask={routineSeed} onChange={setRoutines} onClose={() => setView("chat")} />
       )}
       {view === "settings" && <SettingsPanel info={info} onClose={() => setView("chat")} />}
       {runner.pending && <ApprovalModal action={runner.pending.action} label={runner.pending.label} onDecide={runner.decide} />}

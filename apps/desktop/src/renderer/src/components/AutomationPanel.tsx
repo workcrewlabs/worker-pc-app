@@ -8,7 +8,7 @@ import { PanelShell } from "./PanelShell";
 // before any change. The runner and its approval modal live in the workspace so
 // a scheduled routine and a typed task share one engine.
 
-export function AutomationPanel({ runner, model, onClose, initialTask = "" }: { runner: AutomationRunner; model: ModelTier; onClose: () => void; initialTask?: string }) {
+export function AutomationPanel({ runner, model, onClose, initialTask = "", onSaveRoutine }: { runner: AutomationRunner; model: ModelTier; onClose: () => void; initialTask?: string; onSaveRoutine?: (task: string) => void }) {
   // Seeded from an example prompt the user clicked on the home screen, if any.
   const [task, setTask] = useState(initialTask);
   const [connecting, setConnecting] = useState(false);
@@ -58,6 +58,9 @@ export function AutomationPanel({ runner, model, onClose, initialTask = "" }: { 
           <button className="link-button" onClick={() => void connectBrowser()} disabled={connecting || running}>
             {connecting ? "Starting browser..." : "Connect browser"}
           </button>
+          {onSaveRoutine && !running && task.trim().length >= 3 && (
+            <button className="link-button" onClick={() => onSaveRoutine(task.trim())}>Save as a routine</button>
+          )}
         </div>
         <p className="field-hint">
           The first time, use Connect browser and sign in to your accounts in the window that opens. WorkCrew asks before
@@ -87,6 +90,11 @@ export function AutomationPanel({ runner, model, onClose, initialTask = "" }: { 
         <div className={`automation-summary ${runner.status}`} role="status">
           <strong>{runner.status === "complete" ? "Done" : runner.status === "stopped" ? "Stopped" : "Stopped early"}</strong>
           <p>{runner.summary}</p>
+          {onSaveRoutine && task.trim().length >= 3 && (
+            <button className="primary small save-routine-button" onClick={() => onSaveRoutine(task.trim())}>
+              Save as a routine
+            </button>
+          )}
         </div>
       )}
     </PanelShell>

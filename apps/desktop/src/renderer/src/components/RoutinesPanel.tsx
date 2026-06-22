@@ -25,21 +25,32 @@ const CADENCES: { value: RoutineCadence; label: string }[] = [
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
+// Turn a task sentence into a short, capitalized routine name as a default.
+function deriveRoutineName(task: string): string {
+  const cleaned = task.trim().replace(/\s+/g, " ");
+  if (!cleaned) return "";
+  const short = cleaned.length > 44 ? `${cleaned.slice(0, 44)}...` : cleaned;
+  return short.charAt(0).toUpperCase() + short.slice(1);
+}
+
 export function RoutinesPanel({
   runner,
   model,
   routines,
   onChange,
-  onClose
+  onClose,
+  initialTask = ""
 }: {
   runner: AutomationRunner;
   model: ModelTier;
   routines: Routine[];
   onChange: (next: Routine[]) => void;
   onClose: () => void;
+  initialTask?: string;
 }) {
-  const [name, setName] = useState("");
-  const [task, setTask] = useState("");
+  // Seeded from "Save as a routine" in the Automation panel, if any.
+  const [name, setName] = useState(initialTask ? deriveRoutineName(initialTask) : "");
+  const [task, setTask] = useState(initialTask);
   const [cadence, setCadence] = useState<RoutineCadence>("daily");
   const [hour, setHour] = useState(9);
   const [minute, setMinute] = useState(0);
