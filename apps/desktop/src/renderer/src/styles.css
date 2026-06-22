@@ -228,8 +228,16 @@ button:disabled { cursor: not-allowed; opacity: .5; }
    one line (for example "Every day  09 : 00"), instead of each stretching to the
    full width and stacking. The two-class selector overrides the full-width rule
    that applies to every select inside a save form. */
-.save-form .routine-schedule select { width: auto; min-width: 62px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: var(--panel-2); font-size: 13px; }
+.save-form .routine-schedule select { appearance: none; -webkit-appearance: none; width: auto; min-width: 92px; padding: 9px 30px 9px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background-color: var(--panel-2); background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='13'%20height='13'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%238b94a1'%20stroke-width='2.4'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M6%209l6%206%206-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; font-size: 13px; cursor: pointer; }
+.save-form .routine-schedule select:hover { border-color: var(--muted); }
 .routine-schedule .colon { color: var(--muted); font-weight: 600; }
+/* Typeable hour and minute fields with spinner arrows, sized to content. The
+   two-class selector beats the full-width rule for inputs inside a save form. */
+.save-form .routine-schedule .time-input { width: 64px; padding: 9px 6px 9px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: var(--panel-2); font-size: 13px; text-align: center; }
+.save-form .routine-schedule .time-input:focus { border-color: var(--lime-dark); box-shadow: 0 0 0 3px rgba(139,92,246,.16); outline: none; }
+/* Dark, themed option list for every dropdown, replacing the default light popup. */
+select option { background-color: #201f25; color: var(--text); }
+select option:checked { background-color: var(--panel-2); }
 /* Settings: read-only info rows (version, sign in mode, billing mode). Each row
    is a card with the label on the left and the value on the right, both on a
    single baseline so the line reads as balanced rather than two mismatched
@@ -254,7 +262,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .chat-empty .composer textarea { min-height: 84px; }
 .composer textarea::placeholder { color: var(--muted); }
 .composer-tools { display: flex; align-items: center; gap: 8px; padding: 11px 13px; border-top: 1px solid var(--line); }
-.composer-tools select { margin-left: auto; padding: 7px 10px; border: 0; outline: 0; color: var(--muted); background: var(--panel); border-radius: 8px; font-size: var(--fs-small); }
+.composer-tools select { margin-left: auto; appearance: none; -webkit-appearance: none; padding: 8px 30px 8px 11px; border: 1px solid var(--line); outline: 0; color: var(--text); background-color: var(--panel-2); background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='13'%20height='13'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%238b94a1'%20stroke-width='2.4'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M6%209l6%206%206-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; border-radius: 9px; font-size: var(--fs-small); cursor: pointer; }
+.composer-tools select:hover { border-color: var(--muted); }
 .tool-button { width: 32px; height: 32px; display: inline-grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; color: var(--muted); background: transparent; }
 .tool-button:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
 .tool-button:disabled { opacity: .5; cursor: default; }

@@ -98,17 +98,27 @@ export function RoutinesPanel({
           )}
           {timed && (
             <>
-              <select value={hour} onChange={(event) => setHour(Number(event.target.value))} aria-label="Hour">
-                {Array.from({ length: 24 }, (_, h) => (
-                  <option key={h} value={h}>{String(h).padStart(2, "0")}</option>
-                ))}
-              </select>
+              <input
+                type="number"
+                className="time-input"
+                min={0}
+                max={23}
+                step={1}
+                value={hour}
+                onChange={(event) => setHour(Math.max(0, Math.min(23, Math.floor(Number(event.target.value) || 0))))}
+                aria-label="Hour"
+              />
               <span className="colon">:</span>
-              <select value={minute} onChange={(event) => setMinute(Number(event.target.value))} aria-label="Minute">
-                {[0, 15, 30, 45].map((m) => (
-                  <option key={m} value={m}>{String(m).padStart(2, "0")}</option>
-                ))}
-              </select>
+              <input
+                type="number"
+                className="time-input"
+                min={0}
+                max={59}
+                step={1}
+                value={minute}
+                onChange={(event) => setMinute(Math.max(0, Math.min(59, Math.floor(Number(event.target.value) || 0))))}
+                aria-label="Minute"
+              />
             </>
           )}
         </div>
