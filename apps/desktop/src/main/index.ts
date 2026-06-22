@@ -15,6 +15,7 @@ import { ApiClient } from "./api-client.js";
 import { AuthVault } from "./auth-vault.js";
 import { BrowserCli } from "./browser-cli.js";
 import { getBackendUrl, setBackendUrl } from "./settings.js";
+import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -239,6 +240,11 @@ function registerIpc(): void {
   // set validates and persists a new one (taking effect on the next request).
   ipcMain.handle("settings:get-backend-url", () => getBackendUrl());
   ipcMain.handle("settings:set-backend-url", (_event, raw) => setBackendUrl(z.string().min(1).max(2_048).parse(raw)));
+
+  // Auto-update: check on demand and install a downloaded update. Both are safe
+  // no-ops in an unpackaged (development) build.
+  ipcMain.handle("updates:check", () => checkForUpdates());
+  ipcMain.handle("updates:install", () => installUpdate());
   ipcMain.handle("auth:session", () => auth.getSession());
   ipcMain.handle("auth:sign-in", async (_event, raw) => {
     const value = credentialsSchema.parse(raw);
@@ -382,6 +388,7 @@ else {
     console.info("[WorkCrew] secure session loaded");
     registerIpc();
     createWindow();
+    startupUpdateCheck();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

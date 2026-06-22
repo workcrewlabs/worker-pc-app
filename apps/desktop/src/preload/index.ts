@@ -12,6 +12,8 @@ import type {
   SubscriptionState
 } from "@workcrew/contracts";
 
+import type { UpdateStatus } from "../main/updater";
+
 // A file the user picked locally, before it is uploaded.
 type PickedFile = { path: string; name: string; size: number };
 
@@ -45,6 +47,16 @@ const workcrew = {
   settings: {
     getBackendUrl: (): Promise<string> => ipcRenderer.invoke("settings:get-backend-url"),
     setBackendUrl: (url: string): Promise<string> => ipcRenderer.invoke("settings:set-backend-url", url)
+  },
+  updates: {
+    check: (): Promise<{ supported: boolean }> => ipcRenderer.invoke("updates:check"),
+    install: (): Promise<void> => ipcRenderer.invoke("updates:install"),
+    // Subscribe to update status changes. Returns an unsubscribe function.
+    onStatus: (cb: (status: UpdateStatus) => void): (() => void) => {
+      const listener = (_event: unknown, status: UpdateStatus): void => cb(status);
+      ipcRenderer.on("updates:status", listener);
+      return () => ipcRenderer.removeListener("updates:status", listener);
+    }
   },
   auth: {
     session: (): Promise<{ authenticated: boolean; email?: string }> => ipcRenderer.invoke("auth:session"),

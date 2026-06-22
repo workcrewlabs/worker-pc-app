@@ -16,6 +16,7 @@
   "dependencies": {
     "@workcrew/contracts": "0.1.0",
     "dotenv": "latest",
+    "electron-updater": "^6.3.9",
     "playwright-core": "^1.61.0",
     "react": "latest",
     "react-dom": "latest",
@@ -39,6 +40,7 @@
     "asar": true,
     "files": ["out/**/*", "resources/**/*", "package.json"],
     "asarUnpack": ["node_modules/playwright-core/**/*"],
+    "publish": [{ "provider": "github", "owner": "nazihbizriai-lab", "repo": "worker-pc-app" }],
     "protocols": [{ "name": "WorkCrew", "schemes": ["workcrew"] }],
     "win": {
       "target": ["nsis"],

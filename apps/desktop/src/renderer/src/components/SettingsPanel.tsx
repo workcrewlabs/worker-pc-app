@@ -8,12 +8,50 @@ import { PanelShell } from "./PanelShell";
 
 type AppInfo = { name: string; version: string; authMode: string; billingMode: string };
 
+type UpdateStatus = { state: string; version?: string; percent?: number; message?: string };
+
+function describeUpdate(status: UpdateStatus | null): string {
+  if (!status) return "";
+  switch (status.state) {
+    case "checking":
+      return "Checking for updates...";
+    case "available":
+      return `Update ${status.version ?? ""} found. Downloading...`.trim();
+    case "downloading":
+      return `Downloading update... ${status.percent ?? 0}%`;
+    case "ready":
+      return `Update ${status.version ?? ""} ready. Restart to finish.`.trim();
+    case "none":
+      return "You are on the latest version.";
+    case "unsupported":
+      return "Updates apply to the installed app. This is a development run.";
+    case "error":
+      return status.message ?? "The update could not be completed.";
+    default:
+      return "";
+  }
+}
+
 export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () => void }) {
   const [backendUrl, setBackendUrl] = useState("");
   const [initial, setInitial] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  useEffect(() => window.workcrew.updates.onStatus((status) => setUpdate(status)), []);
+
+  async function checkForUpdates() {
+    setChecking(true);
+    setUpdate({ state: "checking" });
+    try {
+      await window.workcrew.updates.check();
+    } finally {
+      setChecking(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +117,21 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
         <li className="record-row"><span className="record-sub">Sign in</span><strong>{info.authMode === "supabase" ? "Cloud accounts" : "Secure local accounts"}</strong></li>
         <li className="record-row"><span className="record-sub">Billing</span><strong>{info.billingMode === "stripe" ? "Live billing" : "Test activation"}</strong></li>
       </ul>
+
+      <div className="save-form update-section">
+        <label className="field-label">Software updates</label>
+        <p className="field-hint">WorkCrew keeps itself up to date. You can also check now. A ready update installs when you restart.</p>
+        <div className="save-row">
+          {update?.state === "ready" ? (
+            <button className="primary" onClick={() => void window.workcrew.updates.install()}>Restart to update</button>
+          ) : (
+            <button className="secondary" onClick={() => void checkForUpdates()} disabled={checking}>
+              {checking ? "Checking..." : "Check for updates"}
+            </button>
+          )}
+        </div>
+        {update && <p className="notice">{describeUpdate(update)}</p>}
+      </div>
     </PanelShell>
   );
 }
