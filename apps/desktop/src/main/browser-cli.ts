@@ -124,6 +124,12 @@ export class BrowserCli {
 
   async execute(rawAction: unknown): Promise<string> {
     const action = browserActionSchema.parse(rawAction);
+    // Auto-start the automation browser on the first action so the user does not
+    // have to click Connect browser first. If Chrome is already running with the
+    // debugging port open this is a no-op.
+    if (!(await this.isReachable())) {
+      await this.launchBrowser();
+    }
     const page = await this.connect();
 
     switch (action.command) {

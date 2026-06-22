@@ -50,6 +50,35 @@ const EMPTY_ENTITLEMENT: SubscriptionState = {
 //   "Error invoking remote method 'channel': Error: <real message>"
 // so we strip that wrapper and any leading "SomethingError:", then translate the
 // few technical cases (network, timeout, server fault) into friendly language.
+// Decide whether a typed message is a request to DO something on the user's
+// computer (drive the browser or a Windows app) versus a question to answer in
+// chat. Action requests are routed to the automation engine, which itself picks
+// the browser (Playwright) or Windows (the Windows helper) tools as needed. The
+// check is deliberately conservative: clear questions and writing requests stay
+// in chat, and only imperative "do this on my machine" phrasing automates.
+function looksLikeAutomation(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (t.length < 4) return false;
+  // Plainly a question, or a writing/explaining request: keep it in chat.
+  if (/^(how|what|whats|what's|why|when|who|where|which|is |are |do |does |can i|could you|would you|explain|tell me|write|draft|compose|summari|translate|define|describe|give me|list|brainstorm|suggest|recommend|help me (write|understand|learn|decide|with)|teach me|show me how)\b/.test(t)) {
+    return false;
+  }
+  // Explicit machine or browser context always automates.
+  if (/\b(in (my|the) browser|on (my|the) (computer|pc|laptop|desktop|machine)|on my screen)\b/.test(t)) return true;
+  // Imperative automation verbs at the start: the user is telling WorkCrew to act.
+  if (/^(open|launch|start|go to|navigate to|visit|sign ?in|log ?in|log into|search for|download|upload|play|pause|click|fill|select|book|order|buy|reserve|post|publish|reply to|forward|organi[sz]e|tidy|sort|rename|move|copy|scroll|browse|add to cart|check out)\b/.test(t)) {
+    return true;
+  }
+  // A known app or site paired with an action verb anywhere in the sentence.
+  if (
+    /\b(tiktok|youtube|gmail|outlook|excel|word|powerpoint|spotify|whatsapp|instagram|twitter|amazon|netflix|linkedin|facebook|reddit|notion|slack|discord)\b/.test(t) &&
+    /\b(open|play|search|post|message|send|go|sign|log|find|watch|download|like|follow|comment)\b/.test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function errorMessage(error: unknown): string {
   let message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   message = message
@@ -371,6 +400,16 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
   }
 
   function send(text: string, attachments: AttachmentRef[]) {
+    // If the message is a request to act on the computer (and has no attachments
+    // to reason over), hand it to the automation engine and open the Automation
+    // view so the user sees it run. Otherwise answer it in chat.
+    if (attachments.length === 0 && !runner.running && looksLikeAutomation(text)) {
+      setAutomationSeed(text);
+      setView("automation");
+      setAccountOpen(false);
+      void runner.run(text, model, "Task");
+      return;
+    }
     void chat.send({ text, model, attachments });
   }
 
