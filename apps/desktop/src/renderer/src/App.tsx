@@ -468,6 +468,17 @@ export default function App() {
 
   useEffect(() => { void refresh(); }, []);
 
+  // After paying in the external browser, the user returns to this window. Re-run
+  // the entitlement check on focus while on the paywall so a completed checkout
+  // moves them into the workspace without a manual restart.
+  useEffect(() => {
+    function onFocus() {
+      if (phase === "paywall") void refresh();
+    }
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [phase]);
+
   const loadingMessage = useMemo(() => fatal || "Starting WorkCrew securely...", [fatal]);
   if (phase === "loading" || !info) return <main className="loading-shell"><Brand /><div className="loading-line" /><p>{loadingMessage}</p>{fatal && <button className="secondary" onClick={() => { setFatal(""); void refresh(); }}>Try again</button>}</main>;
   if (phase === "auth") return <AuthScreen onReady={refresh} />;

@@ -229,12 +229,26 @@ function createWindow(): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle("app:info", () => ({
-    name: APP_NAME,
-    version: app.getVersion(),
-    authMode: process.env.AUTH_MODE ?? "local",
-    billingMode: process.env.BILLING_MODE ?? "simulated"
-  }));
+  // app:info reports the auth and billing modes of the BACKEND the app is
+  // pointed at (not this PC's local env), so the paywall renders the correct
+  // flow: real Stripe checkout against a stripe-mode backend, or test activation
+  // against a simulated-mode one. Falls back to local env if the backend is
+  // unreachable.
+  ipcMain.handle("app:info", async () => {
+    let authMode = process.env.AUTH_MODE ?? "local";
+    let billingMode = process.env.BILLING_MODE ?? "simulated";
+    try {
+      const response = await fetch(`${getBackendUrl()}/health`, { signal: AbortSignal.timeout(8_000) });
+      if (response.ok) {
+        const health = (await response.json()) as { authMode?: string; billingMode?: string };
+        if (health.authMode) authMode = health.authMode;
+        if (health.billingMode) billingMode = health.billingMode;
+      }
+    } catch {
+      // Backend unreachable; keep the local-env fallback so the app still loads.
+    }
+    return { name: APP_NAME, version: app.getVersion(), authMode, billingMode };
+  });
 
   // Settings: the user-configurable backend URL. get returns the active URL,
   // set validates and persists a new one (taking effect on the next request).
