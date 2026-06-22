@@ -277,7 +277,7 @@ async function submit(attempt){
   if(r.ok){msg.textContent='✓ Your password is updated. Return to WorkCrew and sign in.';msg.className='ok';pw.disabled=true;go.style.display='none';return;}
   if(r.status>=500&&attempt<1){msg.textContent='Working on it...';msg.className='';return submit(attempt+1);}
   var d=await r.json().catch(function(){return {};});
-  if(r.status>=500){msg.textContent='Something went wrong on our side. Please wait a minute and try again.'+((d&&d.detail)?(' ['+d.detail+']'):'');}
+  if(r.status>=500){msg.textContent='Something went wrong on our side. Please wait a minute and try again.';}
   else{msg.textContent=(d&&d.error)||'That link is invalid or has expired. Open the app and request a new one.';}
   msg.className='err';go.disabled=false;
 }
@@ -585,16 +585,9 @@ app.setErrorHandler((error, request, reply) => {
   const code = error instanceof ZodError ? "INVALID_REQUEST" : String((error as { code?: string }).code ?? "INTERNAL_ERROR");
   if (statusCode >= 500) request.log.error({ err: error }, "Request failed");
   else request.log.info({ code, path: request.url }, "Request rejected");
-  // TEMPORARY launch diagnostic: include a short, non-sensitive description of a
-  // 5xx cause so an intermittent fault can be identified from the client. Remove
-  // once the password-reset issue is confirmed resolved.
-  const detail = statusCode >= 500 && error instanceof Error
-    ? `${(error as { code?: string }).code ? (error as { code?: string }).code + ": " : ""}${error.message}`.slice(0, 200)
-    : undefined;
   void reply.code(statusCode).send({
     error: statusCode >= 500 ? "The service could not complete the request" : error instanceof Error ? error.message : "The request was rejected",
     code,
-    detail,
     details: error instanceof ZodError ? error.issues : undefined
   });
 });

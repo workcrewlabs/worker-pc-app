@@ -134,6 +134,20 @@ const localAuthSecret = resolveLocalAuthSecret();
 // Stripe success/cancel pages.
 const publicUrl = (env.WORKCREW_PUBLIC_URL ?? process.env.RENDER_EXTERNAL_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 
+// The backend serves its own browser pages (password reset, email verification,
+// billing result, landing), and those pages POST back to the API from the same
+// origin. The browser sends an Origin header on those POSTs, so the backend must
+// allow its own public origins or it rejects its own pages with a CORS error.
+// This is in addition to any origins set via WORKCREW_ALLOWED_ORIGINS (which is
+// where the desktop app's app://workcrew origin comes from).
+const selfOrigins = [
+  publicUrl,
+  process.env.RENDER_EXTERNAL_URL,
+  "https://workcrew-backend.onrender.com",
+  "https://getworkcrew.com",
+  "https://www.getworkcrew.com"
+].filter((value): value is string => Boolean(value)).map((value) => value.replace(/\/$/, ""));
+
 export const config = {
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
@@ -150,7 +164,10 @@ export const config = {
   authMode: env.AUTH_MODE,
   billingMode: env.BILLING_MODE,
   localAuthSecret,
-  allowedOrigins: new Set(env.WORKCREW_ALLOWED_ORIGINS.split(",").map((item) => item.trim()).filter(Boolean)),
+  allowedOrigins: new Set([
+    ...env.WORKCREW_ALLOWED_ORIGINS.split(",").map((item) => item.trim()).filter(Boolean),
+    ...selfOrigins
+  ]),
   logLevel: env.WORKCREW_LOG_LEVEL,
   supabaseUrl: env.SUPABASE_URL,
   supabaseAnonKey: env.SUPABASE_ANON_KEY,
