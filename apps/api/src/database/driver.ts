@@ -19,6 +19,7 @@ type PgPoolOptions = {
   connectionString?: string;
   max?: number;
   ssl?: boolean | { rejectUnauthorized?: boolean };
+  connectionTimeoutMillis?: number;
 };
 type PgModule = { Pool: new (options: PgPoolOptions) => PgPoolLike };
 
@@ -91,7 +92,10 @@ function createPostgresClient(): DatabaseClient {
         return new Pool({
           connectionString,
           max: 8,
-          ssl: isLocal ? undefined : { rejectUnauthorized: false }
+          ssl: isLocal ? undefined : { rejectUnauthorized: false },
+          // Fail a stuck connection in ten seconds with a clear error instead of
+          // hanging, so a bad URL surfaces in the logs rather than looping.
+          connectionTimeoutMillis: 10_000
         });
       });
     }
