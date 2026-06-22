@@ -33,6 +33,25 @@ export type DbStatement = string | { sql: string; args?: unknown[] };
 export type DbResult = { rows: Record<string, unknown>[]; rowsAffected: number };
 export type DbDialect = "sqlite" | "postgres";
 
+/**
+ * Percent-encode the password inside a Postgres connection string. An
+ * auto-generated database password often contains characters that are
+ * significant in a URL (for example ? # @ : /). Left raw, they corrupt the
+ * parsed connection and the wrong password is sent, which surfaces as
+ * "password authentication failed". Encoding only the password fixes that while
+ * leaving the user, host, port, database, and any query parameters untouched.
+ * A string that does not look like a Postgres URL is returned unchanged.
+ * Exported for direct unit testing.
+ */
+export function normalizePostgresUrl(raw: string): string {
+  const trimmed = raw.trim();
+  // protocol, user (no : @ /), password (greedy to the LAST @), then host/rest.
+  const match = /^(postgres(?:ql)?:\/\/)([^:@/]+):([\s\S]*)@([^@]+)$/.exec(trimmed);
+  if (!match) return trimmed;
+  const [, protocol = "", user = "", password = "", hostAndRest = ""] = match;
+  return `${protocol}${user}:${encodeURIComponent(password)}@${hostAndRest}`;
+}
+
 export interface DatabaseClient {
   readonly dialect: DbDialect;
   execute(statement: DbStatement): Promise<DbResult>;
@@ -82,7 +101,9 @@ function createPostgresClient(): DatabaseClient {
       // A specifier typed as a plain string keeps TypeScript from resolving pg's
       // type declarations at build time; Node resolves the package at runtime.
       const specifier: string = "pg";
-      const connectionString = config.databaseUrl ?? "";
+      // Normalize so a password containing URL-significant characters connects
+      // correctly rather than failing authentication.
+      const connectionString = normalizePostgresUrl(config.databaseUrl ?? "");
       // A hosted Postgres (Supabase) requires TLS. We skip certificate
       // verification because the managed provider terminates TLS with its own CA;
       // the connection is still encrypted. A local Postgres is left plain.
