@@ -83,6 +83,17 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .auth-links button { border: 0; padding: 0; cursor: pointer; background: none; color: #aab2bf; font-size: 12px; }
 .auth-links button:hover { color: var(--lime); }
 .notice { padding: 11px; border: 1px solid #3b444f; border-radius: 8px; color: #cdd2da; background: #181d23; font-size: 13px; }
+/* Auth errors read as a soft red alert, never raw developer text. */
+.notice-error { margin-top: 16px; border-color: rgba(248,113,113,.4); color: #fca5a5; background: rgba(248,113,113,.08); }
+
+/* "Check your inbox" confirmation shown after sign-up or a reset request. */
+.auth-sent { text-align: center; }
+.auth-sent .brand { justify-content: center; margin-bottom: 24px; }
+.auth-check-badge { display: inline-flex; align-items: center; justify-content: center; width: 66px; height: 66px; margin: 4px 0 6px; color: #34d399; }
+.auth-check { width: 66px; height: 66px; }
+.auth-sent h1 { margin: 6px 0 10px; }
+.auth-sent .muted { line-height: 1.55; }
+.auth-hint { margin: 14px 0 22px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 
 .paywall-shell { height: 100%; overflow-y: auto; padding: 28px 48px 44px; background: radial-gradient(circle at 50% -15%, rgba(139,92,246,.14), transparent 35%), var(--bg); }
 .paywall-header { max-width: 1050px; margin: auto; display: flex; justify-content: space-between; align-items: center; }

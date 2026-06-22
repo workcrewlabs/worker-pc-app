@@ -266,14 +266,19 @@ app.get<{ Querystring: { token?: string } }>("/reset", async (request, reply) =>
 <script>
 const token=${JSON.stringify(token)};
 const pw=document.getElementById('pw'),go=document.getElementById('go'),msg=document.getElementById('msg');
+async function submit(attempt){
+  var r=await fetch('/v1/auth/reset-confirm',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:token,password:pw.value})});
+  if(r.ok){msg.textContent='✓ Your password is updated. Return to WorkCrew and sign in.';msg.className='ok';pw.disabled=true;go.style.display='none';return;}
+  if(r.status>=500&&attempt<1){msg.textContent='Working on it...';msg.className='';return submit(attempt+1);}
+  var d=await r.json().catch(function(){return {};});
+  if(r.status>=500){msg.textContent='Something went wrong on our side. Please wait a minute and try again.';}
+  else{msg.textContent=(d&&d.error)||'That link is invalid or has expired. Open the app and request a new one.';}
+  msg.className='err';go.disabled=false;
+}
 go.onclick=async function(){
-  if(pw.value.length<10){msg.textContent='Use at least 10 characters.';msg.className='err';return;}
+  if(pw.value.length<10){msg.textContent='Use a password with at least 10 characters.';msg.className='err';return;}
   go.disabled=true;msg.textContent='Saving...';msg.className='';
-  try{
-    var r=await fetch('/v1/auth/reset-confirm',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:token,password:pw.value})});
-    if(r.ok){msg.textContent='Password updated. Return to WorkCrew and sign in.';msg.className='ok';pw.disabled=true;}
-    else{var d=await r.json().catch(function(){return {};});msg.textContent=(d&&d.error)||'That link is invalid or expired.';msg.className='err';go.disabled=false;}
-  }catch(e){msg.textContent='Something went wrong. Try again.';msg.className='err';go.disabled=false;}
+  try{await submit(0);}catch(e){msg.textContent='Could not reach the server. Check your connection and try again.';msg.className='err';go.disabled=false;}
 };
 </script>`);
 });

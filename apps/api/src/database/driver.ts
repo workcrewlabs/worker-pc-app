@@ -10,16 +10,20 @@ interface PgClientLike {
   query(text: string, values?: unknown[]): Promise<PgQueryResult>;
 }
 interface PgPoolClientLike extends PgClientLike {
-  release(): void;
+  release(destroy?: boolean): void;
 }
 interface PgPoolLike extends PgClientLike {
   connect(): Promise<PgPoolClientLike>;
+  on(event: "error", listener: (error: unknown) => void): void;
 }
 type PgPoolOptions = {
   connectionString?: string;
   max?: number;
   ssl?: boolean | { rejectUnauthorized?: boolean };
   connectionTimeoutMillis?: number;
+  idleTimeoutMillis?: number;
+  keepAlive?: boolean;
+  allowExitOnIdle?: boolean;
 };
 type PgModule = { Pool: new (options: PgPoolOptions) => PgPoolLike };
 
@@ -160,18 +164,43 @@ function createPostgresClient(): DatabaseClient {
       const isLocal = /@(localhost|127\.0\.0\.1|\[::1\])/.test(connectionString);
       poolPromise = import(specifier).then((mod: { default?: PgModule } & PgModule) => {
         const Pool = (mod.default ?? mod).Pool;
-        return new Pool({
+        const pool = new Pool({
           connectionString,
           max: 8,
           ssl: isLocal ? undefined : { rejectUnauthorized: false },
           // Fail a stuck connection in ten seconds with a clear error instead of
           // hanging, so a bad URL surfaces in the logs rather than looping.
-          connectionTimeoutMillis: 10_000
+          connectionTimeoutMillis: 10_000,
+          // Close our own idle connections before the Supabase pooler does (it
+          // drops idle ones after a short while). This stops us from ever picking
+          // a connection the pooler already killed, which is the usual cause of a
+          // sporadic "Connection terminated" failure on an otherwise valid query.
+          idleTimeoutMillis: 30_000,
+          keepAlive: true,
+          allowExitOnIdle: false
         });
+        // An idle pooled connection can be closed by the server at any time. pg
+        // emits that as an 'error' on the pool; without a listener it would crash
+        // the whole process. We log and move on; the next query opens a fresh one.
+        pool.on("error", (error: unknown) => {
+          console.error("[WorkCrew] idle Postgres client error (recovered):", error instanceof Error ? error.message : error);
+        });
+        return pool;
       });
     }
     return poolPromise;
   }
+
+  // A dropped pooled connection surfaces as one of these. The query never ran, so
+  // retrying it once on a fresh connection is safe and transparent.
+  const isTransient = (error: unknown): boolean => {
+    const code = (error as { code?: string })?.code ?? "";
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    return (
+      ["ECONNRESET", "EPIPE", "ETIMEDOUT", "08006", "08003", "08000", "57P01", "57P02", "57P03"].includes(code) ||
+      /connection terminated|server closed the connection|connection closed|terminating connection/i.test(message)
+    );
+  };
 
   const run = async (executor: PgClientLike, statement: DbStatement): Promise<DbResult> => {
     const { sql, args } = statementParts(statement);
@@ -183,22 +212,46 @@ function createPostgresClient(): DatabaseClient {
     dialect: "postgres",
     async execute(statement) {
       const pool = await getPool();
-      return run(pool, statement);
+      try {
+        return await run(pool, statement);
+      } catch (error) {
+        if (!isTransient(error)) throw error;
+        // The pooled connection was dead. pool.query picks a fresh one on retry.
+        console.warn("[WorkCrew] Postgres connection dropped; retrying once on a fresh connection.");
+        return run(pool, statement);
+      }
     },
     async batch(statements) {
       const pool = await getPool();
-      const client = await pool.connect();
+      const runBatch = async (): Promise<DbResult[]> => {
+        const client = await pool.connect();
+        let failed = false;
+        try {
+          await client.query("BEGIN");
+          const results: DbResult[] = [];
+          for (const statement of statements) results.push(await run(client, statement));
+          await client.query("COMMIT");
+          return results;
+        } catch (error) {
+          failed = true;
+          try {
+            await client.query("ROLLBACK");
+          } catch {
+            // The connection itself is gone; nothing to roll back.
+          }
+          throw error;
+        } finally {
+          // Destroy the client when the transaction failed so a possibly dead
+          // connection is not returned to the pool to be handed out again.
+          client.release(failed);
+        }
+      };
       try {
-        await client.query("BEGIN");
-        const results: DbResult[] = [];
-        for (const statement of statements) results.push(await run(client, statement));
-        await client.query("COMMIT");
-        return results;
+        return await runBatch();
       } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        client.release();
+        if (!isTransient(error)) throw error;
+        console.warn("[WorkCrew] Postgres connection dropped mid-transaction; retrying the batch once.");
+        return runBatch();
       }
     }
   };

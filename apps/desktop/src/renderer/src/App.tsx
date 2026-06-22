@@ -45,8 +45,29 @@ const EMPTY_ENTITLEMENT: SubscriptionState = {
   reservedMicrodollars: 0
 };
 
+// Turn any raw error into one plain sentence a non-technical person can act on.
+// Electron wraps anything thrown across the process boundary as
+//   "Error invoking remote method 'channel': Error: <real message>"
+// so we strip that wrapper and any leading "SomethingError:", then translate the
+// few technical cases (network, timeout, server fault) into friendly language.
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong";
+  let message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  message = message
+    .replace(/^Error invoking remote method '[^']*':\s*/i, "")
+    .replace(/^[A-Za-z]*Error:\s*/, "")
+    .trim();
+
+  if (!message) return "Something went wrong. Please try again.";
+  if (/abort|timed? ?out|ETIMEDOUT/i.test(message)) {
+    return "The connection timed out. Check your internet and try again.";
+  }
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|network|failed to fetch/i.test(message)) {
+    return "Could not reach WorkCrew. Check your internet connection and try again.";
+  }
+  if (/service could not complete|internal server|status 5\d\d/i.test(message)) {
+    return "Something went wrong on our side. Please wait a moment and try again.";
+  }
+  return message;
 }
 
 function LogoMark() {
@@ -75,6 +96,16 @@ function LogoMark() {
   );
 }
 
+// A success checkmark in a soft ring, shown on the "check your inbox" screens.
+function CheckBadge() {
+  return (
+    <svg className="auth-check" viewBox="0 0 52 52" role="img" aria-hidden="true" focusable="false">
+      <circle cx="26" cy="26" r="24" fill="none" stroke="currentColor" strokeWidth="2" opacity="0.35" />
+      <path d="M16 26.5l6.5 6.5L37 18" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div className={`brand ${compact ? "brand-compact" : ""}`} aria-label="WorkCrew">
@@ -86,6 +117,9 @@ function Brand({ compact = false }: { compact?: boolean }) {
 
 function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
   const [mode, setMode] = useState<"signin" | "signup" | "reset">("signin");
+  // When set, we show a "check your inbox" confirmation instead of the form:
+  // "verify" after creating an account, "reset" after asking for a reset link.
+  const [sent, setSent] = useState<null | "verify" | "reset">(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -98,17 +132,13 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
     try {
       if (mode === "reset") {
         await window.workcrew.auth.reset(email);
-        setNotice("A secure password reset link was sent.");
+        setSent("reset");
       } else if (mode === "signup") {
         const result = await window.workcrew.auth.signUp(email, password) as { needsVerification?: boolean };
-        if (result.needsVerification) {
-          // Move straight to the sign-in form with the email and password kept,
-          // so after verifying by email the user just presses Sign in once.
-          setMode("signin");
-          setNotice("Account created. Open the verification link we emailed you, then press Sign in below.");
-        } else {
-          await onReady();
-        }
+        // Show the inbox confirmation. The email and password stay in state so
+        // that after verifying, "Back to sign in" lets the user sign in at once.
+        if (result.needsVerification) setSent("verify");
+        else await onReady();
       } else {
         await window.workcrew.auth.signIn(email, password);
         await onReady();
@@ -118,6 +148,29 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  if (sent) {
+    const isVerify = sent === "verify";
+    return (
+      <main className="auth-shell">
+        <div className="ambient ambient-one" />
+        <div className="ambient ambient-two" />
+        <section className="auth-card auth-sent">
+          <Brand />
+          <span className="auth-check-badge"><CheckBadge /></span>
+          <h1>Check your inbox</h1>
+          <p className="muted">
+            We sent {isVerify ? "a verification link" : "a password reset link"} to <strong>{email || "your email"}</strong>.{" "}
+            {isVerify
+              ? "Open it to confirm your account, then come back here and sign in."
+              : "Open it to choose a new password, then come back here and sign in."}
+          </p>
+          <p className="auth-hint">The email can take a minute to arrive. If you do not see it, check your spam folder.</p>
+          <button className="primary full" onClick={() => { setSent(null); setMode("signin"); setNotice(""); }}>Back to sign in</button>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -134,7 +187,7 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
           {mode !== "reset" && <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "signup" ? "new-password" : "current-password"} minLength={10} required /></label>}
           <button className="primary full" disabled={busy}>{busy ? "Please wait" : mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}</button>
         </form>
-        {notice && <p className="notice">{notice}</p>}
+        {notice && <p className="notice notice-error" role="alert">{notice}</p>}
         <div className="auth-links">
           <button onClick={() => setMode(mode === "signup" ? "signin" : "signup")}>{mode === "signup" ? "Already have an account" : "Create an account"}</button>
           <button onClick={() => setMode(mode === "reset" ? "signin" : "reset")}>{mode === "reset" ? "Back to sign in" : "Forgot password"}</button>
