@@ -60,3 +60,6 @@ services:
         sync: false
       - key: EMAIL_FROM
         sync: false
+      # The landing page download button target (the published installer link).
+      - key: WORKCREW_DOWNLOAD_URL
+        sync: false

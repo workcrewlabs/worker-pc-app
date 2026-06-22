@@ -45,7 +45,10 @@ const envSchema = z.object({
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().default("WorkCrew <onboarding@resend.dev>"),
   WORKCREW_PUBLIC_URL: z.string().optional(),
-  WORKCREW_REQUIRE_EMAIL_VERIFICATION: booleanText
+  WORKCREW_REQUIRE_EMAIL_VERIFICATION: booleanText,
+  // Where the landing page "Download for Windows" button points. Set this to the
+  // installer link once a release is published.
+  WORKCREW_DOWNLOAD_URL: z.string().optional()
 });
 
 const env = envSchema.parse(process.env);
@@ -166,7 +169,8 @@ export const config = {
   // the local default. This makes email links correct in production with no
   // manual entry.
   publicUrl: (env.WORKCREW_PUBLIC_URL ?? process.env.RENDER_EXTERNAL_URL ?? "http://127.0.0.1:8787").replace(/\/$/, ""),
-  requireEmailVerification: env.WORKCREW_REQUIRE_EMAIL_VERIFICATION
+  requireEmailVerification: env.WORKCREW_REQUIRE_EMAIL_VERIFICATION,
+  downloadUrl: env.WORKCREW_DOWNLOAD_URL ?? ""
 } as const;
 
 export const DEV_USER_ID = "00000000-0000-4000-8000-000000000001";

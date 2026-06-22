@@ -40,6 +40,7 @@ import {
 } from "./anthropic.js";
 import { processAndStoreAttachment } from "./attachments.js";
 import { createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
+import { landingPage } from "./landing.js";
 import { getBudgetUsage, getBudgetWindow, planBudget, reserveBudget, settleBudget } from "./budget.js";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
@@ -150,6 +151,15 @@ app.get("/health", async () => ({
   authMode: config.authMode,
   billingMode: config.billingMode
 }));
+
+// Public marketing and download page at the root. Inline style and script need a
+// relaxed per-response CSP, distinct from the strict global one.
+app.get("/", async (_request, reply) => {
+  void reply
+    .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:")
+    .type("text/html")
+    .send(landingPage(config.downloadUrl));
+});
 
 // ---------------------------------------------------------------------------
 // Authentication routes (public, pre-auth). These are never behind the
