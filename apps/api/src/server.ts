@@ -223,8 +223,13 @@ app.post("/v1/auth/reset", async (request) => {
 
 app.post("/v1/auth/reset-confirm", async (request) => {
   const body = resetConfirmInputSchema.parse(request.body);
-  await localAuthProvider.confirmReset(body.token, body.password);
-  return { ok: true };
+  try {
+    await localAuthProvider.confirmReset(body.token, body.password);
+    return { ok: true };
+  } catch (error) {
+    console.error("[WorkCrew] /v1/auth/reset-confirm failed:", error instanceof Error ? error.message : String(error));
+    throw error;
+  }
 });
 
 // A small HTML page served by the backend (opened from an email link). Inline
