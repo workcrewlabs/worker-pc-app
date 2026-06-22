@@ -8,8 +8,9 @@ import { PanelShell } from "./PanelShell";
 // before any change. The runner and its approval modal live in the workspace so
 // a scheduled routine and a typed task share one engine.
 
-export function AutomationPanel({ runner, model, onClose }: { runner: AutomationRunner; model: ModelTier; onClose: () => void }) {
-  const [task, setTask] = useState("");
+export function AutomationPanel({ runner, model, onClose, initialTask = "" }: { runner: AutomationRunner; model: ModelTier; onClose: () => void; initialTask?: string }) {
+  // Seeded from an example prompt the user clicked on the home screen, if any.
+  const [task, setTask] = useState(initialTask);
   const [connecting, setConnecting] = useState(false);
   const [connectNote, setConnectNote] = useState("");
   const [connectError, setConnectError] = useState("");

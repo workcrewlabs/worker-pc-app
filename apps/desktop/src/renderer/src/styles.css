@@ -169,6 +169,15 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .upgrade-card strong, .upgrade-card small { display: block; }
 .upgrade-card strong { font-size: 12px; }
 .upgrade-card small { margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+/* Update pill at the bottom of the sidebar, like the Claude desktop app. It is
+   informational while downloading and becomes a clickable "Restart to update"
+   with a soft green pulse once a new version is ready to install. */
+.update-pill { display: flex; align-items: center; gap: 9px; width: 100%; margin: 0 0 12px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; cursor: default; text-align: left; color: var(--muted); background: var(--panel-2); font-size: 12px; font-weight: 600; }
+.update-pill .update-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: #747e8a; }
+.update-ready { cursor: pointer; color: var(--text); border-color: #4a3d77; background: linear-gradient(180deg, rgba(139,92,246,.2), rgba(139,92,246,.07)); }
+.update-ready:hover { border-color: var(--accent); }
+.update-ready .update-dot { background: #34d399; animation: update-pulse 2s infinite; }
+@keyframes update-pulse { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,.45); } 70% { box-shadow: 0 0 0 6px rgba(52,211,153,0); } 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); } }
 
 /* Attachment chips above the composer tools row. */
 .attachment-row { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 14px 4px; }
@@ -282,6 +291,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .chat-empty { position: relative; z-index: 1; flex: 1; min-height: 0; width: min(720px, calc(100% - 64px)); margin: 0 auto; padding: 24px 0; display: flex; flex-direction: column; justify-content: center; gap: 18px; }
 .greeting { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 0 0 4px; font-family: var(--font-serif); font-size: var(--fs-greeting); font-weight: 500; line-height: 1.2; letter-spacing: normal; }
 .greeting-spark { width: 26px; height: 26px; color: var(--accent-soft); }
+.suggestion-label { margin: 6px 0 -2px; text-align: center; color: var(--muted); font-size: 11px; letter-spacing: .4px; text-transform: uppercase; }
 .suggestion-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .suggestion-chips button { padding: 8px 14px; border: 1px solid var(--line); border-radius: 99px; cursor: pointer; color: var(--muted); background: transparent; font-size: var(--fs-small); }
 .suggestion-chips button:hover { color: var(--text); border-color: var(--muted); background: rgba(255,255,255,.015); }

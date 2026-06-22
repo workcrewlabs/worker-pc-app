@@ -12,13 +12,14 @@ const MODEL_LABELS: Record<ModelTier, string> = {
   opus: "High effort"
 };
 
-// Quick-start suggestions for the empty state. Clicking one sends it as a chat
-// message immediately.
-const SUGGESTIONS = [
-  "Help me write a clear, friendly email",
-  "Explain a tricky topic in plain language",
-  "Plan out a project step by step",
-  "Summarize a document I will paste in"
+// Quick-start automation examples for the empty state. Clicking one opens the
+// Automation panel with the task already filled in, ready to run, so the first
+// thing a new user sees is what WorkCrew can actually do on their PC.
+const AUTOMATION_PROMPTS = [
+  "Open my browser and sign in to a site for me",
+  "Open my email and summarize the unread messages",
+  "Open Excel and tidy up a spreadsheet",
+  "Find a file on my computer and open it"
 ];
 
 function timeGreeting(): string {
@@ -34,7 +35,8 @@ export function ChatView({
   model,
   onModelChange,
   onSend,
-  onStop
+  onStop,
+  onAutomate
 }: {
   turns: ChatTurn[];
   streaming: boolean;
@@ -42,6 +44,7 @@ export function ChatView({
   onModelChange: (model: ModelTier) => void;
   onSend: (text: string, attachments: AttachmentRef[]) => void;
   onStop: () => void;
+  onAutomate: (task: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
@@ -165,10 +168,11 @@ export function ChatView({
       <div className="chat-empty">
         <h1 className="greeting">{timeGreeting()}</h1>
         {composer}
+        <p className="suggestion-label">Try an automation</p>
         <div className="suggestion-chips">
-          {SUGGESTIONS.map((suggestion) => (
-            <button key={suggestion} type="button" onClick={() => submit(suggestion)}>
-              {suggestion}
+          {AUTOMATION_PROMPTS.map((prompt) => (
+            <button key={prompt} type="button" onClick={() => onAutomate(prompt)}>
+              {prompt}
             </button>
           ))}
         </div>

@@ -277,6 +277,11 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
   const [routines, setRoutines] = useState<Routine[]>(() => loadRoutines());
   const [recents, setRecents] = useState<ConversationSummary[]>([]);
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  // An example automation the user clicked on the home screen, carried into the
+  // Automation panel as its starting task.
+  const [automationSeed, setAutomationSeed] = useState("");
+  // Auto-update status, surfaced as a sidebar button when an update is ready.
+  const [update, setUpdate] = useState<{ state: string; version?: string; percent?: number } | null>(null);
 
   const chat = useChatStream();
   const runner = useAutomationRunner();
@@ -321,6 +326,15 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
     void refreshRecents();
   }, []);
 
+  // Subscribe to auto-update status and check once on launch. In a packaged
+  // build this downloads a newer version in the background and reports "ready";
+  // in development it reports "unsupported" and the button never shows.
+  useEffect(() => {
+    const off = window.workcrew.updates.onStatus((status) => setUpdate(status));
+    void window.workcrew.updates.check();
+    return off;
+  }, []);
+
   // Refresh Recents after a conversation finishes its first turn so a brand new
   // chat appears in the sidebar.
   useEffect(() => {
@@ -330,6 +344,13 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
   function startNewChat() {
     chat.reset();
     setView("chat");
+    setAccountOpen(false);
+  }
+
+  // Open the Automation panel with an example task filled in, ready to run.
+  function startAutomation(task: string) {
+    setAutomationSeed(task);
+    setView("automation");
     setAccountOpen(false);
   }
 
@@ -381,7 +402,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
           <button
             className={view === "automation" ? "nav-active" : ""}
             aria-current={view === "automation" ? "page" : undefined}
-            onClick={() => setView("automation")}
+            onClick={() => { setAutomationSeed(""); setView("automation"); }}
           >
             <span>A</span> Automation
           </button>
@@ -435,6 +456,23 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
             </span>
           </button>
         )}
+        {update && (update.state === "ready" || update.state === "downloading" || update.state === "available") && (
+          <button
+            className={`update-pill ${update.state === "ready" ? "update-ready" : ""}`}
+            onClick={() => { if (update.state === "ready") void window.workcrew.updates.install(); }}
+            disabled={update.state !== "ready"}
+            aria-label={update.state === "ready" ? "Restart to update WorkCrew" : "Update in progress"}
+          >
+            <span className="update-dot" aria-hidden="true" />
+            <span>
+              {update.state === "ready"
+                ? "Restart to update"
+                : update.state === "downloading"
+                  ? `Downloading update ${update.percent ?? 0}%`
+                  : "Update available"}
+            </span>
+          </button>
+        )}
         <div className="sidebar-security"><span className="shield">S</span><div><strong>Protected locally</strong><small>Write actions ask first</small></div></div>
         <button className="account-button" onClick={() => setAccountOpen(true)} aria-label="Open account">
           <span className="avatar">A</span>
@@ -465,6 +503,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
           onModelChange={setModel}
           onSend={send}
           onStop={chat.stop}
+          onAutomate={startAutomation}
         />
         <footer>WorkCrew can make mistakes. Check important details.</footer>
       </section>
@@ -476,7 +515,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
           onChange={setPermissions}
         />
       )}
-      {view === "automation" && <AutomationPanel runner={runner} model={model} onClose={() => setView("chat")} />}
+      {view === "automation" && <AutomationPanel runner={runner} model={model} initialTask={automationSeed} onClose={() => setView("chat")} />}
       {view === "routines" && (
         <RoutinesPanel runner={runner} model={model} routines={routines} onChange={setRoutines} onClose={() => setView("chat")} />
       )}
