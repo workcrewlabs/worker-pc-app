@@ -177,7 +177,21 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       created_at_ms BIGINT NOT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS idx_attachments_user
-      ON attachments(user_id, created_at_ms DESC)`
+      ON attachments(user_id, created_at_ms DESC)`,
+    // Single-use email tokens for address verification and password reset. Only
+    // the hash of the opaque token is stored, like refresh tokens. purpose keeps
+    // a verify token from being usable as a reset token and vice versa.
+    `CREATE TABLE IF NOT EXISTS email_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      purpose TEXT NOT NULL CHECK (purpose IN ('verify', 'reset')),
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at_ms BIGINT NOT NULL,
+      used_at_ms BIGINT,
+      created_at_ms BIGINT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_email_tokens_user ON email_tokens(user_id, purpose)`
   ], "write");
 
   // Migrate databases created before the run safety columns existed. SQLite
@@ -570,6 +584,96 @@ export async function revokeSession(sessionId: string): Promise<void> {
   await client.execute({
     sql: "UPDATE sessions SET revoked_at_ms = ? WHERE id = ? AND revoked_at_ms IS NULL",
     args: [Date.now(), sessionId]
+  });
+}
+
+/** Revoke every active session for a user, e.g. after a password reset. */
+export async function revokeUserSessions(userId: string): Promise<void> {
+  await client.execute({
+    sql: "UPDATE sessions SET revoked_at_ms = ? WHERE user_id = ? AND revoked_at_ms IS NULL",
+    args: [Date.now(), userId]
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Email tokens (verification and password reset) and user mutations
+// ---------------------------------------------------------------------------
+
+export type EmailTokenRow = {
+  id: string;
+  userId: string;
+  email: string;
+  purpose: "verify" | "reset";
+  tokenHash: string;
+  expiresAtMs: number;
+  usedAtMs: number | null;
+  createdAtMs: number;
+};
+
+function mapEmailToken(row: Record<string, unknown>): EmailTokenRow {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    email: String(row.email),
+    purpose: String(row.purpose) as "verify" | "reset",
+    tokenHash: String(row.token_hash),
+    expiresAtMs: asNumber(row.expires_at_ms),
+    usedAtMs: row.used_at_ms == null ? null : asNumber(row.used_at_ms),
+    createdAtMs: asNumber(row.created_at_ms)
+  };
+}
+
+/** Store a new single-use email token (only its hash is persisted). */
+export async function createEmailToken(input: {
+  id: string;
+  userId: string;
+  email: string;
+  purpose: "verify" | "reset";
+  tokenHash: string;
+  expiresAtMs: number;
+}): Promise<void> {
+  await client.execute({
+    sql: `INSERT INTO email_tokens(id, user_id, email, purpose, token_hash, expires_at_ms, used_at_ms, created_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
+    args: [input.id, input.userId, input.email, input.purpose, input.tokenHash, input.expiresAtMs, Date.now()]
+  });
+}
+
+/** Look up an email token by its hash and purpose, or null. */
+export async function getEmailToken(tokenHash: string, purpose: "verify" | "reset"): Promise<EmailTokenRow | null> {
+  const result = await client.execute({
+    sql: "SELECT * FROM email_tokens WHERE token_hash = ? AND purpose = ? LIMIT 1",
+    args: [tokenHash, purpose]
+  });
+  const row = result.rows[0] as unknown as Record<string, unknown> | undefined;
+  return row ? mapEmailToken(row) : null;
+}
+
+/**
+ * Mark a token consumed only if it was still unused. Returns true when this call
+ * is the one that consumed it, so two concurrent uses cannot both succeed.
+ */
+export async function consumeEmailToken(id: string): Promise<boolean> {
+  const result = await client.execute({
+    sql: "UPDATE email_tokens SET used_at_ms = ? WHERE id = ? AND used_at_ms IS NULL",
+    args: [Date.now(), id]
+  });
+  return result.rowsAffected === 1;
+}
+
+/** Mark a user's email address as verified. */
+export async function setUserEmailVerified(userId: string): Promise<void> {
+  await client.execute({
+    sql: "UPDATE users SET email_verified = 1 WHERE id = ?",
+    args: [userId]
+  });
+}
+
+/** Replace a user's password hash and salt (used by password reset). */
+export async function updateUserPassword(userId: string, passwordHash: string, passwordSalt: string): Promise<void> {
+  await client.execute({
+    sql: "UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?",
+    args: [passwordHash, passwordSalt, userId]
   });
 }
 

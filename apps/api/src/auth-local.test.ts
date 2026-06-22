@@ -22,6 +22,7 @@ describe("local auth provider", () => {
     const email = uniqueEmail();
     const signUp = await localAuthProvider.signUp(email, PASSWORD);
     expect(signUp.needsVerification).toBe(false);
+    if (!signUp.session) throw new Error("expected a session when verification is off");
     expect(signUp.session.email).toBe(email);
     expect(signUp.session.userId).toMatch(/[0-9a-f-]{36}/);
     expect(signUp.session.expiresAtMs).toBeGreaterThan(Date.now());
@@ -66,6 +67,7 @@ describe("local auth provider", () => {
   it("rotates refresh tokens on each refresh", async () => {
     const email = uniqueEmail();
     const { session } = await localAuthProvider.signUp(email, PASSWORD);
+    if (!session) throw new Error("expected a session");
 
     const first = await localAuthProvider.refresh(session.refreshToken);
     expect(first.refreshToken).not.toBe(session.refreshToken);
@@ -79,6 +81,7 @@ describe("local auth provider", () => {
   it("revokes the whole session when a used refresh token is replayed", async () => {
     const email = uniqueEmail();
     const { session } = await localAuthProvider.signUp(email, PASSWORD);
+    if (!session) throw new Error("expected a session");
 
     // Use the original token once to rotate it.
     const rotated = await localAuthProvider.refresh(session.refreshToken);
@@ -101,6 +104,7 @@ describe("local auth provider", () => {
   it("signs out idempotently and blocks further refresh", async () => {
     const email = uniqueEmail();
     const { session } = await localAuthProvider.signUp(email, PASSWORD);
+    if (!session) throw new Error("expected a session");
 
     await localAuthProvider.signOut(session.refreshToken);
     // Second sign-out with the same token is a no-op and does not throw.

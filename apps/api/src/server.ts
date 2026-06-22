@@ -22,10 +22,12 @@ import { authenticate } from "./auth.js";
 import {
   localAuthProvider,
   refreshInputSchema,
+  resetConfirmInputSchema,
   resetInputSchema,
   signInInputSchema,
   signOutInputSchema,
-  signUpInputSchema
+  signUpInputSchema,
+  verifyTokenSchema
 } from "./auth-local.js";
 import { simulatedBillingProvider } from "./billing-simulated.js";
 import {
@@ -181,6 +183,64 @@ app.post("/v1/auth/reset", async (request) => {
   const body = resetInputSchema.parse(request.body);
   await localAuthProvider.reset(body.email);
   return { ok: true };
+});
+
+app.post("/v1/auth/reset-confirm", async (request) => {
+  const body = resetConfirmInputSchema.parse(request.body);
+  await localAuthProvider.confirmReset(body.token, body.password);
+  return { ok: true };
+});
+
+// A small HTML page served by the backend (opened from an email link). Inline
+// style and script are required, so a relaxed per-response CSP overrides the
+// strict global one for just these pages.
+function sendHtml(reply: import("fastify").FastifyReply, title: string, body: string): void {
+  const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#1f1e1d;color:#e8e6e3;font-family:Segoe UI,Arial,sans-serif}
+.card{width:min(420px,92vw);background:#262523;border:1px solid #3a3836;border-radius:16px;padding:28px}
+.brand{color:#a78bfa;font-weight:700;margin-bottom:12px}h1{font-size:20px;margin:0 0 10px}
+p{color:#c9c6c2;line-height:1.6;font-size:14px}
+input{width:100%;box-sizing:border-box;margin:10px 0;padding:12px 14px;border:1px solid #3a3836;border-radius:10px;background:#1f1e1d;color:#e8e6e3;font-size:14px}
+button{width:100%;padding:12px;border:0;border-radius:10px;background:#8b5cf6;color:#fff;font-weight:600;font-size:14px;cursor:pointer}
+.ok{color:#4caf7d}.err{color:#d98a93}</style></head><body><div class="card"><div class="brand">WorkCrew</div>${body}</div></body></html>`;
+  void reply
+    .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'")
+    .type("text/html")
+    .send(page);
+}
+
+app.get<{ Querystring: { token?: string } }>("/v1/auth/verify", async (request, reply) => {
+  const token = typeof request.query.token === "string" ? request.query.token : "";
+  try {
+    verifyTokenSchema.parse({ token });
+    await localAuthProvider.verifyEmail(token);
+    sendHtml(reply, "Email verified", `<h1>Email verified</h1><p class="ok">Your email is confirmed. Return to WorkCrew and sign in.</p>`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "This link is invalid.";
+    sendHtml(reply, "Verification failed", `<h1>Verification failed</h1><p class="err">${message.replace(/[<>&]/g, "")}</p>`);
+  }
+});
+
+app.get<{ Querystring: { token?: string } }>("/reset", async (request, reply) => {
+  const token = typeof request.query.token === "string" ? request.query.token : "";
+  sendHtml(reply, "Reset password", `<h1>Choose a new password</h1>
+<p>Enter a new password with at least 10 characters.</p>
+<input id="pw" type="password" placeholder="New password" autocomplete="new-password">
+<button id="go">Set new password</button>
+<p id="msg"></p>
+<script>
+const token=${JSON.stringify(token)};
+const pw=document.getElementById('pw'),go=document.getElementById('go'),msg=document.getElementById('msg');
+go.onclick=async function(){
+  if(pw.value.length<10){msg.textContent='Use at least 10 characters.';msg.className='err';return;}
+  go.disabled=true;msg.textContent='Saving...';msg.className='';
+  try{
+    var r=await fetch('/v1/auth/reset-confirm',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:token,password:pw.value})});
+    if(r.ok){msg.textContent='Password updated. Return to WorkCrew and sign in.';msg.className='ok';pw.disabled=true;}
+    else{var d=await r.json().catch(function(){return {};});msg.textContent=(d&&d.error)||'That link is invalid or expired.';msg.className='err';go.disabled=false;}
+  }catch(e){msg.textContent='Something went wrong. Try again.';msg.className='err';go.disabled=false;}
+};
+</script>`);
 });
 
 app.get("/v1/entitlement", async (request) => subscriptionState(await authenticate(request)));

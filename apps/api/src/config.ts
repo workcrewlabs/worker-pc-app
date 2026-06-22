@@ -37,7 +37,15 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_HAIKU_MODEL: z.string().default("claude-haiku-4-5-20251001"),
   ANTHROPIC_SONNET_MODEL: z.string().default("claude-sonnet-4-6"),
-  ANTHROPIC_OPUS_MODEL: z.string().default("claude-opus-4-8")
+  ANTHROPIC_OPUS_MODEL: z.string().default("claude-opus-4-8"),
+  // Transactional email (sign-up verification and password reset). When
+  // RESEND_API_KEY is set the backend sends real email; otherwise it logs the
+  // link to the server output so the flow is testable locally. WORKCREW_PUBLIC_URL
+  // is the backend's own public address, used to build verify and reset links.
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().default("WorkCrew <onboarding@resend.dev>"),
+  WORKCREW_PUBLIC_URL: z.string().optional(),
+  WORKCREW_REQUIRE_EMAIL_VERIFICATION: booleanText
 });
 
 const env = envSchema.parse(process.env);
@@ -151,7 +159,14 @@ export const config = {
     haiku: env.ANTHROPIC_HAIKU_MODEL,
     sonnet: env.ANTHROPIC_SONNET_MODEL,
     opus: env.ANTHROPIC_OPUS_MODEL
-  }
+  },
+  resendApiKey: env.RESEND_API_KEY,
+  emailFrom: env.EMAIL_FROM,
+  // Prefer an explicit public URL, then Render's auto-provided service URL, then
+  // the local default. This makes email links correct in production with no
+  // manual entry.
+  publicUrl: (env.WORKCREW_PUBLIC_URL ?? process.env.RENDER_EXTERNAL_URL ?? "http://127.0.0.1:8787").replace(/\/$/, ""),
+  requireEmailVerification: env.WORKCREW_REQUIRE_EMAIL_VERIFICATION
 } as const;
 
 export const DEV_USER_ID = "00000000-0000-4000-8000-000000000001";

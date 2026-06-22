@@ -25,6 +25,9 @@ services:
         value: app://workcrew
       - key: WORKCREW_LOCAL_AUTH_SECRET
         generateValue: true
+      # Require a verified email before sign-in in production.
+      - key: WORKCREW_REQUIRE_EMAIL_VERIFICATION
+        value: "true"
       # Production database is Supabase Postgres. Paste the Supabase Postgres
       # connection URI (it contains the database password). Backend only.
       - key: DATABASE_URL
@@ -50,4 +53,10 @@ services:
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
+        sync: false
+      # Transactional email for verification and password reset. RESEND_API_KEY
+      # is secret; EMAIL_FROM is the verified sender address on your domain.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
         sync: false

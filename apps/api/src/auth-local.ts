@@ -9,14 +9,21 @@ import { promisify } from "node:util";
 import { SignJWT } from "jose";
 import { z } from "zod";
 import { config } from "./config.js";
+import { resetEmailMessage, sendEmail, verifyEmailMessage } from "./email.js";
 import {
+  consumeEmailToken,
+  createEmailToken,
   createSession,
   createUser,
+  getEmailToken,
   getSessionByRefreshToken,
   getUserByEmail,
   getUserById,
   revokeSession,
+  revokeUserSessions,
   rotateRefreshToken,
+  setUserEmailVerified,
+  updateUserPassword,
   type UserRow
 } from "./db.js";
 
@@ -31,6 +38,12 @@ const SCRYPT_KEY_LENGTH = 64;
 const SCRYPT_SALT_BYTES = 16;
 const REFRESH_TOKEN_BYTES = 48;
 
+// Email token sizes and lifetimes. Verification links last a day; reset links
+// last an hour.
+const EMAIL_TOKEN_BYTES = 32;
+const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
 // The exact session shape returned to the client. Mirrored by the desktop half.
 export type Session = {
   accessToken: string;
@@ -43,11 +56,13 @@ export type Session = {
 // The provider contract. A SupabaseAuthProvider can implement the same shape
 // later so the rest of the server does not care which identity backend is live.
 export interface AuthProvider {
-  signUp(email: string, password: string): Promise<{ session: Session; needsVerification: boolean }>;
+  signUp(email: string, password: string): Promise<{ session: Session | null; needsVerification: boolean }>;
   signIn(email: string, password: string): Promise<Session>;
   refresh(refreshToken: string): Promise<Session>;
   signOut(refreshToken: string): Promise<void>;
   reset(email: string): Promise<void>;
+  verifyEmail(token: string): Promise<{ email: string }>;
+  confirmReset(token: string, newPassword: string): Promise<void>;
 }
 
 // Validation lives here so both the provider and the route share one rule set.
@@ -72,6 +87,15 @@ export const signOutInputSchema = z.object({
 
 export const resetInputSchema = z.object({
   email: z.string().trim().email().max(320)
+}).strict();
+
+export const resetConfirmInputSchema = z.object({
+  token: z.string().min(1).max(512),
+  password: z.string().min(10).max(1_024)
+}).strict();
+
+export const verifyTokenSchema = z.object({
+  token: z.string().min(1).max(512)
 }).strict();
 
 function authError(message: string, statusCode: number, code: string): Error {
@@ -106,6 +130,34 @@ function newRefreshToken(): { token: string; hash: string } {
 
 function hashRefreshToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+// An opaque email token (verification or reset). Only its hash is stored.
+function newEmailToken(): { token: string; hash: string } {
+  const token = randomBytes(EMAIL_TOKEN_BYTES).toString("hex");
+  return { token, hash: createHash("sha256").update(token).digest("hex") };
+}
+
+// Create and persist an email token, returning the raw value to put in a link.
+async function issueEmailToken(user: UserRow, purpose: "verify" | "reset", ttlMs: number): Promise<string> {
+  const { token, hash } = newEmailToken();
+  await createEmailToken({
+    id: randomUUID(),
+    userId: user.id,
+    email: user.email,
+    purpose,
+    tokenHash: hash,
+    expiresAtMs: Date.now() + ttlMs
+  });
+  return token;
+}
+
+function verifyLink(token: string): string {
+  return `${config.publicUrl}/v1/auth/verify?token=${token}`;
+}
+
+function resetLink(token: string): string {
+  return `${config.publicUrl}/reset?token=${token}`;
 }
 
 async function signAccessToken(userId: string, email: string, expiresAtMs: number): Promise<string> {
@@ -147,19 +199,22 @@ async function issueSession(user: UserRow): Promise<Session> {
 }
 
 export class LocalAuthProvider implements AuthProvider {
-  async signUp(email: string, password: string): Promise<{ session: Session; needsVerification: boolean }> {
+  async signUp(email: string, password: string): Promise<{ session: Session | null; needsVerification: boolean }> {
     const normalized = normalizeEmail(email);
     const salt = randomBytes(SCRYPT_SALT_BYTES).toString("hex");
     const passwordHash = await hashPassword(password, salt);
     const userId = randomUUID();
+    const requireVerification = config.requireEmailVerification;
 
     try {
-      await createUser({ id: userId, email: normalized, passwordHash, passwordSalt: salt });
+      // When verification is required the account starts unverified and cannot
+      // sign in until the emailed link is opened. Otherwise it is usable at once.
+      await createUser({ id: userId, email: normalized, passwordHash, passwordSalt: salt, emailVerified: !requireVerification });
     } catch (error) {
       const message = error instanceof Error ? error.message.toLowerCase() : "";
-      // The UNIQUE constraint on email surfaces as a constraint error from
-      // libsql. Translate it into the contract EMAIL_IN_USE response.
-      if (message.includes("unique") || message.includes("constraint")) {
+      // The UNIQUE constraint on email surfaces as a constraint error. Translate
+      // it into the contract EMAIL_IN_USE response.
+      if (message.includes("unique") || message.includes("constraint") || message.includes("duplicate")) {
         throw authError("This email is already registered", 409, "EMAIL_IN_USE");
       }
       throw error;
@@ -168,13 +223,25 @@ export class LocalAuthProvider implements AuthProvider {
     const user: UserRow = {
       id: userId,
       email: normalized,
-      emailVerified: false,
+      emailVerified: !requireVerification,
       passwordHash,
       passwordSalt: salt,
       createdAtMs: Date.now()
     };
+
+    if (requireVerification) {
+      const token = await issueEmailToken(user, "verify", VERIFY_TOKEN_TTL_MS);
+      try {
+        await sendEmail(verifyEmailMessage(user.email, verifyLink(token)));
+      } catch (error) {
+        // Do not fail the sign-up if the email send hiccups; the user can ask for
+        // a new link. The error is logged, never the token.
+        console.error("[WorkCrew] verification email failed to send", error instanceof Error ? error.message : error);
+      }
+      return { session: null, needsVerification: true };
+    }
+
     const session = await issueSession(user);
-    // Local mode does not send verification email, so the account is usable now.
     return { session, needsVerification: false };
   }
 
@@ -192,6 +259,11 @@ export class LocalAuthProvider implements AuthProvider {
     const ok = await verifyPassword(password, user.passwordSalt, user.passwordHash);
     if (!ok) {
       throw authError("The email or password is incorrect", 401, "INVALID_CREDENTIALS");
+    }
+
+    // Block sign-in for an unverified address when verification is required.
+    if (config.requireEmailVerification && !user.emailVerified) {
+      throw authError("Please verify your email first. We sent you a verification link.", 403, "EMAIL_NOT_VERIFIED");
     }
 
     return issueSession(user);
@@ -260,10 +332,48 @@ export class LocalAuthProvider implements AuthProvider {
     if (found) await revokeSession(found.session.id);
   }
 
-  async reset(_email: string): Promise<void> {
-    // Local mode is a stub that does not send email. It always resolves so the
-    // caller cannot tell whether the email exists.
-    return;
+  async reset(email: string): Promise<void> {
+    const normalized = normalizeEmail(email);
+    const user = await getUserByEmail(normalized);
+    // Always resolve so the caller cannot tell whether the email exists. Only
+    // send a link when there is actually an account.
+    if (!user) return;
+    const token = await issueEmailToken(user, "reset", RESET_TOKEN_TTL_MS);
+    try {
+      await sendEmail(resetEmailMessage(user.email, resetLink(token)));
+    } catch (error) {
+      console.error("[WorkCrew] reset email failed to send", error instanceof Error ? error.message : error);
+    }
+  }
+
+  // Verify an email address from a link. Single use and time limited.
+  async verifyEmail(rawToken: string): Promise<{ email: string }> {
+    const hash = createHash("sha256").update(rawToken).digest("hex");
+    const token = await getEmailToken(hash, "verify");
+    if (!token || token.usedAtMs != null || token.expiresAtMs <= Date.now()) {
+      throw authError("This verification link is invalid or has expired.", 400, "INVALID_TOKEN");
+    }
+    if (!(await consumeEmailToken(token.id))) {
+      throw authError("This verification link was already used.", 400, "INVALID_TOKEN");
+    }
+    await setUserEmailVerified(token.userId);
+    return { email: token.email };
+  }
+
+  // Set a new password from a reset link, then sign every existing session out.
+  async confirmReset(rawToken: string, newPassword: string): Promise<void> {
+    const hash = createHash("sha256").update(rawToken).digest("hex");
+    const token = await getEmailToken(hash, "reset");
+    if (!token || token.usedAtMs != null || token.expiresAtMs <= Date.now()) {
+      throw authError("This reset link is invalid or has expired.", 400, "INVALID_TOKEN");
+    }
+    if (!(await consumeEmailToken(token.id))) {
+      throw authError("This reset link was already used.", 400, "INVALID_TOKEN");
+    }
+    const salt = randomBytes(SCRYPT_SALT_BYTES).toString("hex");
+    const passwordHash = await hashPassword(newPassword, salt);
+    await updateUserPassword(token.userId, passwordHash, salt);
+    await revokeUserSessions(token.userId);
   }
 }
 
