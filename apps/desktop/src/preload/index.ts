@@ -105,6 +105,16 @@ const workcrew = {
     launchBrowser: (): Promise<{ launched: boolean; message: string }> => ipcRenderer.invoke("automation:launch-browser"),
     stop: () => ipcRenderer.invoke("automation:stop")
   },
+  // On-device voice input. The renderer records the mic and decodes it to 16 kHz
+  // mono samples; the main process transcribes locally and returns the text.
+  dictation: {
+    transcribe: (samples: Float32Array): Promise<string> => ipcRenderer.invoke("dictation:transcribe", samples.buffer),
+    onStatus: (cb: (status: { state: string; progress?: number }) => void): (() => void) => {
+      const listener = (_event: unknown, status: { state: string; progress?: number }): void => cb(status);
+      ipcRenderer.on("dictation:status", listener);
+      return () => ipcRenderer.removeListener("dictation:status", listener);
+    }
+  },
   files: {
     pick: (): Promise<PickedFile[]> => ipcRenderer.invoke("dialog:open-files")
   },

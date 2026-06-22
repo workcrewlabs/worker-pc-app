@@ -15,6 +15,7 @@ import { ApiClient } from "./api-client.js";
 import { AuthVault } from "./auth-vault.js";
 import { BrowserCli } from "./browser-cli.js";
 import { getBackendUrl, setBackendUrl } from "./settings.js";
+import { transcribeSamples } from "./transcription.js";
 import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
 import { WindowsAgent } from "./windows-agent.js";
 
@@ -376,6 +377,8 @@ function registerIpc(): void {
 
   ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));
   ipcMain.handle("automation:windows", (_event, action) => windowsAgent.execute(action));
+  // Voice input: transcribe 16 kHz mono PCM samples sent from the renderer.
+  ipcMain.handle("dictation:transcribe", (_event, buffer: ArrayBuffer) => transcribeSamples(new Float32Array(buffer)));
   ipcMain.handle("automation:launch-browser", () => browserCli.launchBrowser());
   ipcMain.handle("automation:stop", async () => {
     await Promise.allSettled([browserCli.stop(), windowsAgent.stop()]);
@@ -399,8 +402,11 @@ else {
     app.setAppUserModelId("com.workcrew.desktop");
     if (process.defaultApp && process.argv[1]) app.setAsDefaultProtocolClient("workcrew", process.execPath, [process.argv[1]]);
     else app.setAsDefaultProtocolClient("workcrew");
-    session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-    session.defaultSession.setPermissionCheckHandler(() => false);
+    // Deny every web permission except the microphone, which the voice-input
+    // button needs for on-device speech to text. The audio is transcribed locally
+    // and never leaves the machine.
+    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === "media"));
+    session.defaultSession.setPermissionCheckHandler((_webContents, permission) => permission === "media");
     await auth.load();
     console.info("[WorkCrew] secure session loaded");
     registerIpc();

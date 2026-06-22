@@ -9,11 +9,13 @@
     "dev": "cross-env DOTENV_CONFIG_PATH=../../.env electron-vite dev",
     "prebuild": "npm run build -w @workcrew/contracts",
     "build": "electron-vite build",
+    "build:helper": "cd ../../python/windows-agent && py -m PyInstaller --noconfirm workcrew-windows-agent.spec",
     "package": "npm run build && electron-builder --win nsis",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.0.0",
     "@workcrew/contracts": "0.1.0",
     "dotenv": "latest",
     "electron-updater": "^6.3.9",
@@ -39,7 +41,14 @@
     "productName": "WorkCrew",
     "asar": true,
     "files": ["out/**/*", "resources/**/*", "package.json"],
-    "asarUnpack": ["node_modules/playwright-core/**/*"],
+    "asarUnpack": [
+      "node_modules/playwright-core/**/*",
+      "node_modules/onnxruntime-node/**/*",
+      "node_modules/@huggingface/transformers/**/*"
+    ],
+    "extraResources": [
+      { "from": "../../python/windows-agent/dist/workcrew-windows-agent.exe", "to": "windows-agent/workcrew-windows-agent.exe" }
+    ],
     "publish": [{ "provider": "github", "owner": "nazihbizriai-lab", "repo": "worker-pc-app" }],
     "protocols": [{ "name": "WorkCrew", "schemes": ["workcrew"] }],
     "win": {

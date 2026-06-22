@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import type { AttachmentRef, ModelTier } from "@workcrew/contracts";
 import type { ChatTurn } from "../lib/chat";
+import { Dictation } from "../lib/dictation";
 import { MessageList } from "./MessageList";
+
+function MicIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <line x1="12" y1="18" x2="12" y2="21" />
+    </svg>
+  );
+}
 
 // User-facing effort model names. The underlying tiers stay as values; provider
 // and model brand names are never shown to the user.
@@ -50,8 +61,50 @@ export function ChatView({
   const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
   const [uploading, setUploading] = useState(false);
   const [attachError, setAttachError] = useState("");
+  const [dictating, setDictating] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [voiceNote, setVoiceNote] = useState("");
+  const dictationRef = useRef<Dictation | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const hasConversation = turns.length > 0;
+
+  // Show the one-time model setup progress on first voice use.
+  useEffect(() => window.workcrew.dictation.onStatus((status) => {
+    if (status.state === "downloading") setVoiceNote(`Setting up voice ${status.progress ?? 0}%`);
+    else if (status.state === "preparing") setVoiceNote("Setting up voice");
+    else if (status.state === "ready") setVoiceNote("");
+  }), []);
+
+  // Toggle voice input: first tap records, second tap stops and transcribes the
+  // clip on-device, appending the recognized text to whatever is already typed.
+  async function toggleMic() {
+    if (transcribing) return;
+    if (dictating) {
+      setDictating(false);
+      setTranscribing(true);
+      setVoiceNote("Transcribing");
+      try {
+        const text = (await dictationRef.current?.stopAndTranscribe()) ?? "";
+        if (text) setDraft((current) => (current.trim() ? `${current.trim()} ${text}` : text));
+        setVoiceNote("");
+      } catch {
+        setVoiceNote("Voice input failed. Please try again.");
+      } finally {
+        setTranscribing(false);
+        dictationRef.current = null;
+      }
+      return;
+    }
+    try {
+      const dictation = new Dictation();
+      await dictation.start();
+      dictationRef.current = dictation;
+      setDictating(true);
+      setVoiceNote("Listening. Tap the mic again to stop.");
+    } catch {
+      setVoiceNote("Could not access the microphone. Allow mic access and try again.");
+    }
+  }
 
   // Focus the composer when the view first mounts and whenever a streamed turn
   // finishes, so the user can keep typing without reaching for the mouse.
@@ -128,6 +181,7 @@ export function ChatView({
           {attachError && <span className="attach-error">{attachError}</span>}
         </div>
       )}
+      {voiceNote && <div className="voice-note">{voiceNote}</div>}
       <div className="composer-tools">
         <button
           className="tool-button"
@@ -138,6 +192,16 @@ export function ChatView({
           disabled={uploading || streaming}
         >
           {uploading ? "…" : "+"}
+        </button>
+        <button
+          className={`tool-button mic-button ${dictating ? "mic-recording" : ""}`}
+          type="button"
+          title={dictating ? "Stop and add the text" : "Speak your message"}
+          aria-label={dictating ? "Stop and transcribe" : "Speak your message"}
+          onClick={() => void toggleMic()}
+          disabled={transcribing || streaming}
+        >
+          {transcribing ? "…" : <MicIcon />}
         </button>
         <select
           value={model}
