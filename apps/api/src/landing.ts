@@ -3,19 +3,37 @@
 // button, and working Create account / Sign in forms that post to the existing
 // auth endpoints. No provider or vendor names appear anywhere.
 
+// The WorkCrew app icon as inline vector, so it renders crisply at any size and
+// matches the desktop icon exactly: a purple quatrefoil with a plus-shaped
+// cutout on a dark rounded tile. Ids are suffixed so two marks could coexist.
+function brandMark(size: number): string {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="display:block;flex:0 0 auto">
+<defs>
+<linearGradient id="bmTile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#221F2E"/><stop offset="1" stop-color="#17151E"/></linearGradient>
+<linearGradient id="bmMark" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a78bfa"/><stop offset="0.55" stop-color="#8b5cf6"/><stop offset="1" stop-color="#5b21b6"/></linearGradient>
+<mask id="bmPlus"><rect width="512" height="512" fill="white"/><rect x="222" y="150" width="68" height="212" rx="34" fill="black"/><rect x="150" y="222" width="212" height="68" rx="34" fill="black"/></mask>
+</defs>
+<rect x="0" y="0" width="512" height="512" rx="116" fill="url(#bmTile)"/>
+<g mask="url(#bmPlus)" fill="url(#bmMark)" transform="translate(256 256) scale(2.05) translate(-50 -50)">
+<circle cx="50" cy="28" r="22"/><circle cx="50" cy="72" r="22"/><circle cx="28" cy="50" r="22"/><circle cx="72" cy="50" r="22"/><rect x="28" y="28" width="44" height="44" rx="14"/>
+</g>
+</svg>`;
+}
+
 export function landingPage(downloadUrl: string): string {
   const download = downloadUrl && downloadUrl.length > 0 ? downloadUrl : "";
   const downloadAttr = download ? `href="${download}"` : `href="#" data-missing="1"`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>WorkCrew — Put routine work on autopilot</title>
+<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(brandMark(512))}">
+<link rel="apple-touch-icon" href="data:image/svg+xml,${encodeURIComponent(brandMark(512))}">
 <style>
 :root{--bg:#1f1e1d;--panel:#262523;--panel2:#2d2b29;--line:#3a3836;--text:#e8e6e3;--muted:#a8a39d;--accent:#8b5cf6;--accent2:#a78bfa}
 *{box-sizing:border-box}html,body{margin:0}body{background:var(--bg);color:var(--text);font-family:Segoe UI,Arial,sans-serif;line-height:1.5}
 .wrap{max-width:1000px;margin:0 auto;padding:0 22px}
 header{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px}
-.dot{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#a78bfa,#5b21b6)}
 .navbtn{background:none;border:1px solid var(--line);color:var(--text);padding:9px 16px;border-radius:10px;cursor:pointer;font-size:14px;margin-left:8px}
 .navbtn:hover{border-color:var(--accent)}
 .hero{text-align:center;padding:64px 0 28px}
@@ -42,7 +60,7 @@ footer{border-top:1px solid var(--line);padding:22px 0;color:var(--muted);font-s
 </style></head><body>
 <div class="wrap">
   <header>
-    <div class="brand"><span class="dot"></span> WorkCrew</div>
+    <div class="brand">${brandMark(28)} WorkCrew</div>
     <nav>
       <button class="navbtn" onclick="openAuth('signin')">Sign in</button>
       <button class="navbtn" onclick="openAuth('signup')">Sign up</button>
