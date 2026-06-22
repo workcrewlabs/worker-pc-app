@@ -506,15 +506,18 @@ app.post("/v1/chat", async (request, reply) => {
   });
 
   // Stop iterating as soon as the client hangs up so we do not keep spending on
-  // a stream nobody is reading.
+  // a stream nobody is reading. The abort signal tears down the upstream model
+  // stream too, so token billing stops, not just the writes to this socket.
   let clientGone = false;
+  const controller = new AbortController();
   const onClose = (): void => {
     clientGone = true;
+    controller.abort();
   };
   reply.raw.on("close", onClose);
 
   try {
-    for await (const frame of streamChat({ userId, subscription, body })) {
+    for await (const frame of streamChat({ userId, subscription, body, signal: controller.signal })) {
       if (clientGone) break;
       reply.raw.write(`data: ${JSON.stringify(frame)}\n\n`);
     }

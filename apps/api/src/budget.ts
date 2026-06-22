@@ -61,7 +61,9 @@ export async function reserveBudget(input: {
   const window = getBudgetWindow(input.subscription.budgetAnchorMs, nowMs);
   const limit = planBudget(input.subscription.plan);
   const id = randomUUID();
-  const result = await client.execute({
+  // The conditional insert only succeeds when the new reservation keeps the
+  // window total within the plan limit. The cap is evaluated by the SUM subquery.
+  const insert = {
     sql: `INSERT INTO usage_ledger(
       id, user_id, run_id, period_start_ms, period_end_ms, model,
       reserved_microdollars, actual_microdollars, status, created_at_ms
@@ -90,9 +92,25 @@ export async function reserveBudget(input: {
       window.endMs,
       limit
     ]
-  });
+  };
 
-  if (result.rowsAffected !== 1) {
+  // On Postgres, two simultaneous reservations could each read the window total
+  // before either commits (READ COMMITTED) and both pass the cap, overspending.
+  // A per-user transaction-scoped advisory lock serializes reservations for one
+  // user so the second sees the first's row. SQLite (tests) has a single writer,
+  // so the plain insert is already safe there.
+  let rowsAffected: number;
+  if (client.dialect === "postgres") {
+    const results = await client.batch([
+      { sql: "SELECT pg_advisory_xact_lock(hashtext(?))", args: [input.subscription.userId] },
+      insert
+    ]);
+    rowsAffected = results[1]?.rowsAffected ?? 0;
+  } else {
+    rowsAffected = (await client.execute(insert)).rowsAffected;
+  }
+
+  if (rowsAffected !== 1) {
     throw Object.assign(new Error("Monthly AI budget exhausted"), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
   }
   return { reservationId: id, window };

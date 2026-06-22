@@ -179,6 +179,9 @@ type StreamChatInput = {
   userId: string;
   subscription: SubscriptionRow;
   body: ChatSend;
+  // Aborted when the client hangs up, so the upstream model stream is torn down
+  // and we stop being billed for tokens nobody will read.
+  signal?: AbortSignal;
 };
 
 /**
@@ -291,12 +294,15 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       // frames, thinking deltas to thinking frames, and citations to citation
       // frames. The final message gives us the full content and real usage.
       const client = new Anthropic({ apiKey: config.anthropicApiKey });
-      const stream = client.messages.stream({
-        model: modelId(tier),
-        max_tokens: MAX_OUTPUT_TOKENS,
-        system: SYSTEM_PROMPT,
-        messages: modelMessages as Anthropic.Messages.MessageParam[]
-      });
+      const stream = client.messages.stream(
+        {
+          model: modelId(tier),
+          max_tokens: MAX_OUTPUT_TOKENS,
+          system: SYSTEM_PROMPT,
+          messages: modelMessages as Anthropic.Messages.MessageParam[]
+        },
+        { signal: input.signal }
+      );
 
       try {
         for await (const event of stream) {
@@ -315,6 +321,13 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
         // Make sure the stream is torn down before surfacing the error so no
         // socket is left open.
         stream.abort();
+        // If the client hung up, this is an expected cancellation, not a fault.
+        // Release the reservation (settle at zero) and stop quietly; nobody is
+        // reading, so there is no error frame to send.
+        if (input.signal?.aborted) {
+          await settleOnce(0);
+          return;
+        }
         throw streamError;
       }
 
