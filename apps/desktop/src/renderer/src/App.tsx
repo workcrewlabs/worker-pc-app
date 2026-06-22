@@ -101,8 +101,14 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
         setNotice("A secure password reset link was sent.");
       } else if (mode === "signup") {
         const result = await window.workcrew.auth.signUp(email, password) as { needsVerification?: boolean };
-        if (result.needsVerification) setNotice("Verify your email, then sign in.");
-        else await onReady();
+        if (result.needsVerification) {
+          // Move straight to the sign-in form with the email and password kept,
+          // so after verifying by email the user just presses Sign in once.
+          setMode("signin");
+          setNotice("Account created. Open the verification link we emailed you, then press Sign in below.");
+        } else {
+          await onReady();
+        }
       } else {
         await window.workcrew.auth.signIn(email, password);
         await onReady();
@@ -210,6 +216,7 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
 function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo; entitlement: SubscriptionState; onSignOut: () => Promise<void>; onUpgrade: () => Promise<void> }) {
   const [model, setModel] = useState<ModelTier>(DEFAULT_CHAT_MODEL);
   const [upgrading, setUpgrading] = useState(false);
+  const [upgradeError, setUpgradeError] = useState("");
   const isUltra = entitlement.plan === "ultra";
   const [view, setView] = useState<PanelView>("chat");
   const [accountOpen, setAccountOpen] = useState(false);
@@ -296,8 +303,13 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
   async function handleUpgrade() {
     if (upgrading) return;
     setUpgrading(true);
+    setUpgradeError("");
     try {
       await onUpgrade();
+    } catch (error) {
+      // Surface the reason instead of failing silently (for example a price that
+      // is not configured, or checkout being unavailable).
+      setUpgradeError(error instanceof Error ? error.message : "The upgrade could not be started.");
     } finally {
       setUpgrading(false);
     }
@@ -392,6 +404,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
             </div>
           </div>
         </header>
+        {upgradeError && <div className="upgrade-error-bar" role="alert">{upgradeError}</div>}
         <ChatView
           turns={chat.turns}
           streaming={chat.streaming}
