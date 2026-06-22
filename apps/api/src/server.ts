@@ -161,6 +161,26 @@ app.get("/", async (_request, reply) => {
     .send(landingPage(config.downloadUrl));
 });
 
+// Stripe redirects the browser here after checkout. Plain web pages (not a
+// workcrew:// deep link), so there is no OS launch error. The desktop re-checks
+// the subscription when the user switches back to it.
+function billingResultPage(reply: import("fastify").FastifyReply, title: string, body: string): void {
+  const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#1f1e1d;color:#e8e6e3;font-family:Segoe UI,Arial,sans-serif}
+.card{width:min(440px,92vw);text-align:center;background:#262523;border:1px solid #3a3836;border-radius:16px;padding:32px}
+.brand{color:#a78bfa;font-weight:700;margin-bottom:12px}h1{font-size:22px;margin:0 0 10px}p{color:#c9c6c2;line-height:1.6}</style></head>
+<body><div class="card"><div class="brand">WorkCrew</div>${body}</div></body></html>`;
+  void reply.header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'").type("text/html").send(page);
+}
+
+app.get("/billing/success", async (_request, reply) => {
+  billingResultPage(reply, "Payment complete", "<h1>You're all set</h1><p>Your subscription is active. Switch back to the WorkCrew app to start, it updates automatically. You can close this tab.</p>");
+});
+
+app.get("/billing/cancel", async (_request, reply) => {
+  billingResultPage(reply, "Checkout canceled", "<h1>Checkout canceled</h1><p>No charge was made. Switch back to the WorkCrew app to try again. You can close this tab.</p>");
+});
+
 // ---------------------------------------------------------------------------
 // Authentication routes (public, pre-auth). These are never behind the
 // entitlement guard. The local provider is real auth; a Supabase provider can

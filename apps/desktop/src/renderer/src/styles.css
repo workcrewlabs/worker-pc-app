@@ -110,7 +110,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .paywall-foot { text-align: center; color: #727b88; font-size: 12px; }
 .error-banner { max-width: 900px; margin: 15px auto; padding: 10px 14px; border: 1px solid #6e3e43; border-radius: 9px; color: #ffc3c3; background: #281619; }
 
-.app-shell { height: 100%; display: grid; grid-template-columns: 250px 1fr; background: var(--bg); }
+.app-shell { height: 100%; display: grid; grid-template-columns: 250px 1fr; grid-template-rows: minmax(0, 1fr); background: var(--bg); }
 /* Sidebar is one luminance step darker than the page (spec 2.2). */
 .sidebar { display: flex; flex-direction: column; padding: 21px 16px 16px; border-right: 1px solid var(--line); background: var(--panel); }
 .sidebar > .brand { padding: 0 8px 22px; }
@@ -134,7 +134,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .signout { margin-left: auto; color: #6f7884; font-size: 10px; }
 
 /* Softened radial glow so the surface reads calm, not lit. */
-.workspace { min-width: 0; display: flex; flex-direction: column; position: relative; background: radial-gradient(circle at 60% 42%, rgba(139,92,246,.03), transparent 30%), var(--bg); }
+.workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; background: radial-gradient(circle at 60% 42%, rgba(139,92,246,.03), transparent 30%), var(--bg); }
 /* Dotted grid kept but barely visible. */
 .workspace::before { content: ""; position: absolute; inset: 72px 0 35px; pointer-events: none; opacity: .05; background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 30px 30px; mask-image: linear-gradient(to bottom, transparent, #000 25%, #000 75%, transparent); }
 .workspace-header { position: relative; z-index: 1; min-height: 66px; display: flex; align-items: center; justify-content: space-between; padding: 12px 25px; border-bottom: 1px solid var(--line); }

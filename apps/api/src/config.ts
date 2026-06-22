@@ -32,8 +32,8 @@ const envSchema = z.object({
   STRIPE_PRO_YEARLY_PRICE_ID: z.string().optional(),
   STRIPE_ULTRA_MONTHLY_PRICE_ID: z.string().optional(),
   STRIPE_ULTRA_YEARLY_PRICE_ID: z.string().optional(),
-  WORKCREW_BILLING_SUCCESS_URL: z.string().default("workcrew://billing/success"),
-  WORKCREW_BILLING_CANCEL_URL: z.string().default("workcrew://billing/cancel"),
+  WORKCREW_BILLING_SUCCESS_URL: z.string().optional(),
+  WORKCREW_BILLING_CANCEL_URL: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_HAIKU_MODEL: z.string().default("claude-haiku-4-5-20251001"),
   ANTHROPIC_SONNET_MODEL: z.string().default("claude-sonnet-4-6"),
@@ -129,6 +129,11 @@ function resolveLocalAuthSecret(): string {
 
 const localAuthSecret = resolveLocalAuthSecret();
 
+// The backend's own public address: an explicit override, then Render's
+// auto-provided URL, then the local default. Used for email links and the
+// Stripe success/cancel pages.
+const publicUrl = (env.WORKCREW_PUBLIC_URL ?? process.env.RENDER_EXTERNAL_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+
 export const config = {
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
@@ -155,8 +160,11 @@ export const config = {
     pro: { month: env.STRIPE_PRO_MONTHLY_PRICE_ID, year: env.STRIPE_PRO_YEARLY_PRICE_ID },
     ultra: { month: env.STRIPE_ULTRA_MONTHLY_PRICE_ID, year: env.STRIPE_ULTRA_YEARLY_PRICE_ID }
   },
-  billingSuccessUrl: env.WORKCREW_BILLING_SUCCESS_URL,
-  billingCancelUrl: env.WORKCREW_BILLING_CANCEL_URL,
+  // After Stripe checkout, send the browser to a normal web page on the backend
+  // (not a workcrew:// deep link, which misfires in development and shows an OS
+  // error). The desktop re-checks entitlement when the user switches back.
+  billingSuccessUrl: env.WORKCREW_BILLING_SUCCESS_URL ?? `${publicUrl}/billing/success`,
+  billingCancelUrl: env.WORKCREW_BILLING_CANCEL_URL ?? `${publicUrl}/billing/cancel`,
   anthropicApiKey: env.ANTHROPIC_API_KEY,
   models: {
     haiku: env.ANTHROPIC_HAIKU_MODEL,
@@ -165,10 +173,7 @@ export const config = {
   },
   resendApiKey: env.RESEND_API_KEY,
   emailFrom: env.EMAIL_FROM,
-  // Prefer an explicit public URL, then Render's auto-provided service URL, then
-  // the local default. This makes email links correct in production with no
-  // manual entry.
-  publicUrl: (env.WORKCREW_PUBLIC_URL ?? process.env.RENDER_EXTERNAL_URL ?? "http://127.0.0.1:8787").replace(/\/$/, ""),
+  publicUrl,
   requireEmailVerification: env.WORKCREW_REQUIRE_EMAIL_VERIFICATION,
   downloadUrl: env.WORKCREW_DOWNLOAD_URL ?? ""
 } as const;
