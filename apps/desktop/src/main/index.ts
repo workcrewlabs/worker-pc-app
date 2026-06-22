@@ -257,7 +257,7 @@ function registerIpc(): void {
 
   // Auto-update: check on demand and install a downloaded update. Both are safe
   // no-ops in an unpackaged (development) build.
-  ipcMain.handle("updates:check", () => checkForUpdates());
+  ipcMain.handle("updates:check", (_event, manual?: boolean) => checkForUpdates(manual === true));
   ipcMain.handle("updates:install", () => installUpdate());
   ipcMain.handle("auth:session", () => auth.getSession());
   ipcMain.handle("auth:sign-in", async (_event, raw) => {

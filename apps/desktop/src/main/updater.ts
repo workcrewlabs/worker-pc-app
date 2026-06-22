@@ -50,10 +50,39 @@ async function getUpdater(): Promise<AutoUpdaterLike | null> {
   return updater;
 }
 
-/** Check for an update now. Returns whether updates are supported in this build. */
-export async function checkForUpdates(): Promise<{ supported: boolean }> {
+// Set while a development preview "update" is pending, so the matching install
+// simulates a restart. Real builds never touch this.
+let devSimulatedReady = false;
+
+// Development preview of the whole update flow so the in-app button can be seen
+// and tried without a packaged build or a real release feed. Only ever runs on a
+// manual check in an unpackaged build.
+function simulateDevUpdate(): void {
+  devSimulatedReady = true;
+  const steps: UpdateStatus[] = [
+    { state: "checking" },
+    { state: "available", version: "0.1.1" },
+    { state: "downloading", percent: 40 },
+    { state: "downloading", percent: 80 },
+    { state: "downloading", percent: 100 },
+    { state: "ready", version: "0.1.1" }
+  ];
+  steps.forEach((status, index) => setTimeout(() => broadcast(status), 600 * (index + 1)));
+}
+
+/**
+ * Check for an update now. Returns whether updates are supported in this build.
+ * `manual` is true when the user clicked Check for updates (vs the quiet startup
+ * check); a manual check in development runs the preview so the button is
+ * testable.
+ */
+export async function checkForUpdates(manual = false): Promise<{ supported: boolean }> {
   const instance = await getUpdater();
   if (!instance) {
+    if (manual && !app.isPackaged) {
+      simulateDevUpdate();
+      return { supported: true };
+    }
     broadcast({ state: "unsupported" });
     return { supported: false };
   }
@@ -68,7 +97,18 @@ export async function checkForUpdates(): Promise<{ supported: boolean }> {
 /** Quit and install a downloaded update. No-op when nothing is ready. */
 export async function installUpdate(): Promise<void> {
   const instance = await getUpdater();
-  if (instance) instance.quitAndInstall();
+  if (instance) {
+    instance.quitAndInstall();
+    return;
+  }
+  // Development preview: there is nothing to install, so reload the windows to
+  // demonstrate the restart-into-the-new-version behavior.
+  if (devSimulatedReady) {
+    devSimulatedReady = false;
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.reload();
+    }
+  }
 }
 
 /** Quietly check shortly after launch in packaged builds. */

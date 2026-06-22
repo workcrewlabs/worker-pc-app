@@ -41,7 +41,7 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
     setChecking(true);
     setUpdate({ state: "checking" });
     try {
-      await window.workcrew.updates.check();
+      await window.workcrew.updates.check(true);
     } finally {
       setChecking(false);
     }

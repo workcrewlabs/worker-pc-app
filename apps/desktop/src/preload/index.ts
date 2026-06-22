@@ -49,7 +49,7 @@ const workcrew = {
     setBackendUrl: (url: string): Promise<string> => ipcRenderer.invoke("settings:set-backend-url", url)
   },
   updates: {
-    check: (): Promise<{ supported: boolean }> => ipcRenderer.invoke("updates:check"),
+    check: (manual?: boolean): Promise<{ supported: boolean }> => ipcRenderer.invoke("updates:check", manual === true),
     install: (): Promise<void> => ipcRenderer.invoke("updates:install"),
     // Subscribe to update status changes. Returns an unsubscribe function.
     onStatus: (cb: (status: UpdateStatus) => void): (() => void) => {

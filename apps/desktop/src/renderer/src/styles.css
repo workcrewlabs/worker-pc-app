@@ -291,9 +291,11 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .chat-empty { position: relative; z-index: 1; flex: 1; min-height: 0; width: min(720px, calc(100% - 64px)); margin: 0 auto; padding: 24px 0; display: flex; flex-direction: column; justify-content: center; gap: 18px; }
 .greeting { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 0 0 4px; font-family: var(--font-serif); font-size: var(--fs-greeting); font-weight: 500; line-height: 1.2; letter-spacing: normal; }
 .greeting-spark { width: 26px; height: 26px; color: var(--accent-soft); }
-.suggestion-label { margin: 6px 0 -2px; text-align: center; color: var(--muted); font-size: 11px; letter-spacing: .4px; text-transform: uppercase; }
-.suggestion-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
-.suggestion-chips button { padding: 8px 14px; border: 1px solid var(--line); border-radius: 99px; cursor: pointer; color: var(--muted); background: transparent; font-size: var(--fs-small); }
+.suggestion-label { margin: 6px 0 2px; text-align: center; color: var(--muted); font-size: 11px; letter-spacing: .4px; text-transform: uppercase; }
+/* A tidy, centered two-by-two block of equal-width prompts, so the group reads
+   as deliberately centered rather than a ragged wrap. */
+.suggestion-chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-content: center; gap: 8px; width: min(640px, 100%); margin: 0 auto; }
+.suggestion-chips button { padding: 9px 14px; border: 1px solid var(--line); border-radius: 99px; cursor: pointer; text-align: center; color: var(--muted); background: transparent; font-size: var(--fs-small); }
 .suggestion-chips button:hover { color: var(--text); border-color: var(--muted); background: rgba(255,255,255,.015); }
 
 /* Active chat: scrolling transcript with the composer docked at the bottom. */
