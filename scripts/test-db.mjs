@@ -38,26 +38,47 @@ console.log("user        =", d ? d[2] : "(could not parse)");
 console.log("host        =", d ? d[4] : "(could not parse)");
 console.log("passwordChars =", d ? d[3].length : 0);
 
-const connectionString = stripSslQueryParams(normalizePostgresUrl(raw));
+const baseString = stripSslQueryParams(normalizePostgresUrl(raw));
 
 const pg = await import("pg");
 const Pool = (pg.default ?? pg).Pool;
-const pool = new Pool({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 12_000 });
+
+// Try the connection as given, then on a network/timeout error try the other
+// Supabase pooler port (5432 session <-> 6543 transaction), since some networks
+// block one but allow the other.
+async function tryConnect(connectionString, portLabel) {
+  const pool = new Pool({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 12_000 });
+  try {
+    const result = await pool.query("select 1 as ok");
+    console.log(`SUCCESS on ${portLabel}: connected and ran a query. ok = ${result.rows[0].ok}`);
+    console.log("=> Your password and string are CORRECT. If Render still fails it is a Render-side value or a temporary Supabase block, not your password.");
+    return "ok";
+  } catch (error) {
+    const code = error.code || "";
+    console.log(`FAILED on ${portLabel}: ${code} - ${error.message}`);
+    if (code === "28P01") return "auth";
+    return "network";
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
 
 console.log("\n--- Trying to connect ---");
-try {
-  const result = await pool.query("select 1 as ok");
-  console.log("SUCCESS: connected and ran a query. ok =", result.rows[0].ok);
-  console.log("=> Your DATABASE_URL is CORRECT. If Render still fails, Render has a different value than this.\n");
-} catch (error) {
-  console.log("FAILED:", error.code || "", "-", error.message);
-  if (error.code === "28P01") {
-    console.log("=> 28P01 means the password in this string does NOT match this Supabase project right now.\n");
-  } else if (error.code === "ENOTFOUND" || error.code === "ETIMEDOUT" || error.code === "ECONNREFUSED" || error.code === "ENETUNREACH") {
-    console.log("=> The host could not be reached from this PC (network/firewall or wrong host).\n");
-  } else {
-    console.log("");
-  }
-} finally {
-  await pool.end().catch(() => {});
+const firstPort = baseString.includes(":6543/") ? "6543" : "5432";
+let outcome = await tryConnect(baseString, `port ${firstPort}`);
+
+if (outcome === "network") {
+  const altString = baseString.includes(":5432/")
+    ? baseString.replace(":5432/", ":6543/")
+    : baseString.replace(":6543/", ":5432/");
+  const altPort = firstPort === "5432" ? "6543" : "5432";
+  console.log(`\n--- Port ${firstPort} was blocked or unreachable; trying port ${altPort} ---`);
+  outcome = await tryConnect(altString, `port ${altPort}`);
+}
+
+console.log("");
+if (outcome === "auth") {
+  console.log("=> 28P01: the database REACHED, but the password in this string does NOT match Supabase right now. Reset once, paste the new generated password here, run again.");
+} else if (outcome === "network") {
+  console.log("=> Both database ports timed out from this PC (your internet blocks them). We cannot test the password from here; we will verify via Render instead.");
 }
