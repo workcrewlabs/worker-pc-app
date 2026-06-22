@@ -376,10 +376,17 @@ export class LocalAuthProvider implements AuthProvider {
     if (!(await consumeEmailToken(token.id))) {
       throw authError("This reset link was already used.", 400, "INVALID_TOKEN");
     }
-    const salt = randomBytes(SCRYPT_SALT_BYTES).toString("hex");
-    const passwordHash = await hashPassword(newPassword, salt);
-    await updateUserPassword(token.userId, passwordHash, salt);
-    await revokeUserSessions(token.userId);
+    try {
+      const salt = randomBytes(SCRYPT_SALT_BYTES).toString("hex");
+      const passwordHash = await hashPassword(newPassword, salt);
+      await updateUserPassword(token.userId, passwordHash, salt);
+      await revokeUserSessions(token.userId);
+    } catch (error) {
+      // Surface the real cause in the server log; the client still gets a clean
+      // 500. This is the step to inspect if a valid reset link ever fails.
+      console.error("[WorkCrew] confirmReset failed after token validation:", error instanceof Error ? error.stack ?? error.message : error);
+      throw error;
+    }
   }
 }
 

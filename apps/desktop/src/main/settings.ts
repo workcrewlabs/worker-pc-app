@@ -11,7 +11,9 @@ type DesktopSettings = {
   backendUrl?: string;
 };
 
-const DEFAULT_BACKEND_URL = "http://127.0.0.1:8787";
+// The production cloud backend. Packaged installs talk to this by default.
+// Development overrides it via the WORKCREW_API_URL environment variable.
+const DEFAULT_BACKEND_URL = "https://workcrew-backend.onrender.com";
 
 let cache: DesktopSettings | null = null;
 

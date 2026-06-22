@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ChatTurn } from "../lib/chat";
+import { Markdown } from "../lib/markdown";
 
 // Renders the conversation transcript. User turns sit in a tinted bubble on the
 // right of the column; assistant turns render as plain serif body text with no
@@ -20,7 +21,7 @@ function AssistantTurn({ turn }: { turn: ChatTurn }) {
     <div className="turn turn-assistant">
       {turn.thinking && turn.thinking.trim().length > 0 && <ThinkingBlock text={turn.thinking} />}
       <div className="assistant-body">
-        {turn.text}
+        <Markdown text={turn.text} />
         {turn.streaming && <span className="stream-cursor" aria-hidden="true" />}
       </div>
       {turn.error && <p className="turn-error">{turn.error}</p>}

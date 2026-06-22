@@ -95,8 +95,16 @@ function shell(title: string, bodyHtml: string): string {
   </body></html>`;
 }
 
+// A centered, block-level call-to-action button on its own line, so it never
+// wraps awkwardly into the surrounding text.
 function button(href: string, label: string): string {
-  return `<a href="${href}" style="display:inline-block;margin:18px 0;padding:12px 22px;background:#8b5cf6;color:#fff;text-decoration:none;border-radius:10px;font-weight:600">${label}</a>`;
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0"><tr><td align="center">
+    <a href="${href}" style="display:inline-block;padding:13px 28px;background:#8b5cf6;color:#ffffff;text-decoration:none;border-radius:10px;font-weight:600;font-size:14px">${label}</a>
+  </td></tr></table>`;
+}
+
+function fallbackLink(link: string): string {
+  return `<p style="margin:0 0 6px;color:#9a948c;font-size:13px">If the button does not work, paste this link into your browser:</p><p style="margin:0;color:#a78bfa;word-break:break-all;font-size:13px">${link}</p>`;
 }
 
 export function verifyEmailMessage(to: string, link: string): EmailMessage {
@@ -105,7 +113,7 @@ export function verifyEmailMessage(to: string, link: string): EmailMessage {
     subject: "Verify your WorkCrew email",
     html: shell(
       "Confirm your email",
-      `Welcome to WorkCrew. Confirm this email address to activate your account.${button(link, "Verify email")}<br>If the button does not work, paste this link into your browser:<br><span style="color:#a78bfa;word-break:break-all">${link}</span><br><br>If you did not create a WorkCrew account, you can ignore this message.`
+      `<p style="margin:0">Welcome to WorkCrew. Confirm this email address to activate your account.</p>${button(link, "Verify email")}${fallbackLink(link)}<p style="margin:18px 0 0;color:#9a948c;font-size:13px">If you did not create a WorkCrew account, you can ignore this message.</p>`
     ),
     text: `Welcome to WorkCrew. Verify your email by opening this link: ${link}`
   };
@@ -117,7 +125,7 @@ export function resetEmailMessage(to: string, link: string): EmailMessage {
     subject: "Reset your WorkCrew password",
     html: shell(
       "Reset your password",
-      `We received a request to reset your WorkCrew password. Choose a new one here.${button(link, "Reset password")}<br>If the button does not work, paste this link into your browser:<br><span style="color:#a78bfa;word-break:break-all">${link}</span><br><br>This link expires in one hour. If you did not request this, you can ignore this message and your password stays the same.`
+      `<p style="margin:0">We received a request to reset your WorkCrew password. Choose a new one here.</p>${button(link, "Reset password")}${fallbackLink(link)}<p style="margin:18px 0 0;color:#9a948c;font-size:13px">This link expires in one hour. If you did not request this, you can ignore this message and your password stays the same.</p>`
     ),
     text: `Reset your WorkCrew password by opening this link (expires in one hour): ${link}`
   };
