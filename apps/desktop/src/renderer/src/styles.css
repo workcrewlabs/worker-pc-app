@@ -231,10 +231,19 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .save-form .routine-schedule select { appearance: none; -webkit-appearance: none; width: auto; min-width: 92px; padding: 9px 30px 9px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background-color: var(--panel-2); background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='13'%20height='13'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%238b94a1'%20stroke-width='2.4'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M6%209l6%206%206-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; font-size: 13px; cursor: pointer; }
 .save-form .routine-schedule select:hover { border-color: var(--muted); }
 .routine-schedule .colon { color: var(--muted); font-weight: 600; }
-/* Typeable hour and minute fields with spinner arrows, sized to content. The
-   two-class selector beats the full-width rule for inputs inside a save form. */
-.save-form .routine-schedule .time-input { width: 64px; padding: 9px 6px 9px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: var(--panel-2); font-size: 13px; text-align: center; }
-.save-form .routine-schedule .time-input:focus { border-color: var(--lime-dark); box-shadow: 0 0 0 3px rgba(139,92,246,.16); outline: none; }
+/* Typeable hour and minute with large, easy-to-click up and down buttons. The
+   field and the buttons sit in one rounded box; the native tiny spinner is
+   hidden in favor of the big custom arrows. */
+.routine-schedule .time-stepper { display: inline-flex; align-items: stretch; height: 40px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); overflow: hidden; }
+.routine-schedule .time-stepper:focus-within { border-color: var(--lime-dark); box-shadow: 0 0 0 3px rgba(139,92,246,.16); }
+.save-form .routine-schedule .time-input { width: 50px; height: 100%; padding: 0 4px; border: 0; border-radius: 0; color: var(--text); background: transparent; font-size: 15px; text-align: center; }
+.save-form .routine-schedule .time-input:focus { outline: none; box-shadow: none; }
+.routine-schedule .time-input::-webkit-inner-spin-button, .routine-schedule .time-input::-webkit-outer-spin-button { appearance: none; -webkit-appearance: none; margin: 0; }
+.routine-schedule .time-steps { display: flex; flex-direction: column; width: 30px; border-left: 1px solid var(--line); }
+.routine-schedule .time-step { flex: 1; min-height: 0; display: grid; place-items: center; border: 0; padding: 0; cursor: pointer; color: var(--muted); background: var(--panel-2); font-size: 8px; line-height: 1; }
+.routine-schedule .time-step:first-child { border-bottom: 1px solid var(--line); }
+.routine-schedule .time-step:hover { color: var(--text); background: #2c2b31; }
+.routine-schedule .time-step:active { background: var(--accent); color: #fff; }
 /* Dark, themed option list for every dropdown, replacing the default light popup. */
 select option { background-color: #201f25; color: var(--text); }
 select option:checked { background-color: var(--panel-2); }

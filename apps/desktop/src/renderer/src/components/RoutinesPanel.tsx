@@ -33,6 +33,31 @@ function deriveRoutineName(task: string): string {
   return short.charAt(0).toUpperCase() + short.slice(1);
 }
 
+// A typeable time field (hour or minute) with large up and down buttons that are
+// easy to click. The arrows wrap around the ends (for example 23 up to 00).
+function TimeStepper({ value, min, max, onChange, label }: { value: number; min: number; max: number; onChange: (value: number) => void; label: string }) {
+  const wrap = (next: number): number => (next > max ? min : next < min ? max : next);
+  const clampTyped = (next: number): number => Math.max(min, Math.min(max, Math.floor(next || 0)));
+  return (
+    <div className="time-stepper">
+      <input
+        type="number"
+        className="time-input"
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        onChange={(event) => onChange(clampTyped(Number(event.target.value)))}
+        aria-label={label}
+      />
+      <div className="time-steps">
+        <button type="button" className="time-step" aria-label={`Increase ${label}`} onClick={() => onChange(wrap(value + 1))}>▲</button>
+        <button type="button" className="time-step" aria-label={`Decrease ${label}`} onClick={() => onChange(wrap(value - 1))}>▼</button>
+      </div>
+    </div>
+  );
+}
+
 export function RoutinesPanel({
   runner,
   model,
@@ -98,27 +123,9 @@ export function RoutinesPanel({
           )}
           {timed && (
             <>
-              <input
-                type="number"
-                className="time-input"
-                min={0}
-                max={23}
-                step={1}
-                value={hour}
-                onChange={(event) => setHour(Math.max(0, Math.min(23, Math.floor(Number(event.target.value) || 0))))}
-                aria-label="Hour"
-              />
+              <TimeStepper value={hour} min={0} max={23} onChange={setHour} label="Hour" />
               <span className="colon">:</span>
-              <input
-                type="number"
-                className="time-input"
-                min={0}
-                max={59}
-                step={1}
-                value={minute}
-                onChange={(event) => setMinute(Math.max(0, Math.min(59, Math.floor(Number(event.target.value) || 0))))}
-                aria-label="Minute"
-              />
+              <TimeStepper value={minute} min={0} max={59} onChange={setMinute} label="Minute" />
             </>
           )}
         </div>
