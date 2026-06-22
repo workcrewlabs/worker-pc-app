@@ -28,17 +28,6 @@ function timeGreeting(): string {
   return "Good evening";
 }
 
-function Sparkle() {
-  return (
-    <svg className="greeting-spark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path
-        d="M12 2c.4 3.6 2.4 5.6 6 6-3.6.4-5.6 2.4-6 6-.4-3.6-2.4-5.6-6-6 3.6-.4 5.6-2.4 6-6Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
-
 export function ChatView({
   turns,
   streaming,
@@ -174,9 +163,7 @@ export function ChatView({
   if (!hasConversation) {
     return (
       <div className="chat-empty">
-        <h1 className="greeting">
-          <Sparkle /> {timeGreeting()}
-        </h1>
+        <h1 className="greeting">{timeGreeting()}</h1>
         {composer}
         <div className="suggestion-chips">
           {SUGGESTIONS.map((suggestion) => (

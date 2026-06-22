@@ -69,6 +69,7 @@ const workcrew = {
     entitlement: (): Promise<SubscriptionState> => ipcRenderer.invoke("api:entitlement"),
     simulateCheckout: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState> => ipcRenderer.invoke("api:simulate", { plan, interval }),
     checkout: (plan: PlanId, interval: BillingInterval) => ipcRenderer.invoke("api:checkout", { plan, interval }),
+    changePlan: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState> => ipcRenderer.invoke("api:change-plan", { plan, interval }),
     portal: () => ipcRenderer.invoke("api:portal"),
     createRun: (task: string, model: ModelTier): Promise<{ runId: string }> => ipcRenderer.invoke("api:create-run", { task, model }),
     nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string }): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result })

@@ -281,6 +281,9 @@ function registerIpc(): void {
     await shell.openExternal(result.url);
     return { opened: true };
   });
+  // Change an existing subscription's plan in place (Pro to Ultra) and return the
+  // updated entitlement, instead of opening a second checkout.
+  ipcMain.handle("api:change-plan", (_event, raw) => api.request("/v1/billing/change-plan", { method: "POST", body: createCheckoutSchema.parse(raw) }));
   ipcMain.handle("api:portal", async () => {
     const result = await api.request<{ url: string }>("/v1/billing/portal", { method: "POST" });
     await shell.openExternal(result.url);

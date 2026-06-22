@@ -502,8 +502,15 @@ export default function App() {
       entitlement={entitlement}
       onSignOut={async () => { await window.workcrew.auth.signOut(); setPhase("auth"); }}
       onUpgrade={async () => {
-        if (info.billingMode === "simulated") setEntitlement(await window.workcrew.api.simulateCheckout("ultra", "year"));
-        else await window.workcrew.api.checkout("ultra", "year");
+        if (info.billingMode === "simulated") {
+          setEntitlement(await window.workcrew.api.simulateCheckout("ultra", "year"));
+        } else if (entitlement.active) {
+          // Already a paying subscriber: switch the existing plan in place (with
+          // proration) instead of opening a second checkout and double charging.
+          setEntitlement(await window.workcrew.api.changePlan("ultra", "year"));
+        } else {
+          await window.workcrew.api.checkout("ultra", "year");
+        }
       }}
     />
   );

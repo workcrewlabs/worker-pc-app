@@ -38,9 +38,16 @@ function identifyPrice(id: string): { plan: PlanId; interval: BillingInterval } 
 export async function createCheckout(userId: string, plan: PlanId, interval: BillingInterval): Promise<string> {
   const client = requireStripe();
   const existing = await getSubscription(userId);
+  const customerId = existing?.stripeCustomerId ?? undefined;
   const session = await client.checkout.sessions.create({
     mode: "subscription",
-    customer: existing?.stripeCustomerId ?? undefined,
+    customer: customerId,
+    // When the customer already exists, Stripe requires permission to update the
+    // name and address on file before it will collect a tax ID or compute tax.
+    // Without this the session creation fails with a "customer_update[name]"
+    // error. For brand new customers Stripe collects these directly, so this is
+    // only set when reusing a customer.
+    ...(customerId ? { customer_update: { name: "auto" as const, address: "auto" as const } } : {}),
     client_reference_id: userId,
     line_items: [{ price: priceId(plan, interval), quantity: 1 }],
     allow_promotion_codes: false,
@@ -65,6 +72,33 @@ export async function createCheckout(userId: string, plan: PlanId, interval: Bil
 
   if (!session.url) throw new Error("Stripe did not return a Checkout URL");
   return session.url;
+}
+
+// Switch an existing active subscription to a different plan or interval (for
+// example Pro to Ultra) in place, with proration, instead of opening a second
+// checkout and creating a duplicate subscription. The webhook also fires, but we
+// synchronize here too so the caller can return the fresh state immediately.
+export async function changePlan(userId: string, plan: PlanId, interval: BillingInterval): Promise<void> {
+  const client = requireStripe();
+  const subscription = await getSubscription(userId);
+  if (!subscription?.stripeSubscriptionId) {
+    throw Object.assign(new Error("No active subscription to change"), { statusCode: 409, code: "NO_SUBSCRIPTION" });
+  }
+  const stripeSub = await client.subscriptions.retrieve(subscription.stripeSubscriptionId);
+  const itemId = stripeSub.items.data[0]?.id;
+  if (!itemId) throw new Error("Subscription has no item to update");
+
+  const updated = await client.subscriptions.update(subscription.stripeSubscriptionId, {
+    items: [{ id: itemId, price: priceId(plan, interval) }],
+    proration_behavior: "create_prorations",
+    payment_behavior: "allow_incomplete",
+    metadata: {
+      workcrew_user_id: userId,
+      workcrew_plan: plan,
+      workcrew_interval: interval
+    }
+  });
+  await synchronizeSubscription(updated);
 }
 
 export async function createPortal(userId: string): Promise<string> {

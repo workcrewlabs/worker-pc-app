@@ -201,10 +201,14 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .routine-schedule { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .routine-schedule select { padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: var(--panel-2); font-size: 13px; }
 .routine-schedule .colon { color: var(--muted); }
-/* Settings: read-only info rows (version, sign in mode, billing mode). */
-.settings-info { margin-top: 18px; }
-.settings-info .record-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+/* Settings: read-only info rows (version, sign in mode, billing mode). Each row
+   is a card with the label on the left and the value on the right, both on a
+   single baseline so the line reads as balanced rather than two mismatched
+   sizes. */
+.settings-info { margin-top: 18px; display: grid; gap: 8px; }
+.settings-info .record-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
 .settings-info .record-sub { color: var(--muted); font-size: var(--fs-small); }
+.settings-info .record-row strong { color: var(--text); font-size: var(--fs-small); font-weight: 600; text-align: right; }
 /* Attachment chips shown above a sent user message, aligned with the bubble. */
 .bubble-attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-bottom: 6px; }
 .workspace-content { position: relative; z-index: 1; width: min(760px, calc(100% - 64px)); margin: auto; padding: 40px 0 22px; }

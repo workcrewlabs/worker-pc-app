@@ -39,7 +39,7 @@ import {
   modelRequestPayload
 } from "./anthropic.js";
 import { processAndStoreAttachment } from "./attachments.js";
-import { createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
+import { changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { landingPage } from "./landing.js";
 import { getBudgetUsage, getBudgetWindow, planBudget, reserveBudget, settleBudget } from "./budget.js";
 import { streamChat } from "./chat.js";
@@ -298,6 +298,16 @@ app.post("/v1/billing/checkout", async (request) => {
   const userId = await authenticate(request);
   const body = createCheckoutSchema.parse(request.body);
   return { url: await createCheckout(userId, body.plan, body.interval) };
+});
+
+// Change the plan of an existing active subscription in place (Pro to Ultra),
+// rather than opening a second checkout. Returns the updated entitlement so the
+// app reflects the new plan immediately.
+app.post("/v1/billing/change-plan", async (request) => {
+  const userId = await authenticate(request);
+  const body = createCheckoutSchema.parse(request.body);
+  await changePlan(userId, body.plan, body.interval);
+  return subscriptionState(userId);
 });
 
 app.post("/v1/billing/portal", async (request) => ({ url: await createPortal(await authenticate(request)) }));
