@@ -1,5 +1,16 @@
+import { randomBytes } from "node:crypto";
 import type { BillingInterval, ModelTier, PlanId } from "@workcrew/contracts";
 import { createDatabaseClient, type DatabaseClient } from "./database/driver.js";
+
+// Referral codes use an unambiguous uppercase alphabet (no O/0, I/1, L) so a
+// code copied from an invite link is easy to read and retype.
+const REFERRAL_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+function newReferralCode(): string {
+  const bytes = randomBytes(8);
+  let code = "";
+  for (let i = 0; i < 8; i += 1) code += REFERRAL_ALPHABET.charAt((bytes[i] ?? 0) % REFERRAL_ALPHABET.length);
+  return code;
+}
 
 export type SubscriptionRow = {
   userId: string;
@@ -11,6 +22,10 @@ export type SubscriptionRow = {
   active: boolean;
   budgetAnchorMs: number;
   currentPeriodEndMs: number;
+  /** Referral bonus earned by this user (added to their monthly budget). Joined
+   * from the users table on read; optional because it is not part of the
+   * writable subscription row (upsert ignores it). */
+  referralBonusMicrodollars?: number;
 };
 
 export type RunRow = {
@@ -119,6 +134,10 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       email_verified INTEGER NOT NULL DEFAULT 0,
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
+      referral_code TEXT,
+      referred_by_code TEXT,
+      referred_credited INTEGER NOT NULL DEFAULT 0,
+      referral_bonus_microdollars BIGINT NOT NULL DEFAULT 0,
       created_at_ms BIGINT NOT NULL
     )`,
     // A login session. Refresh tokens hang off a session so that a single reuse
@@ -216,6 +235,15 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   await addColumnIfMissing(db, "runs", "tokens_cache_read", "BIGINT NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "runs", "tokens_cache_write", "BIGINT NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "runs", "tokens_output", "BIGINT NOT NULL DEFAULT 0");
+  // Referral program columns on existing user rows.
+  await addColumnIfMissing(db, "users", "referral_code", "TEXT");
+  await addColumnIfMissing(db, "users", "referred_by_code", "TEXT");
+  await addColumnIfMissing(db, "users", "referred_credited", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing(db, "users", "referral_bonus_microdollars", "BIGINT NOT NULL DEFAULT 0");
+  // Created after the column migration so it also applies to databases whose
+  // users table predates the referral columns. Multiple NULL codes are allowed
+  // by both SQLite and Postgres, so legacy rows without a code do not collide.
+  await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code)");
 }
 
 async function addColumnIfMissing(db: DatabaseClient, table: string, column: string, definition: string): Promise<void> {
@@ -260,13 +288,18 @@ function mapSubscription(row: Record<string, unknown>): SubscriptionRow {
     status: String(row.status),
     active: asNumber(row.active) === 1,
     budgetAnchorMs: asNumber(row.budget_anchor_ms),
-    currentPeriodEndMs: asNumber(row.current_period_end_ms)
+    currentPeriodEndMs: asNumber(row.current_period_end_ms),
+    referralBonusMicrodollars: asNumber(row.referral_bonus_microdollars)
   };
 }
 
 export async function getSubscription(userId: string): Promise<SubscriptionRow | null> {
+  // Join the user's referral bonus so the effective monthly budget (plan budget
+  // plus earned bonus) is available everywhere a subscription is read.
   const result = await client.execute({
-    sql: "SELECT * FROM subscriptions WHERE user_id = ? LIMIT 1",
+    sql: `SELECT s.*, COALESCE(u.referral_bonus_microdollars, 0) AS referral_bonus_microdollars
+      FROM subscriptions s LEFT JOIN users u ON u.id = s.user_id
+      WHERE s.user_id = ? LIMIT 1`,
     args: [userId]
   });
   const row = result.rows[0];
@@ -422,6 +455,14 @@ export type UserRow = {
   emailVerified: boolean;
   passwordHash: string;
   passwordSalt: string;
+  /** This user's own referral code (null only for legacy rows until assigned). */
+  referralCode: string | null;
+  /** The referral code that brought this user in, if any. */
+  referredByCode: string | null;
+  /** Whether the referrer has already been credited for this user's first payment. */
+  referredCredited: boolean;
+  /** Bonus this user has earned as a referrer, added to their monthly budget. */
+  referralBonusMicrodollars: number;
   createdAtMs: number;
 };
 
@@ -450,6 +491,10 @@ function mapUser(row: Record<string, unknown>): UserRow {
     emailVerified: asNumber(row.email_verified) === 1,
     passwordHash: String(row.password_hash),
     passwordSalt: String(row.password_salt),
+    referralCode: row.referral_code == null ? null : String(row.referral_code),
+    referredByCode: row.referred_by_code == null ? null : String(row.referred_by_code),
+    referredCredited: asNumber(row.referred_credited) === 1,
+    referralBonusMicrodollars: asNumber(row.referral_bonus_microdollars),
     createdAtMs: asNumber(row.created_at_ms)
   };
 }
@@ -487,19 +532,89 @@ export async function createUser(input: {
   passwordHash: string;
   passwordSalt: string;
   emailVerified?: boolean;
+  /** The referral code that brought this user in (already validated by caller). */
+  referredByCode?: string | null;
 }): Promise<void> {
   await client.execute({
-    sql: `INSERT INTO users(id, email, email_verified, password_hash, password_salt, created_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO users(
+        id, email, email_verified, password_hash, password_salt,
+        referral_code, referred_by_code, referred_credited, referral_bonus_microdollars, created_at_ms
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
     args: [
       input.id,
       input.email,
       input.emailVerified ? 1 : 0,
       input.passwordHash,
       input.passwordSalt,
+      newReferralCode(),
+      input.referredByCode ?? null,
       Date.now()
     ]
   });
+}
+
+/** Look up a user by their referral code (used to validate a code at sign-up). */
+export async function getUserByReferralCode(code: string): Promise<UserRow | null> {
+  const result = await client.execute({
+    sql: "SELECT * FROM users WHERE referral_code = ? LIMIT 1",
+    args: [code]
+  });
+  const row = result.rows[0] as unknown as Record<string, unknown> | undefined;
+  return row ? mapUser(row) : null;
+}
+
+/**
+ * Return the user's referral code, assigning one if a legacy row never had it.
+ * The guarded UPDATE plus a re-read makes concurrent calls converge on a single
+ * code rather than racing.
+ */
+export async function ensureReferralCode(userId: string): Promise<string> {
+  const user = await getUserById(userId);
+  if (!user) throw new Error("User not found");
+  if (user.referralCode) return user.referralCode;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const code = newReferralCode();
+    const result = await client.execute({
+      sql: "UPDATE users SET referral_code = ? WHERE id = ? AND referral_code IS NULL",
+      args: [code, userId]
+    });
+    if (result.rowsAffected === 1) return code;
+    const fresh = await getUserById(userId);
+    if (fresh?.referralCode) return fresh.referralCode;
+  }
+  throw new Error("Could not assign a referral code");
+}
+
+/** How many users a referral code has brought in, and how many have paid. */
+export async function countReferrals(code: string): Promise<{ invited: number; credited: number }> {
+  const result = await client.execute({
+    sql: "SELECT COUNT(*) AS invited, COALESCE(SUM(referred_credited), 0) AS credited FROM users WHERE referred_by_code = ?",
+    args: [code]
+  });
+  const row = result.rows[0] as Record<string, unknown> | undefined;
+  return { invited: asNumber(row?.invited ?? 0), credited: asNumber(row?.credited ?? 0) };
+}
+
+/**
+ * Credit the referrer for a user who has now paid. Idempotent: the guarded
+ * UPDATE on referred_credited ensures the bonus is granted at most once per
+ * referred user, even if the activation path fires more than once. Returns true
+ * when this call performed the credit.
+ */
+export async function creditReferrer(userId: string, bonusMicrodollars: number): Promise<boolean> {
+  const user = await getUserById(userId);
+  if (!user || !user.referredByCode || user.referredCredited) return false;
+  const guard = await client.execute({
+    sql: "UPDATE users SET referred_credited = 1 WHERE id = ? AND referred_credited = 0 AND referred_by_code IS NOT NULL",
+    args: [userId]
+  });
+  if (guard.rowsAffected !== 1) return false;
+  await client.execute({
+    sql: "UPDATE users SET referral_bonus_microdollars = referral_bonus_microdollars + ? WHERE referral_code = ?",
+    args: [bonusMicrodollars, user.referredByCode]
+  });
+  return true;
 }
 
 export async function getUserByEmail(email: string): Promise<UserRow | null> {

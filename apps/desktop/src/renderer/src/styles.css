@@ -337,6 +337,19 @@ select option:checked { background-color: var(--panel-2); }
 .plan-option-info span { color: var(--muted); font-size: 12px; }
 .plan-option button { min-width: 92px; padding: 9px 14px; border-radius: 9px; }
 
+/* Invite & earn: sidebar button plus the referral dialog. */
+.invite-button { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; text-align: left; color: var(--text); background: var(--panel-2); }
+.invite-button:hover { border-color: var(--accent); }
+.invite-gift { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 7px; color: var(--accent-soft); background: var(--panel); }
+.invite-button strong { display: block; font-size: 13px; font-weight: 650; }
+.invite-button small { color: var(--muted); font-size: 11px; }
+.invite-link-row { display: flex; gap: 8px; margin: 4px 0 14px; }
+.invite-link { flex: 1; min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: var(--panel); font-size: 13px; }
+.invite-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+.invite-stats > div { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 8px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); }
+.invite-stats strong { font-size: 18px; }
+.invite-stats span { color: var(--muted); font-size: 11px; }
+
 /* Circular loading spinner on an uploading file chip (and the mic while it
    transcribes). */
 .chip-spinner { width: 13px; height: 13px; flex: none; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent-soft); animation: chip-spin .7s linear infinite; }

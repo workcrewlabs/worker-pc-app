@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   PLAN_CATALOG,
+  REFERRAL_BONUS_MICRODOLLARS,
   type AttachmentRef,
   type BillingInterval,
   type ConversationSummary,
@@ -17,6 +18,7 @@ import { RoutinesPanel } from "./components/RoutinesPanel";
 import { PermissionsPanel } from "./components/PermissionsPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { AccountDialog } from "./components/AccountDialog";
+import { InviteDialog } from "./components/InviteDialog";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { useAutomationRunner } from "./hooks/useAutomationRunner";
 import {
@@ -152,6 +154,7 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [referralCode, setReferralCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
 
@@ -164,7 +167,7 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
         await window.workcrew.auth.reset(email);
         setSent("reset");
       } else if (mode === "signup") {
-        const result = await window.workcrew.auth.signUp(email, password) as { needsVerification?: boolean };
+        const result = await window.workcrew.auth.signUp(email, password, referralCode.trim() || undefined) as { needsVerification?: boolean };
         // Show the inbox confirmation. The email and password stay in state so
         // that after verifying, "Back to sign in" lets the user sign in at once.
         if (result.needsVerification) setSent("verify");
@@ -240,6 +243,11 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
                   )}
                 </button>
               </div>
+            </label>
+          )}
+          {mode === "signup" && (
+            <label>Referral code (optional)
+              <input type="text" value={referralCode} onChange={(event) => setReferralCode(event.target.value)} autoComplete="off" maxLength={40} placeholder="Enter a friend's invite code" />
             </label>
           )}
           <button className="primary full" disabled={busy}>{busy ? "Please wait" : mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}</button>
@@ -330,6 +338,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan }: { 
   const isUltra = entitlement.plan === "ultra";
   const [view, setView] = useState<PanelView>("chat");
   const [accountOpen, setAccountOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [permissions, setPermissions] = useState<PermissionState>(() => loadPermissions());
   const [routines, setRoutines] = useState<Routine[]>(() => loadRoutines());
   const [recents, setRecents] = useState<ConversationSummary[]>([]);
@@ -575,6 +584,18 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan }: { 
             </span>
           </button>
         )}
+        <button className="invite-button" onClick={() => setInviteOpen(true)} aria-label="Invite a friend and earn tokens">
+          <span className="invite-gift" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 12 20 22 4 22 4 12" />
+              <rect x="2" y="7" width="20" height="5" />
+              <line x1="12" y1="22" x2="12" y2="7" />
+              <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" />
+              <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
+            </svg>
+          </span>
+          <span><strong>Invite & earn</strong><small>Get {formatTokens(REFERRAL_BONUS_MICRODOLLARS)} tokens per friend</small></span>
+        </button>
         <button
           className={`update-pill ${updateReady ? "update-ready" : ""}`}
           onClick={handleUpdateClick}
@@ -649,6 +670,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan }: { 
           onAdjustPlan={onAdjustPlan}
         />
       )}
+      {inviteOpen && <InviteDialog onClose={() => setInviteOpen(false)} />}
     </main>
   );
 }

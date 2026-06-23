@@ -8,6 +8,7 @@ import type {
   Message,
   ModelTier,
   PlanId,
+  ReferralInfo,
   RunStepResponse,
   SubscriptionState
 } from "@workcrew/contracts";
@@ -65,12 +66,13 @@ const workcrew = {
   auth: {
     session: (): Promise<{ authenticated: boolean; email?: string }> => ipcRenderer.invoke("auth:session"),
     signIn: (email: string, password: string) => ipcRenderer.invoke("auth:sign-in", { email, password }),
-    signUp: (email: string, password: string) => ipcRenderer.invoke("auth:sign-up", { email, password }),
+    signUp: (email: string, password: string, referralCode?: string) => ipcRenderer.invoke("auth:sign-up", { email, password, referralCode }),
     reset: (email: string) => ipcRenderer.invoke("auth:reset", email),
     signOut: () => ipcRenderer.invoke("auth:sign-out")
   },
   api: {
     entitlement: (): Promise<SubscriptionState> => ipcRenderer.invoke("api:entitlement"),
+    referral: (): Promise<ReferralInfo> => ipcRenderer.invoke("api:referral"),
     simulateCheckout: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState> => ipcRenderer.invoke("api:simulate", { plan, interval }),
     checkout: (plan: PlanId, interval: BillingInterval) => ipcRenderer.invoke("api:checkout", { plan, interval }),
     changePlan: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState> => ipcRenderer.invoke("api:change-plan", { plan, interval }),

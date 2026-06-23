@@ -20,6 +20,7 @@ import {
   getSessionByRefreshToken,
   getUserByEmail,
   getUserById,
+  getUserByReferralCode,
   invalidateUnusedEmailTokens,
   revokeSession,
   rotateRefreshToken,
@@ -56,7 +57,7 @@ export type Session = {
 // The provider contract. A SupabaseAuthProvider can implement the same shape
 // later so the rest of the server does not care which identity backend is live.
 export interface AuthProvider {
-  signUp(email: string, password: string): Promise<{ session: Session | null; needsVerification: boolean }>;
+  signUp(email: string, password: string, referralCode?: string): Promise<{ session: Session | null; needsVerification: boolean }>;
   signIn(email: string, password: string): Promise<Session>;
   refresh(refreshToken: string): Promise<Session>;
   signOut(refreshToken: string): Promise<void>;
@@ -69,7 +70,10 @@ export interface AuthProvider {
 // Password minimum length is ten characters per the API contract.
 export const signUpInputSchema = z.object({
   email: z.string().trim().email().max(320),
-  password: z.string().min(10).max(1_024)
+  password: z.string().min(10).max(1_024),
+  // Optional referral code from an invite link. Validated against existing codes
+  // at sign-up; an unknown or self code is ignored, never an error.
+  referralCode: z.string().trim().max(40).optional()
 }).strict();
 
 export const signInInputSchema = z.object({
@@ -201,17 +205,25 @@ async function issueSession(user: UserRow): Promise<Session> {
 }
 
 export class LocalAuthProvider implements AuthProvider {
-  async signUp(email: string, password: string): Promise<{ session: Session | null; needsVerification: boolean }> {
+  async signUp(email: string, password: string, referralCode?: string): Promise<{ session: Session | null; needsVerification: boolean }> {
     const normalized = normalizeEmail(email);
     const salt = randomBytes(SCRYPT_SALT_BYTES).toString("hex");
     const passwordHash = await hashPassword(password, salt);
     const userId = randomUUID();
     const requireVerification = config.requireEmailVerification;
 
+    // Resolve a referral code to the inviter. An unknown code or a self-referral
+    // is ignored rather than rejected, so a bad code never blocks sign-up.
+    let referredByCode: string | null = null;
+    if (referralCode && referralCode.trim()) {
+      const referrer = await getUserByReferralCode(referralCode.trim().toUpperCase());
+      if (referrer && normalizeEmail(referrer.email) !== normalized) referredByCode = referrer.referralCode;
+    }
+
     try {
       // When verification is required the account starts unverified and cannot
       // sign in until the emailed link is opened. Otherwise it is usable at once.
-      await createUser({ id: userId, email: normalized, passwordHash, passwordSalt: salt, emailVerified: !requireVerification });
+      await createUser({ id: userId, email: normalized, passwordHash, passwordSalt: salt, emailVerified: !requireVerification, referredByCode });
     } catch (error) {
       const message = error instanceof Error ? error.message.toLowerCase() : "";
       // The UNIQUE constraint on email surfaces as a constraint error. Translate
@@ -228,6 +240,10 @@ export class LocalAuthProvider implements AuthProvider {
       emailVerified: !requireVerification,
       passwordHash,
       passwordSalt: salt,
+      referralCode: null,
+      referredByCode,
+      referredCredited: false,
+      referralBonusMicrodollars: 0,
       createdAtMs: Date.now()
     };
 

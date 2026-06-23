@@ -93,8 +93,8 @@ export class AuthVault {
     await this.store(payload.session);
   }
 
-  async signUp(email: string, password: string): Promise<{ needsVerification: boolean }> {
-    const payload = await this.request("/v1/auth/sign-up", { email, password });
+  async signUp(email: string, password: string, referralCode?: string): Promise<{ needsVerification: boolean }> {
+    const payload = await this.request("/v1/auth/sign-up", { email, password, referralCode });
     // When verification is required the backend returns no session. Otherwise it
     // returns a session and the user proceeds straight to the paywall.
     if (payload.session) await this.store(payload.session);

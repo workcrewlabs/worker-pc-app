@@ -6,6 +6,25 @@ export const APP_PROTOCOL = "workcrew" as const;
  * the renderer never drift on it. */
 export const SUPPORT_EMAIL = "workcrew.support@gmail.com" as const;
 
+/** Bonus the inviter earns each time someone they referred becomes a paying
+ * subscriber. Stored and displayed in the same internal units as the monthly
+ * budget (shown to the user as "tokens"), so 250,000 displays as "250K tokens".
+ * One place to change the reward. */
+export const REFERRAL_BONUS_MICRODOLLARS = 250_000 as const;
+
+/** The public site a referral link points at. The ?ref=CODE is read by the
+ * sign-up screen so a referred friend can be attributed to the inviter. */
+export const REFERRAL_LINK_BASE = "https://getworkcrew.com" as const;
+
+/** A user's referral standing, returned by GET /v1/referral. */
+export type ReferralInfo = {
+  code: string;
+  link: string;
+  invitedCount: number;
+  creditedCount: number;
+  bonusMicrodollars: number;
+};
+
 export const planIdSchema = z.enum(["pro", "ultra"]);
 export type PlanId = z.infer<typeof planIdSchema>;
 

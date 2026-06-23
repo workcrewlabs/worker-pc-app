@@ -59,7 +59,9 @@ export async function reserveBudget(input: {
 }): Promise<{ reservationId: string; window: BudgetWindow }> {
   const nowMs = input.nowMs ?? Date.now();
   const window = getBudgetWindow(input.subscription.budgetAnchorMs, nowMs);
-  const limit = planBudget(input.subscription.plan);
+  // The effective monthly limit is the plan budget plus any referral bonus the
+  // user has earned (joined onto the subscription row when it is read).
+  const limit = planBudget(input.subscription.plan) + (input.subscription.referralBonusMicrodollars ?? 0);
   const id = randomUUID();
   // The conditional insert only succeeds when the new reservation keeps the
   // window total within the plan limit. The cap is evaluated by the SUM subquery.

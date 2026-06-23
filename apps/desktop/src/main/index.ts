@@ -268,13 +268,14 @@ function registerIpc(): void {
     return auth.getSession();
   });
   ipcMain.handle("auth:sign-up", async (_event, raw) => {
-    const value = credentialsSchema.parse(raw);
-    return auth.signUp(value.email, value.password);
+    const value = credentialsSchema.extend({ referralCode: z.string().max(40).optional() }).parse(raw);
+    return auth.signUp(value.email, value.password, value.referralCode);
   });
   ipcMain.handle("auth:reset", async (_event, email) => auth.sendPasswordReset(z.string().email().max(320).parse(email)));
   ipcMain.handle("auth:sign-out", async () => auth.signOut());
 
   ipcMain.handle("api:entitlement", () => api.request("/v1/entitlement"));
+  ipcMain.handle("api:referral", () => api.request("/v1/referral"));
   // Simulated checkout: writes a Stripe-shaped active entitlement through the
   // backend. Used when BILLING_MODE is "simulated" (no real payment).
   ipcMain.handle("api:simulate", (_event, raw) => api.request("/v1/billing/simulate", { method: "POST", body: createCheckoutSchema.parse(raw) }));
