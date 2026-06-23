@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AutomationAction } from "@workcrew/contracts";
-import { buildRecipe, normalizeTaskKey, parseWindowsSnapshot, stabilizeAction } from "./recipes";
+import { buildRecipe, normalizeTaskKey, parseWindowsSnapshot, recipeFromSteps, stabilizeAction } from "./recipes";
 
 const SNAPSHOT = '1 Button "Create Invoice"\n12 Edit "Quantity"\n13 Button "Save & Close"';
 
@@ -88,5 +88,39 @@ describe("buildRecipe", () => {
 
   it("returns null for an empty run", () => {
     expect(buildRecipe("x", [], "")).toBeNull();
+  });
+});
+
+describe("recipeFromSteps", () => {
+  const steps: AutomationAction[] = [
+    { kind: "windows", command: "connect", windowTitle: "Excel" },
+    { kind: "windows", command: "click", control: "Save" },
+    { kind: "browser", command: "goto", url: "https://example.com" },
+    { kind: "browser", command: "click-selector", target: "#submit" },
+    { kind: "browser", command: "fill-selector", target: "#name", value: "Jo" }
+  ];
+
+  it("builds a named recipe from recorded steps with approval flags", () => {
+    const recipe = recipeFromSteps("Daily timesheet", steps);
+    expect(recipe).not.toBeNull();
+    expect(recipe!.taskKey).toBe("daily timesheet");
+    expect(recipe!.steps).toHaveLength(5);
+    // connect is not a write; the recorded click and selector writes are.
+    expect(recipe!.steps[0]!.needsApproval).toBe(false);
+    expect(recipe!.steps[1]!.needsApproval).toBe(true);
+    expect(recipe!.steps[3]!.needsApproval).toBe(true);
+    expect(recipe!.steps[4]!.needsApproval).toBe(true);
+  });
+
+  it("keeps the recorded selector targets verbatim (replay-stable)", () => {
+    const recipe = recipeFromSteps("x", steps);
+    const click = recipe!.steps[3]!.action as AutomationAction & { target: string };
+    expect(click.target).toBe("#submit");
+  });
+
+  it("returns null when nothing replayable was recorded", () => {
+    expect(recipeFromSteps("x", [])).toBeNull();
+    // A bare browser click on an ephemeral ref is not replayable, so it is dropped.
+    expect(recipeFromSteps("x", [{ kind: "browser", command: "click", target: "e5" }])).toBeNull();
   });
 });

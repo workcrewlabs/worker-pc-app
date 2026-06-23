@@ -79,7 +79,11 @@ function simulateDevUpdate(): void {
 export async function checkForUpdates(manual = false): Promise<{ supported: boolean }> {
   const instance = await getUpdater();
   if (!instance) {
-    if (manual && !app.isPackaged) {
+    // A development run has no real update feed. Only play the simulated flow
+    // when explicitly asked for (WORKCREW_SIMULATE_UPDATE=1), so the normal app
+    // never shows a fake "update found" animation. Without it, a manual check in
+    // development simply reports that this is a development run.
+    if (manual && !app.isPackaged && process.env.WORKCREW_SIMULATE_UPDATE === "1") {
       simulateDevUpdate();
       return { supported: true };
     }
@@ -98,7 +102,10 @@ export async function checkForUpdates(manual = false): Promise<{ supported: bool
 export async function installUpdate(): Promise<void> {
   const instance = await getUpdater();
   if (instance) {
-    instance.quitAndInstall();
+    // (isSilent = true, isForceRunAfter = true): install the downloaded update
+    // silently (no installer wizard) and relaunch the app straight into the new
+    // version, so from the user's view the app simply restarts itself updated.
+    instance.quitAndInstall(true, true);
     return;
   }
   // Development preview: there is nothing to install, so reload the windows to

@@ -99,7 +99,11 @@ export function parseWindowsSnapshot(text: string | null): Map<string, string> {
 
 const WINDOWS_CONTROL_COMMANDS = new Set(["click", "set-text", "type-keys", "get-text"]);
 const WINDOWS_NO_CONTROL_COMMANDS = new Set(["launch", "list-windows", "connect", "inspect"]);
-const BROWSER_REPLAYABLE_COMMANDS = new Set(["open", "goto", "reload", "go-back", "go-forward", "snapshot"]);
+// open/goto/navigation are URL or stateless, and the selector-targeted commands
+// produced by the click recorder carry a stable CSS selector, so all replay
+// deterministically. The plain click/fill (which target an ephemeral e12 ref) do
+// not and are intentionally excluded.
+const BROWSER_REPLAYABLE_COMMANDS = new Set(["open", "goto", "reload", "go-back", "go-forward", "snapshot", "click-selector", "fill-selector"]);
 
 /**
  * Return a replay-stable version of an action, or null if it cannot be replayed
@@ -158,6 +162,32 @@ export function buildRecipe(
   return {
     taskKey: normalizeTaskKey(task),
     task: task.trim(),
+    steps,
+    summary,
+    createdAtMs: now,
+    updatedAtMs: now,
+    runCount: 0
+  };
+}
+
+/**
+ * Build a recipe directly from recorded steps (a click-recording session), keyed
+ * by a name the user gives it. Unlike buildRecipe, the steps are already concrete
+ * actions (no snapshot resolution needed); each is paired with its approval flag
+ * so replay still gates writes. Returns null if there are no replayable steps.
+ */
+export function recipeFromSteps(name: string, actions: AutomationAction[], summary = "Recorded task complete."): Recipe | null {
+  const steps: RecipeStep[] = [];
+  for (const action of actions) {
+    const stable = stabilizeAction(action, null);
+    if (!stable || stable.kind === "finish") continue;
+    steps.push({ action: stable, needsApproval: actionNeedsApproval(stable) });
+  }
+  if (steps.length === 0) return null;
+  const now = Date.now();
+  return {
+    taskKey: normalizeTaskKey(name),
+    task: name.trim(),
     steps,
     summary,
     createdAtMs: now,

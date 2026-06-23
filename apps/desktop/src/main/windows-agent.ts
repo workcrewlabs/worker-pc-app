@@ -161,6 +161,25 @@ export class WindowsAgent {
     return payload.output ?? "Action completed.";
   }
 
+  // Begin recording the user's clicks in desktop apps. The helper polls the mouse
+  // in its own process between this call and recordStop, so this returns at once.
+  async recordStart(): Promise<void> {
+    await this.execute({ kind: "windows", command: "record-start" });
+  }
+
+  // Stop recording and return the captured steps as raw action objects (the
+  // helper returns them as a JSON array). The caller validates them against the
+  // action schema before saving.
+  async recordStop(): Promise<unknown[]> {
+    const output = await this.execute({ kind: "windows", command: "record-stop" });
+    try {
+      const parsed = JSON.parse(output) as unknown;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
   async stop(): Promise<void> {
     this.process?.kill();
     this.reset();

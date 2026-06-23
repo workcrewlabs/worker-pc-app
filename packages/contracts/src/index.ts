@@ -76,7 +76,12 @@ export const browserCommandSchema = z.enum([
   "tab-list",
   "tab-new",
   "tab-select",
-  "tab-close"
+  "tab-close",
+  // Selector-targeted variants used by replay of a recorded click session. Unlike
+  // click/fill (which target an ephemeral snapshot ref like e12), these target a
+  // stable CSS selector captured at record time, so they replay deterministically.
+  "click-selector",
+  "fill-selector"
 ]);
 
 export const browserActionSchema = z.object({
@@ -98,7 +103,11 @@ export const windowsCommandSchema = z.enum([
   "set-text",
   "type-keys",
   "get-text",
-  "screenshot"
+  "screenshot",
+  // Click recording: start begins capturing the user's clicks in desktop apps,
+  // stop ends capture and returns the recorded steps as replayable actions.
+  "record-start",
+  "record-stop"
 ]);
 
 export const windowsActionSchema = z.object({

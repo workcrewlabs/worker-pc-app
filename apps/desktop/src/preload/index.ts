@@ -113,6 +113,12 @@ const workcrew = {
     launchBrowser: (): Promise<{ launched: boolean; message: string }> => ipcRenderer.invoke("automation:launch-browser"),
     stop: () => ipcRenderer.invoke("automation:stop")
   },
+  // Click recording: capture the user's clicks (in the automation browser or in
+  // a desktop app) and get them back as replayable steps to save as a recipe.
+  recorder: {
+    start: (target: "browser" | "windows"): Promise<{ started: boolean }> => ipcRenderer.invoke("recorder:start", target),
+    stop: (target: "browser" | "windows"): Promise<{ steps: AutomationAction[] }> => ipcRenderer.invoke("recorder:stop", target)
+  },
   // On-device voice input. The renderer records the mic and decodes it to 16 kHz
   // mono samples; the main process transcribes locally and returns the text.
   dictation: {

@@ -19,6 +19,14 @@ function PlusIcon() {
   );
 }
 
+function CursorIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 3l6 17 2.5-6.5L20 11z" />
+    </svg>
+  );
+}
+
 function MicIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -90,7 +98,8 @@ export function ChatView({
   onModelChange,
   onSend,
   onStop,
-  onAutomate
+  onAutomate,
+  onRecord
 }: {
   turns: ChatTurn[];
   streaming: boolean;
@@ -99,6 +108,7 @@ export function ChatView({
   onSend: (text: string, attachments: AttachmentRef[]) => void;
   onStop: () => void;
   onAutomate: (task: string) => void;
+  onRecord?: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -292,6 +302,18 @@ export function ChatView({
         >
           <PlusIcon />
         </button>
+        {onRecord && (
+          <button
+            className="tool-button"
+            type="button"
+            title="Record clicks to make a fast automation"
+            aria-label="Record clicks"
+            onClick={onRecord}
+            disabled={streaming}
+          >
+            <CursorIcon />
+          </button>
+        )}
         <button
           className={`tool-button mic-button ${dictating ? "mic-recording" : ""}`}
           type="button"

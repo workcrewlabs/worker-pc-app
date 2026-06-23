@@ -4,11 +4,13 @@ import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 import {
   APP_NAME,
   SUPPORT_EMAIL,
+  automationActionSchema,
   chatSendSchema,
   chatDeltaFrameSchema,
   createCheckoutSchema,
   createRunSchema,
   nextRunStepSchema,
+  type AutomationAction,
   type ChatDeltaFrame
 } from "@workcrew/contracts";
 import { z } from "zod";
@@ -404,6 +406,24 @@ function registerIpc(): void {
   ipcMain.handle("automation:stop", async () => {
     await Promise.allSettled([browserCli.stop(), windowsAgent.stop()]);
     return { stopped: true };
+  });
+
+  // Click recording. Start begins capturing the user's clicks (in the automation
+  // browser or in their desktop apps); stop returns the captured steps as
+  // validated, replayable actions for the renderer to save as a recipe.
+  ipcMain.handle("recorder:start", async (_event, target: "browser" | "windows") => {
+    if (target === "windows") await windowsAgent.recordStart();
+    else await browserCli.recordStart();
+    return { started: true };
+  });
+  ipcMain.handle("recorder:stop", async (_event, target: "browser" | "windows") => {
+    const raw = target === "windows" ? await windowsAgent.recordStop() : await browserCli.recordStop();
+    const steps: AutomationAction[] = [];
+    for (const item of raw) {
+      const parsed = automationActionSchema.safeParse(item);
+      if (parsed.success) steps.push(parsed.data);
+    }
+    return { steps };
   });
 }
 

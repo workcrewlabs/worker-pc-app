@@ -362,5 +362,63 @@ class FindControlTests(unittest.TestCase):
         self.assertEqual(self.window.criteria_calls[0], {"auto_id": "Save & Close"})
 
 
+class BuildRecordStepsTests(unittest.TestCase):
+    def test_emits_connect_then_click_for_resolved_events(self):
+        events = [
+            {"x": 10, "y": 20, "window": "Excel", "name": "Save", "auto_id": "btnSave", "control_type": "Button"},
+        ]
+        steps = agent.build_record_steps(events)
+        self.assertEqual(steps, [
+            {"kind": "windows", "command": "connect", "windowTitle": "Excel"},
+            {"kind": "windows", "command": "click", "control": "Save", "windowTitle": "Excel"},
+        ])
+
+    def test_connect_only_when_window_changes(self):
+        events = [
+            {"window": "Excel", "name": "A", "auto_id": "", "control_type": "Button"},
+            {"window": "Excel", "name": "B", "auto_id": "", "control_type": "Button"},
+            {"window": "Word", "name": "C", "auto_id": "", "control_type": "Button"},
+        ]
+        steps = agent.build_record_steps(events)
+        commands = [(s["command"], s.get("control"), s.get("windowTitle")) for s in steps]
+        self.assertEqual(commands, [
+            ("connect", None, "Excel"),
+            ("click", "A", "Excel"),
+            ("click", "B", "Excel"),
+            ("connect", None, "Word"),
+            ("click", "C", "Word"),
+        ])
+
+    def test_drops_unresolved_clicks(self):
+        # A click that resolved to no name and no automation id is not replayable
+        # and must be dropped rather than recorded as a coordinate.
+        events = [
+            {"x": 5, "y": 5},
+            {"window": "Excel", "name": "", "auto_id": "", "control_type": "Pane"},
+            {"window": "Excel", "name": "Ok", "auto_id": "", "control_type": "Button"},
+        ]
+        steps = agent.build_record_steps(events)
+        self.assertEqual(steps, [
+            {"kind": "windows", "command": "connect", "windowTitle": "Excel"},
+            {"kind": "windows", "command": "click", "control": "Ok", "windowTitle": "Excel"},
+        ])
+
+    def test_falls_back_to_auto_id_when_unnamed(self):
+        events = [{"window": "App", "name": "", "auto_id": "okButton", "control_type": "Button"}]
+        steps = agent.build_record_steps(events)
+        self.assertEqual(steps[-1]["control"], "okButton")
+
+    def test_empty_input_yields_no_steps(self):
+        self.assertEqual(agent.build_record_steps([]), [])
+
+    def test_recorded_steps_validate_as_actions(self):
+        # Every produced step must pass the same validation the helper applies to
+        # incoming actions, so a recorded macro can be replayed through /action.
+        events = [{"window": "Excel", "name": "Save", "auto_id": "btnSave", "control_type": "Button"}]
+        for step in agent.build_record_steps(events):
+            validated = agent.validate_action(step)
+            self.assertEqual(validated["kind"], "windows")
+
+
 if __name__ == "__main__":
     unittest.main()

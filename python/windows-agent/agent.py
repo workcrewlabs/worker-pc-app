@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hmac
 import json
 import os
@@ -8,6 +9,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,8 @@ ALLOWED_COMMANDS = {
     "type-keys",
     "get-text",
     "screenshot",
+    "record-start",
+    "record-stop",
 }
 
 # Control types the model can actually act on. inspect returns only these, which
@@ -64,6 +68,16 @@ INTERACTABLE_CONTROL_TYPES = frozenset({
 # can act on what it sees and re-inspect after the view changes.
 MAX_INSPECT_CONTROLS = 200
 
+# Click recording. The recorder polls the left mouse button and cursor position
+# rather than installing a low-level Windows hook, so it needs no message pump
+# and no extra dependency (just ctypes from the standard library). On each new
+# press it resolves the UI Automation element under the cursor, so a recorded
+# session replays by control name, never by screen coordinates.
+VK_LBUTTON = 0x01
+RECORD_POLL_SECONDS = 0.02          # ~50 Hz: responsive without busy-spinning.
+RECORD_MAX_EVENTS = 500             # Caps memory and replay length.
+RECORD_MAX_SECONDS = 20 * 60        # Safety stop so a forgotten session ends.
+
 
 class AgentState:
     def __init__(self) -> None:
@@ -73,6 +87,8 @@ class AgentState:
         # concrete selector criteria for that control, so a later "click 12"
         # resolves to the real element. Reset whenever the window changes.
         self.elements: dict[str, dict[str, str]] = {}
+        # The active click recorder, if a record-start is in progress.
+        self.recorder: Any = None
         self.lock = threading.RLock()
 
 
@@ -242,6 +258,120 @@ def build_inspect(infos: list[dict[str, str]]) -> tuple[str, dict[str, dict[str,
     return text, elements
 
 
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def _cursor_point() -> tuple[int, int]:
+    point = _POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(point))  # type: ignore[attr-defined]
+    return int(point.x), int(point.y)
+
+
+def _resolve_element(x: int, y: int) -> dict[str, str] | None:
+    """Resolve the UI Automation element under a screen point to a stable
+    description (window title, control name, automation id, control type). Returns
+    None if nothing usable is there, so an unresolved click is simply dropped from
+    the recording rather than recorded as a fragile coordinate."""
+    try:
+        _, Desktop = _load_pywinauto()
+        element = Desktop(backend="uia").from_point(x, y)
+        info = element.element_info
+        try:
+            window = str(element.top_level_parent().window_text() or "")
+        except Exception:
+            window = ""
+        return {
+            "window": window[:500],
+            "name": str(info.name or "")[:500],
+            "auto_id": str(info.automation_id or "")[:500],
+            "control_type": str(info.control_type or "")[:100],
+        }
+    except Exception:
+        return None
+
+
+class ClickRecorder:
+    """Records the user's left clicks by polling the mouse button and cursor. On
+    each new press it resolves the element under the cursor on a worker thread, so
+    the recording is a list of named controls that can be replayed deterministically.
+
+    The capture loop touches only ctypes and pywinauto, never AgentState, so it
+    needs no lock and cannot deadlock with the request handler."""
+
+    def __init__(self) -> None:
+        self._events: list[dict[str, Any]] = []
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, name="wc-click-recorder", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> list[dict[str, Any]]:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=3)
+        with self._lock:
+            return list(self._events)
+
+    def _loop(self) -> None:
+        started = time.monotonic()
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        # Prime the previous state from the live button so a click already held
+        # when recording begins is not captured as a fresh press.
+        was_down = bool(user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+        while not self._stop.is_set():
+            if time.monotonic() - started > RECORD_MAX_SECONDS:
+                break
+            is_down = bool(user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+            if is_down and not was_down:
+                self._capture(*_cursor_point())
+            was_down = is_down
+            time.sleep(RECORD_POLL_SECONDS)
+
+    def _capture(self, x: int, y: int) -> None:
+        with self._lock:
+            if len(self._events) >= RECORD_MAX_EVENTS:
+                return
+        resolved = _resolve_element(x, y)
+        event: dict[str, Any] = {"x": x, "y": y}
+        if resolved:
+            event.update(resolved)
+        with self._lock:
+            self._events.append(event)
+
+
+def build_record_steps(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Turn recorded click events into replayable Windows automation actions.
+
+    Pure and side-effect free so it can be unit tested without pywinauto or a
+    desktop. A click becomes a step only if its element resolved to a stable name
+    or automation id; unresolved clicks are dropped (replay never uses screen
+    coordinates). A connect step is emitted whenever the target window changes, so
+    replay reconnects before clicking controls that live in a different window.
+    """
+    steps: list[dict[str, Any]] = []
+    current_window: str | None = None
+    for event in events:
+        window = (event.get("window") or "").strip()
+        name = (event.get("name") or "").strip()
+        auto_id = (event.get("auto_id") or "").strip()
+        control = name or auto_id
+        if not control:
+            continue
+        if window and window != current_window:
+            steps.append({"kind": "windows", "command": "connect", "windowTitle": window})
+            current_window = window
+        step: dict[str, Any] = {"kind": "windows", "command": "click", "control": control}
+        if window:
+            step["windowTitle"] = window
+        steps.append(step)
+    return steps
+
+
 def inspect_window() -> str:
     window = require_window()
     infos: list[dict[str, str]] = []
@@ -269,6 +399,22 @@ def execute_action(action: dict[str, Any]) -> str:
         return list_windows()
     if command == "connect":
         return connect_window(require_text(action.get("windowTitle"), "windowTitle"))
+    if command == "record-start":
+        with STATE.lock:
+            if STATE.recorder is not None:
+                return "Recording is already in progress"
+            recorder = ClickRecorder()
+            STATE.recorder = recorder
+        recorder.start()
+        return "Recording started"
+    if command == "record-stop":
+        with STATE.lock:
+            recorder = STATE.recorder
+            STATE.recorder = None
+        if recorder is None:
+            return json.dumps([], ensure_ascii=True)
+        events = recorder.stop()
+        return json.dumps(build_record_steps(events), ensure_ascii=True)
 
     with STATE.lock:
         if command == "inspect":

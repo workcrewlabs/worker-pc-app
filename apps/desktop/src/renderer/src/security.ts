@@ -3,7 +3,7 @@ import type { AutomationAction } from "@workcrew/contracts";
 export function actionNeedsApproval(action: AutomationAction): boolean {
   if (action.kind === "finish") return false;
   if (action.kind === "browser") {
-    return new Set(["click", "fill", "type", "press", "select", "check", "uncheck"]).has(action.command);
+    return new Set(["click", "fill", "type", "press", "select", "check", "uncheck", "click-selector", "fill-selector"]).has(action.command);
   }
   return new Set(["launch", "click", "set-text", "type-keys"]).has(action.command);
 }
