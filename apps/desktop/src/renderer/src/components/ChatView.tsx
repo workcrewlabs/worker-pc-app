@@ -35,7 +35,7 @@ const MODEL_OPTIONS: DropdownOption<ModelTier>[] = [
   { value: "auto", label: "Auto" },
   { value: "haiku", label: "Quick answer" },
   { value: "sonnet", label: "Medium effort" },
-  { value: "opus", label: "High effort" }
+  { value: "opus", label: "High effort", description: "Uses the most tokens" }
 ];
 
 // Quick-start automation examples for the empty state. Clicking one opens the

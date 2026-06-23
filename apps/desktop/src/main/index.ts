@@ -376,11 +376,14 @@ function registerIpc(): void {
     return api.request(`/v1/conversations/${safeId}`, { method: "DELETE" });
   });
 
-  // Contact support: open the user's mail client to the support address. Opening
-  // a mailto goes through the OS, not the sandboxed renderer, so it is handled in
-  // the main process like the other external-link actions.
+  // Contact support: open a Gmail compose window addressed to the support inbox.
+  // Opening an external URL goes through the OS browser, not the sandboxed
+  // renderer, so it is handled here like the other external-link actions. Gmail
+  // is used directly (rather than a mailto) so it works without a configured
+  // desktop mail client.
   ipcMain.handle("support:contact", async () => {
-    await shell.openExternal(`mailto:${SUPPORT_EMAIL}`);
+    const url = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(SUPPORT_EMAIL)}&su=${encodeURIComponent("WorkCrew support")}`;
+    await shell.openExternal(url);
     return { opened: true };
   });
 
