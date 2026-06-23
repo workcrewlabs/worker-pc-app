@@ -75,7 +75,7 @@ MAX_INSPECT_CONTROLS = 200
 # session replays by control name, never by screen coordinates.
 VK_LBUTTON = 0x01
 RECORD_POLL_SECONDS = 0.02          # ~50 Hz: responsive without busy-spinning.
-RECORD_MAX_EVENTS = 500             # Caps memory and replay length.
+RECORD_MAX_EVENTS = 400             # Caps memory; matches the summarize request limit.
 RECORD_MAX_SECONDS = 20 * 60        # Safety stop so a forgotten session ends.
 
 
@@ -344,17 +344,17 @@ class ClickRecorder:
             self._events.append(event)
 
 
-def build_record_steps(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Turn recorded click events into replayable Windows automation actions.
+def build_record_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Turn recorded click events into a readable trace for the model to describe.
 
     Pure and side-effect free so it can be unit tested without pywinauto or a
-    desktop. A click becomes a step only if its element resolved to a stable name
-    or automation id; unresolved clicks are dropped (replay never uses screen
-    coordinates). A connect step is emitted whenever the target window changes, so
-    replay reconnects before clicking controls that live in a different window.
+    desktop. Each click becomes one entry with the window title, the control name
+    (or automation id when unnamed), and the control type. Clicks whose element
+    did not resolve to a name are dropped, and a click identical to the one just
+    before it is collapsed. The trace is descriptive, not replayable steps: the
+    model turns it into a reusable instruction that the automation loop runs.
     """
-    steps: list[dict[str, Any]] = []
-    current_window: str | None = None
+    trace: list[dict[str, Any]] = []
     for event in events:
         window = (event.get("window") or "").strip()
         name = (event.get("name") or "").strip()
@@ -362,14 +362,15 @@ def build_record_steps(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         control = name or auto_id
         if not control:
             continue
-        if window and window != current_window:
-            steps.append({"kind": "windows", "command": "connect", "windowTitle": window})
-            current_window = window
-        step: dict[str, Any] = {"kind": "windows", "command": "click", "control": control}
-        if window:
-            step["windowTitle"] = window
-        steps.append(step)
-    return steps
+        entry = {
+            "window": window,
+            "control": control,
+            "controlType": (event.get("control_type") or "").strip(),
+        }
+        if trace and trace[-1] == entry:
+            continue
+        trace.append(entry)
+    return trace
 
 
 def inspect_window() -> str:
@@ -414,7 +415,7 @@ def execute_action(action: dict[str, Any]) -> str:
         if recorder is None:
             return json.dumps([], ensure_ascii=True)
         events = recorder.stop()
-        return json.dumps(build_record_steps(events), ensure_ascii=True)
+        return json.dumps(build_record_trace(events), ensure_ascii=True)
 
     with STATE.lock:
         if command == "inspect":

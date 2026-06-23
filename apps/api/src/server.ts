@@ -13,6 +13,7 @@ import {
   createCheckoutSchema,
   createRunSchema,
   nextRunStepSchema,
+  summarizeRecordingRequestSchema,
   type ConversationSummary,
   type ReferralInfo,
   type RunStepResponse,
@@ -39,7 +40,8 @@ import {
   callModel,
   chooseModel,
   maximumReservationMicrodollars,
-  modelRequestPayload
+  modelRequestPayload,
+  summarizeRecording
 } from "./anthropic.js";
 import { processAndStoreAttachment } from "./attachments.js";
 import { changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
@@ -319,6 +321,22 @@ app.get("/v1/referral", async (request): Promise<ReferralInfo> => {
     creditedCount: stats.credited,
     bonusMicrodollars: user?.referralBonusMicrodollars ?? 0
   };
+});
+
+// Turn a click recording into one reusable, generalized task instruction. The
+// desktop records a readable trace of what the user did (elements, typed text,
+// pages/windows) and posts it here; the model writes a single instruction that
+// the normal automation loop can run and adapt on every routine run. Requires a
+// signed-in user; the call is a small one-shot summarization.
+app.post("/v1/recordings/summarize", authLimit(20), async (request) => {
+  // Gate like the other paid routes: a real (Haiku) model call happens here, so
+  // only an active subscriber may use it, and a tight per-route limit bounds spend
+  // beyond the loose global limit.
+  const userId = await authenticate(request);
+  requireActive(await getSubscription(userId));
+  const body = summarizeRecordingRequestSchema.parse(request.body);
+  const task = await summarizeRecording(body.surface, body.events);
+  return { task };
 });
 
 // Simulated checkout. Requires authentication, is allowed only when the

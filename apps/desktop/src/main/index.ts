@@ -4,13 +4,14 @@ import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 import {
   APP_NAME,
   SUPPORT_EMAIL,
-  automationActionSchema,
+  recordedEventSchema,
+  summarizeRecordingRequestSchema,
   chatSendSchema,
   chatDeltaFrameSchema,
   createCheckoutSchema,
   createRunSchema,
   nextRunStepSchema,
-  type AutomationAction,
+  type RecordedEvent,
   type ChatDeltaFrame
 } from "@workcrew/contracts";
 import { z } from "zod";
@@ -408,22 +409,46 @@ function registerIpc(): void {
     return { stopped: true };
   });
 
-  // Click recording. Start begins capturing the user's clicks (in the automation
-  // browser or in their desktop apps); stop returns the captured steps as
-  // validated, replayable actions for the renderer to save as a recipe.
+  // Click recording. Start begins capturing what the user does (in the automation
+  // browser or in their desktop apps); stop returns a readable trace of events.
+  // The renderer sends that trace to recorder:summarize, where the model writes a
+  // reusable instruction that is saved as a routine and run by the model loop.
   ipcMain.handle("recorder:start", async (_event, target: "browser" | "windows") => {
     if (target === "windows") await windowsAgent.recordStart();
     else await browserCli.recordStart();
     return { started: true };
   });
   ipcMain.handle("recorder:stop", async (_event, target: "browser" | "windows") => {
-    const raw = target === "windows" ? await windowsAgent.recordStop() : await browserCli.recordStop();
-    const steps: AutomationAction[] = [];
-    for (const item of raw) {
-      const parsed = automationActionSchema.safeParse(item);
-      if (parsed.success) steps.push(parsed.data);
+    const events: RecordedEvent[] = [];
+    if (target === "windows") {
+      // The Windows helper returns clicks as { window, control, controlType }.
+      // Normalize each into a descriptive click event, clamping to the contract
+      // limits so a long control name is kept (truncated) rather than failing
+      // validation and dropping the whole click.
+      for (const item of await windowsAgent.recordStop()) {
+        const it = item as { window?: unknown; control?: unknown; controlType?: unknown };
+        const parsed = recordedEventSchema.safeParse({
+          kind: "click",
+          window: typeof it.window === "string" ? it.window.slice(0, 300) : undefined,
+          target: typeof it.control === "string" ? it.control.slice(0, 300) : undefined,
+          role: typeof it.controlType === "string" && it.controlType ? it.controlType.slice(0, 80) : undefined
+        });
+        if (parsed.success && parsed.data.target) events.push(parsed.data);
+      }
+      // Cap to the summarize request limit so a very long recording still
+      // summarizes (truncated) instead of being rejected by the request schema.
+      return { surface: "windows" as const, events: events.slice(0, 400) };
     }
-    return { steps };
+    for (const event of await browserCli.recordStop()) {
+      const parsed = recordedEventSchema.safeParse(event);
+      if (parsed.success) events.push(parsed.data);
+    }
+    return { surface: "browser" as const, events: events.slice(0, 400) };
+  });
+  // Turn a recorded trace into one reusable instruction via the backend model.
+  ipcMain.handle("recorder:summarize", async (_event, payload: unknown) => {
+    const body = summarizeRecordingRequestSchema.parse(payload);
+    return api.request<{ task: string }>("/v1/recordings/summarize", { method: "POST", body });
   });
 }
 

@@ -3,8 +3,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import { browserActionSchema, type BrowserAction } from "@workcrew/contracts";
-import { dedupeRecordedSteps, recordStepFromPayload } from "./recorder-steps.js";
+import { browserActionSchema, type RecordedEvent } from "@workcrew/contracts";
+import { browserEventFromPayload, dedupeTrace } from "./recorder-steps.js";
 
 // Browser automation drives a real Chrome over the Chrome DevTools Protocol, so
 // actions run in a visible window the user can watch. The model plans actions
@@ -47,63 +47,86 @@ function clamp(text: string): string {
   return text.length > MAX_OUTPUT_CHARS ? `${text.slice(0, MAX_OUTPUT_CHARS)}\n...[truncated]` : text;
 }
 
-// The in-page recorder. Installed once per page; idempotent so a re-injection on
-// navigation does not double-bind. It listens (capture phase) for clicks and for
-// committed input changes, builds a stable CSS selector for each target, and
-// reports it to the Node side through the __wcRecord binding. Password fields are
-// never read. It does nothing unless window.__wcRecording is true.
+// The in-page recorder. It reports a READABLE description of what the user did
+// (the element's visible text and role, the page url/title, typed text) rather
+// than coordinates or brittle selectors, because the trace is summarized into a
+// reusable instruction by the model, not replayed literally. Installed once per
+// page and idempotent, so a re-injection after navigation does not double-bind;
+// each (re)install also reports a navigate so multi-page flows are captured.
+// Password fields are never read. It does nothing unless window.__wcRecording.
 const RECORDER_INSTALL = `(() => {
   window.__wcRecording = true;
-  if (window.__wcInstalled) return;
-  window.__wcInstalled = true;
-  function uniq(q){ try { return document.querySelectorAll(q).length === 1; } catch (e) { return false; } }
-  function esc(v){ return String(v).replace(/(["\\\\])/g, '\\\\$1'); }
-  function selector(el){
-    if (!el || el.nodeType !== 1) return null;
-    if (el.id && /^[A-Za-z][\\w-]*$/.test(el.id) && uniq('#' + el.id)) return '#' + el.id;
-    var tag = el.tagName.toLowerCase();
-    var name = el.getAttribute && el.getAttribute('name');
-    if (name && uniq(tag + '[name="' + esc(name) + '"]')) return tag + '[name="' + esc(name) + '"]';
-    var aria = el.getAttribute && el.getAttribute('aria-label');
-    if (aria && uniq(tag + '[aria-label="' + esc(aria) + '"]')) return tag + '[aria-label="' + esc(aria) + '"]';
-    var testid = el.getAttribute && el.getAttribute('data-testid');
-    if (testid && uniq('[data-testid="' + esc(testid) + '"]')) return '[data-testid="' + esc(testid) + '"]';
-    var parts = [], node = el, depth = 0;
-    while (node && node.nodeType === 1 && node.tagName.toLowerCase() !== 'html' && depth < 8){
-      if (node.id && /^[A-Za-z][\\w-]*$/.test(node.id) && uniq('#' + node.id)){ parts.unshift('#' + node.id); break; }
-      var part = node.tagName.toLowerCase(), p = node.parentElement;
-      if (p){
-        var same = [], c = p.firstElementChild;
-        while (c){ if (c.tagName === node.tagName) same.push(c); c = c.nextElementSibling; }
-        if (same.length > 1) part += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
-      }
-      parts.unshift(part); node = p; depth++;
-    }
-    return parts.join(' > ');
+  function clean(s){ return String(s == null ? '' : s).replace(/\\s+/g, ' ').trim().slice(0, 160); }
+  function isPassword(el){ return !!el && el.tagName === 'INPUT' && el.type === 'password'; }
+  function text(el){
+    if (!el || el.nodeType !== 1) return '';
+    var t = el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'));
+    if (!t) t = (el.innerText || el.textContent || '');
+    t = clean(t);
+    // Never read the value of a password field.
+    if (!t && el.value && !isPassword(el)) t = clean(el.value);
+    if (!t && el.getAttribute) t = clean(el.getAttribute('placeholder') || el.getAttribute('name') || '');
+    return t;
+  }
+  function role(el){
+    if (!el || !el.tagName) return '';
+    return (el.getAttribute && el.getAttribute('role')) || el.tagName.toLowerCase();
   }
   function clickable(el){
     var n = el;
     while (n && n !== document.body){
-      if (n.matches && n.matches('a,button,input,select,textarea,label,[role=button],[role=link],[onclick]')) return n;
+      if (n.matches && n.matches('a,button,input,select,textarea,label,[role=button],[role=link],[role=tab],[role=menuitem],[onclick]')) return n;
       n = n.parentElement;
     }
     return el;
   }
-  function report(payload){ if (typeof window.__wcRecord === 'function') { try { window.__wcRecord(payload); } catch (e) {} } }
+  function editableHost(el){
+    var n = el;
+    while (n && n !== document.body){
+      if (n.isContentEditable) return n;
+      n = n.parentElement;
+    }
+    return null;
+  }
+  function labelFor(el){
+    var t = '';
+    try { if (el.labels && el.labels[0]) t = el.labels[0].innerText; } catch (e) {}
+    if (!t && el.getAttribute) t = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || '';
+    return clean(t);
+  }
+  function report(payload){ if (window.__wcRecording && typeof window.__wcRecord === 'function') { try { window.__wcRecord(payload); } catch (e) {} } }
+  report({ type: 'navigate', url: location.href, title: clean(document.title) });
+  if (window.__wcInstalled) return;
+  window.__wcInstalled = true;
   document.addEventListener('click', function(e){
     if (!window.__wcRecording) return;
-    var s = selector(clickable(e.target));
-    if (s) report({ type: 'click', selector: s });
+    var el = clickable(e.target);
+    // A click on a password box is recorded as the action, never its contents.
+    var target = isPassword(el) ? 'password field' : text(el);
+    report({ type: 'click', target: target, role: role(el), url: location.href, title: clean(document.title) });
+  }, true);
+  document.addEventListener('input', function(e){
+    if (!window.__wcRecording) return;
+    var el = e.target;
+    if (!el || el.nodeType !== 1) return;
+    // Rich-text editors (Gmail's body, Slack, Notion) are contenteditable, not inputs.
+    var host = editableHost(el);
+    if (host){
+      var v = clean(host.innerText || host.textContent || '');
+      if (v) report({ type: 'fill', target: labelFor(host) || 'text area', value: v, url: location.href, title: clean(document.title) });
+      return;
+    }
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    if (tag !== 'input' && tag !== 'textarea') return;
+    if (isPassword(el)) return;
+    var val = clean(el.value);
+    if (val) report({ type: 'fill', target: labelFor(el) || 'a field', value: val, url: location.href, title: clean(document.title) });
   }, true);
   document.addEventListener('change', function(e){
     if (!window.__wcRecording) return;
     var el = e.target;
-    if (!el || el.nodeType !== 1) return;
-    var tag = el.tagName.toLowerCase();
-    if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return;
-    if (el.type === 'password') return;
-    var s = selector(el);
-    if (s) report({ type: 'fill', selector: s, value: String(el.value == null ? '' : el.value).slice(0, 2000) });
+    if (!el || el.nodeType !== 1 || !el.tagName || el.tagName.toLowerCase() !== 'select') return;
+    report({ type: 'fill', target: labelFor(el) || 'a choice', value: clean(el.value), url: location.href, title: clean(document.title) });
   }, true);
 })()`;
 
@@ -124,12 +147,16 @@ export class BrowserCli {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
-  // Click recording state. recordBuffer collects steps reported by the in-page
-  // recorder; recordBound is true once the __wcRecord binding is installed on the
-  // context; recordOnLoad re-injects the recorder after a navigation.
-  private recordBuffer: BrowserAction[] = [];
+  // Click recording state. recordBuffer collects the descriptive events reported
+  // by the in-page recorder; recordBound is true once the __wcRecord binding is
+  // installed on the context; recordOnPage injects the recorder into any new tab
+  // opened while recording; recordPageHandlers tracks each page's load listener so
+  // they can be detached on stop. Together these capture multi-tab, multi-page
+  // flows (links opening new tabs, popups) end to end.
+  private recordBuffer: RecordedEvent[] = [];
   private recordBound = false;
-  private recordOnLoad: (() => void) | null = null;
+  private recordOnPage: ((page: Page) => void) | null = null;
+  private recordPageHandlers = new Map<Page, () => void>();
 
   /**
    * Launch a Chrome window with remote debugging enabled, using a dedicated
@@ -180,9 +207,11 @@ export class BrowserCli {
       this.browser = null;
       this.context = null;
       this.page = null;
-      // The binding lives on the context, so it is gone once we disconnect.
+      // The binding and listeners live on the context/pages, so they are gone
+      // once we disconnect; clear our tracking so a later recording re-installs.
       this.recordBound = false;
-      this.recordOnLoad = null;
+      this.recordOnPage = null;
+      this.recordPageHandlers.clear();
     });
     const contexts = this.browser.contexts();
     this.context = contexts[0] ?? (await this.browser.newContext());
@@ -294,46 +323,52 @@ export class BrowserCli {
     }
   }
 
-  // Begin recording the user's clicks and field edits in the automation browser.
-  // The recording starts from a goto to the current page so replay opens the
-  // right place first, then captures each interaction as a selector-targeted
-  // action. Re-injects the recorder after navigations so a multi-page flow is
-  // captured end to end.
+  // Begin recording what the user does in the automation browser as a readable
+  // trace (which elements, typed text, pages). The in-page script reports a
+  // navigate on each (re)install, so the starting page and every later page are
+  // captured; the recorder is re-injected after navigations for multi-page flows.
   async recordStart(): Promise<void> {
     // Make sure the automation browser is up, just like a normal action, so the
     // user can start recording without clicking Connect browser first.
     if (!(await this.isReachable())) await this.launchBrowser();
-    const page = await this.connect();
+    await this.connect();
     this.recordBuffer = [];
     if (!this.recordBound) {
       await this.context!.exposeBinding("__wcRecord", (_source, payload: unknown) => {
-        const step = recordStepFromPayload(payload);
-        if (step) this.recordBuffer.push(step);
+        const event = browserEventFromPayload(payload);
+        if (event) this.recordBuffer.push(event);
       });
       this.recordBound = true;
     }
-    try {
-      const url = page.url();
-      if (/^https?:/i.test(url)) this.recordBuffer.push({ kind: "browser", command: "goto", url });
-    } catch {
-      // No usable current URL; the recording simply starts from wherever replay is.
-    }
-    const reinstall = (): void => { void page.evaluate(RECORDER_INSTALL).catch(() => {}); };
-    this.recordOnLoad = reinstall;
-    page.on("load", reinstall);
-    await page.evaluate(RECORDER_INSTALL);
+    // Install the in-page recorder on every page, current and future. The binding
+    // is context-wide but the listeners are per page, so each tab must be injected
+    // (and re-injected on its own navigations) for its clicks to be captured.
+    const installOn = (target: Page): void => {
+      const onLoad = (): void => { void target.evaluate(RECORDER_INSTALL).catch(() => {}); };
+      target.on("load", onLoad);
+      this.recordPageHandlers.set(target, onLoad);
+      void target.evaluate(RECORDER_INSTALL).catch(() => {});
+    };
+    const onNewPage = (target: Page): void => installOn(target);
+    this.context!.on("page", onNewPage);
+    this.recordOnPage = onNewPage;
+    for (const open of this.context!.pages()) installOn(open);
   }
 
-  // Stop recording and return the captured steps (deduplicated), ready to be
-  // saved as a replayable recipe. Safe to call when nothing was recording.
-  async recordStop(): Promise<BrowserAction[]> {
-    const page = this.page;
-    if (page && this.recordOnLoad) page.off("load", this.recordOnLoad);
-    this.recordOnLoad = null;
-    try { await page?.evaluate("window.__wcRecording = false"); } catch { /* page gone */ }
-    const steps = dedupeRecordedSteps(this.recordBuffer);
+  // Stop recording and return the captured trace (deduplicated). The caller sends
+  // it to the model to be written up as one reusable instruction. Safe to call
+  // when nothing was recording (returns an empty trace).
+  async recordStop(): Promise<RecordedEvent[]> {
+    if (this.context && this.recordOnPage) this.context.off("page", this.recordOnPage);
+    this.recordOnPage = null;
+    for (const [open, onLoad] of this.recordPageHandlers) {
+      try { open.off("load", onLoad); } catch { /* page gone */ }
+      try { await open.evaluate("window.__wcRecording = false"); } catch { /* page gone */ }
+    }
+    this.recordPageHandlers.clear();
+    const trace = dedupeTrace(this.recordBuffer);
     this.recordBuffer = [];
-    return steps;
+    return trace;
   }
 
   // Disconnect from the user's Chrome without closing it. Their browser window

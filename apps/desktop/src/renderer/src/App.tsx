@@ -672,6 +672,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan }: { 
         <RecorderDialog
           onClose={() => setRecorderOpen(false)}
           onSaved={() => setRoutines(loadRoutines())}
+          onRun={(task, runName) => { setView("automation"); setAutomationSeed(task); void runner.run(task, model, runName || "Recorded task"); }}
         />
       )}
     </main>
