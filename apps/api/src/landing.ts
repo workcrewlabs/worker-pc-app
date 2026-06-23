@@ -23,6 +23,20 @@ function brandMark(size: number): string {
 </svg>`;
 }
 
+// The bare quatrefoil mark with no dark tile, exactly matching the in-app logo
+// (apps/desktop .../App.tsx LogoMark). Used in the page header so the website
+// brand looks identical to the app brand; the tiled brandMark above stays for
+// the favicon and touch icon, where a tile reads better.
+function brandGlyph(size: number): string {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="display:block;flex:0 0 auto">
+<defs>
+<linearGradient id="bmgMark" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a78bfa"/><stop offset="0.55" stop-color="#7c3aed"/><stop offset="1" stop-color="#5b21b6"/></linearGradient>
+<mask id="bmgPlus"><rect width="100" height="100" fill="white"/><rect x="41" y="29" width="18" height="42" rx="9" fill="black"/><rect x="29" y="41" width="42" height="18" rx="9" fill="black"/></mask>
+</defs>
+<g mask="url(#bmgPlus)" fill="url(#bmgMark)"><circle cx="50" cy="28" r="22"/><circle cx="50" cy="72" r="22"/><circle cx="28" cy="50" r="22"/><circle cx="72" cy="50" r="22"/><rect x="28" y="28" width="44" height="44" rx="14"/></g>
+</svg>`;
+}
+
 export function landingPage(downloadUrl: string): string {
   const download = downloadUrl && downloadUrl.length > 0 ? downloadUrl : "";
   const downloadAttr = download ? `href="${download}"` : `href="#" data-missing="1"`;
@@ -63,7 +77,7 @@ footer{border-top:1px solid var(--line);padding:22px 0;color:var(--muted);font-s
 </style></head><body>
 <div class="wrap">
   <header>
-    <div class="brand">${brandMark(28)} WorkCrew</div>
+    <div class="brand">${brandGlyph(28)} WorkCrew</div>
     <nav>
       <button class="navbtn" onclick="openAuth('signin')">Sign in</button>
       <button class="navbtn" onclick="openAuth('signup')">Sign up</button>
