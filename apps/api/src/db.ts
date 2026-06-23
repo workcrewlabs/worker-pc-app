@@ -597,24 +597,30 @@ export async function countReferrals(code: string): Promise<{ invited: number; c
 }
 
 /**
- * Credit the referrer for a user who has now paid. Idempotent: the guarded
- * UPDATE on referred_credited ensures the bonus is granted at most once per
- * referred user, even if the activation path fires more than once. Returns true
- * when this call performed the credit.
+ * Mark a referred user as credited, exactly once, and return the inviter's code
+ * so the caller can grant the one-time bonus. The guarded UPDATE on
+ * referred_credited makes this idempotent: a second activation event for the
+ * same user returns null and grants nothing. The actual token grant (a one-time
+ * credit, not a recurring budget bump) is delivered by the budget layer, which
+ * is why this only resolves the inviter rather than crediting here.
  */
-export async function creditReferrer(userId: string, bonusMicrodollars: number): Promise<boolean> {
+export async function claimReferralCredit(userId: string): Promise<{ referrerCode: string } | null> {
   const user = await getUserById(userId);
-  if (!user || !user.referredByCode || user.referredCredited) return false;
+  if (!user || !user.referredByCode || user.referredCredited) return null;
   const guard = await client.execute({
     sql: "UPDATE users SET referred_credited = 1 WHERE id = ? AND referred_credited = 0 AND referred_by_code IS NOT NULL",
     args: [userId]
   });
-  if (guard.rowsAffected !== 1) return false;
+  if (guard.rowsAffected !== 1) return null;
+  return { referrerCode: user.referredByCode };
+}
+
+/** Add to a user's lifetime referral tokens earned (shown in the invite dialog). */
+export async function addReferralEarned(referrerId: string, amountMicrodollars: number): Promise<void> {
   await client.execute({
-    sql: "UPDATE users SET referral_bonus_microdollars = referral_bonus_microdollars + ? WHERE referral_code = ?",
-    args: [bonusMicrodollars, user.referredByCode]
+    sql: "UPDATE users SET referral_bonus_microdollars = referral_bonus_microdollars + ? WHERE id = ?",
+    args: [amountMicrodollars, referrerId]
   });
-  return true;
 }
 
 export async function getUserByEmail(email: string): Promise<UserRow | null> {

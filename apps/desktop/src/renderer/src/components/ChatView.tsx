@@ -66,6 +66,23 @@ function localId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+// Turn an upload failure into one short, friendly line. Electron wraps anything
+// thrown in the main process as "Error invoking remote method '...': Error: <msg>",
+// which looks like a developer error, so we strip that wrapper. The backend's own
+// messages (unsupported type, too large, empty) are already written for people, so
+// they pass through; a network blip or anything unexpected becomes a plain line.
+function friendlyFileError(error: unknown): string {
+  let message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  message = message
+    .replace(/^Error invoking remote method '[^']*':\s*/i, "")
+    .replace(/^[A-Za-z]*Error:\s*/, "")
+    .trim();
+  if (!message || /fetch failed|network|ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|timed? ?out|abort/i.test(message)) {
+    return "That file could not be added. Please try again.";
+  }
+  return message;
+}
+
 export function ChatView({
   turns,
   streaming,
@@ -137,6 +154,15 @@ export function ChatView({
     if (!streaming) composerRef.current?.focus();
   }, [streaming]);
 
+  // A bad file should not leave a stuck banner. Clear the attachment error on its
+  // own after a few seconds (and whenever it changes), so it quietly goes away
+  // instead of lingering into the next message or a new chat.
+  useEffect(() => {
+    if (!attachError) return;
+    const timer = setTimeout(() => setAttachError(""), 4500);
+    return () => clearTimeout(timer);
+  }, [attachError]);
+
   // Add files: show each as a chip with a spinner straight away, then upload them
   // in the background and mark each ready (or failed) on its own. More files can
   // be added while others are still uploading.
@@ -156,11 +182,11 @@ export function ChatView({
             setAttachments((list) => list.map((item) =>
               item.id === chip.id ? (ref ? { ...item, status: "ready", ref } : { ...item, status: "error" }) : item
             ));
-            if (!ref) setAttachError("A file could not be added.");
+            if (!ref) setAttachError("That file could not be added. Please try again.");
           })
           .catch((error) => {
             setAttachments((list) => list.map((item) => (item.id === chip.id ? { ...item, status: "error" } : item)));
-            setAttachError(error instanceof Error ? error.message : "A file could not be added.");
+            setAttachError(friendlyFileError(error));
           });
       });
       return [...current, ...chips];

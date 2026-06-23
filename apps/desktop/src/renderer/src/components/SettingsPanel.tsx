@@ -50,10 +50,10 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
     }
   }
 
-  // Opens the WorkCrew website, where a subscriber manages payment and cancels.
-  // Billing lives on the website rather than an in-app portal, so this is just a
-  // link out under Help.
-  async function manageBilling() {
+  // Opens the WorkCrew website, where a subscriber downloads the app and manages
+  // payment (and cancels). Billing lives on the website rather than an in-app
+  // portal, so this is just a link out.
+  async function openHelp() {
     setBillingBusy(true);
     setBillingError("");
     try {
@@ -89,12 +89,12 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
       </div>
 
       <div className="save-form update-section">
-        <label className="field-label">Help</label>
-        <p className="field-hint">Questions or a problem? Reach the WorkCrew team at {SUPPORT_EMAIL}. To update your payment method or cancel your subscription, open billing on the WorkCrew website.</p>
+        <label className="field-label">Support</label>
+        <p className="field-hint">Questions or a problem? Reach the WorkCrew team at {SUPPORT_EMAIL}. To update your payment method or cancel your subscription, open the WorkCrew website, where billing is managed.</p>
         <div className="save-row">
           <button className="secondary" onClick={() => void window.workcrew.support.contact()}>Contact support</button>
-          <button className="secondary" onClick={() => void manageBilling()} disabled={billingBusy}>
-            {billingBusy ? "Opening..." : "Manage billing"}
+          <button className="secondary" onClick={() => void openHelp()} disabled={billingBusy} title="Open the WorkCrew website">
+            {billingBusy ? "Opening..." : "Help"}
           </button>
         </div>
         {billingError && <p className="notice">{billingError}</p>}

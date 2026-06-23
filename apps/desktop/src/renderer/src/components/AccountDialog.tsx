@@ -132,7 +132,7 @@ export function AccountDialog({
                 </div>
               );
             })}
-            <button type="button" className="link-button" onClick={() => setAdjusting(false)} disabled={busy !== null}>Done</button>
+            <button type="button" className="secondary full" onClick={() => setAdjusting(false)} disabled={busy !== null}>Done</button>
           </div>
         ) : (
           <div className="account-buttons">

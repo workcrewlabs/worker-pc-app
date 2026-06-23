@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { PLAN_CATALOG, type PlanId } from "@workcrew/contracts";
-import { client, type SubscriptionRow } from "./db.js";
+import {
+  addReferralEarned,
+  claimReferralCredit,
+  client,
+  getSubscription,
+  getUserByReferralCode,
+  type SubscriptionRow
+} from "./db.js";
 
 export type BudgetWindow = { startMs: number; endMs: number };
 
@@ -59,9 +66,7 @@ export async function reserveBudget(input: {
 }): Promise<{ reservationId: string; window: BudgetWindow }> {
   const nowMs = input.nowMs ?? Date.now();
   const window = getBudgetWindow(input.subscription.budgetAnchorMs, nowMs);
-  // The effective monthly limit is the plan budget plus any referral bonus the
-  // user has earned (joined onto the subscription row when it is read).
-  const limit = planBudget(input.subscription.plan) + (input.subscription.referralBonusMicrodollars ?? 0);
+  const limit = planBudget(input.subscription.plan);
   const id = randomUUID();
   // The conditional insert only succeeds when the new reservation keeps the
   // window total within the plan limit. The cap is evaluated by the SUM subquery.
@@ -138,4 +143,36 @@ export async function releaseBudget(reservationId: string): Promise<void> {
     sql: "UPDATE usage_ledger SET status = 'released', settled_at_ms = ? WHERE id = ? AND status = 'reserved'",
     args: [Date.now(), reservationId]
   });
+}
+
+/**
+ * When a referred user becomes a paying subscriber, grant their inviter a
+ * one-time token bonus. Delivered as a single settled credit (a negative usage
+ * entry) in the inviter's current budget window, so it adds available tokens
+ * ONCE rather than raising the monthly cap every month. Idempotent via
+ * claimReferralCredit. Returns true when a credit was granted this call.
+ */
+export async function creditReferralOnPayment(referredUserId: string, bonusMicrodollars: number): Promise<boolean> {
+  const claim = await claimReferralCredit(referredUserId);
+  if (!claim) return false;
+  const referrer = await getUserByReferralCode(claim.referrerCode);
+  if (!referrer) return true; // already marked credited; an unknown code grants nothing
+  // Lifetime tokens earned, shown in the invite dialog.
+  await addReferralEarned(referrer.id, bonusMicrodollars);
+  // Deliver the one-time grant into the inviter's current budget window, if they
+  // have an active subscription. A settled negative-cost row lowers their used
+  // total for this period, freeing exactly that many tokens, one time.
+  const subscription = await getSubscription(referrer.id);
+  if (subscription) {
+    const window = getBudgetWindow(subscription.budgetAnchorMs);
+    await client.execute({
+      sql: `INSERT INTO usage_ledger(
+          id, user_id, run_id, period_start_ms, period_end_ms, model,
+          reserved_microdollars, actual_microdollars, status, created_at_ms, settled_at_ms
+        )
+        VALUES (?, ?, 'referral', ?, ?, 'referral_credit', 0, ?, 'settled', ?, ?)`,
+      args: [randomUUID(), referrer.id, window.startMs, window.endMs, -Math.abs(bonusMicrodollars), Date.now(), Date.now()]
+    });
+  }
+  return true;
 }
