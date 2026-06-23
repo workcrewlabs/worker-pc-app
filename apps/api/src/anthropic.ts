@@ -120,7 +120,7 @@ const AUTOMATION_EFFORT = "low" as const;
  * must never be written back into the persisted run.messages, or breakpoints
  * would accumulate step after step and blow past the four-per-request limit.
  */
-function withRollingCacheBreakpoint(messages: unknown[]): unknown[] {
+export function withRollingCacheBreakpoint(messages: unknown[]): unknown[] {
   if (messages.length === 0) return messages;
   const result = messages.slice();
   const last = result[result.length - 1] as { role?: unknown; content?: unknown };

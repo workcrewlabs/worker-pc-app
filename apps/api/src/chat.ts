@@ -6,7 +6,7 @@ import {
   type ChatDeltaFrame,
   type ChatSend
 } from "@workcrew/contracts";
-import { actualCostMicrodollars, maximumReservationMicrodollars } from "./anthropic.js";
+import { actualCostMicrodollars, maximumReservationMicrodollars, withRollingCacheBreakpoint } from "./anthropic.js";
 import { blocksForRow, estimateMediaTokens } from "./attachments.js";
 import { getBudgetUsage, reserveBudget, settleBudget } from "./budget.js";
 import { config } from "./config.js";
@@ -295,12 +295,20 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       // frames, thinking deltas to thinking frames, and citations to citation
       // frames. The final message gives us the full content and real usage.
       const client = new Anthropic({ apiKey: config.anthropicApiKey });
+      // Cache the stable system prompt and roll an ephemeral breakpoint onto the
+      // newest message, so a multi-turn chat reads the prior conversation prefix
+      // at cache-read price instead of re-paying full price for the whole history
+      // every turn. Short single-turn chats fall below the cache minimum and are
+      // simply uncached, at no extra cost.
+      const cachedSystem: Anthropic.Messages.TextBlockParam[] = [
+        { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }
+      ];
       const stream = client.messages.stream(
         {
           model: modelId(tier),
           max_tokens: MAX_OUTPUT_TOKENS,
-          system: SYSTEM_PROMPT,
-          messages: modelMessages as Anthropic.Messages.MessageParam[]
+          system: cachedSystem,
+          messages: withRollingCacheBreakpoint(modelMessages) as Anthropic.Messages.MessageParam[]
         },
         { signal: input.signal }
       );
