@@ -496,25 +496,17 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan }: { 
   // empty on a new chat (no duplicate brand logo).
   const chatTitle = conversationId ? (recents.find((item) => item.id === conversationId)?.title ?? "") : "";
 
-  // The always-visible update control at the bottom of the sidebar. It shows
-  // "Check for updates" normally, the progress while downloading, and a clickable
-  // "Restart to update" when a new version is ready.
+  // The app checks for updates on its own when it opens (see the effect above),
+  // downloads any new version in the background, and only then surfaces a single
+  // "Restart to update" button. There is no manual "Check for updates" button to
+  // press here; the sidebar control appears only while an update is downloading
+  // or is ready to install, and is hidden otherwise. (Settings still offers a
+  // manual check for anyone who wants one.)
   const updateState = update?.state ?? "idle";
   const updateReady = updateState === "ready";
-  const updateBusy = updateState === "checking" || updateState === "downloading";
-  const updateText =
-    updateState === "ready" ? "Restart to update"
-      : updateState === "downloading" ? `Downloading update ${update?.percent ?? 0}%`
-        : updateState === "checking" ? "Checking for updates"
-          : updateState === "available" ? "Update available"
-            : updateState === "error" ? "Update failed. Try again"
-              : "Check for updates";
-  function handleUpdateClick() {
-    if (updateReady) { void window.workcrew.updates.install(); return; }
-    if (updateBusy) return;
-    setUpdate({ state: "checking" });
-    void window.workcrew.updates.check(true);
-  }
+  const updateDownloading = updateState === "downloading" || updateState === "available";
+  const showUpdatePill = updateReady || updateDownloading;
+  const updateText = updateReady ? "Restart to update" : `Downloading update ${update?.percent ?? 0}%`;
 
   return (
     <main className="app-shell">
@@ -598,16 +590,18 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan }: { 
           </span>
           <span><strong>Invite & earn</strong><small>Get {formatTokens(REFERRAL_BONUS_MICRODOLLARS)} tokens per friend</small></span>
         </button>
-        <button
-          className={`update-pill ${updateReady ? "update-ready" : ""}`}
-          onClick={handleUpdateClick}
-          disabled={updateBusy}
-          aria-label={updateText}
-          title={updateText}
-        >
-          <span className="update-dot" aria-hidden="true" />
-          <span>{updateText}</span>
-        </button>
+        {showUpdatePill && (
+          <button
+            className={`update-pill ${updateReady ? "update-ready" : ""}`}
+            onClick={() => { if (updateReady) void window.workcrew.updates.install(); }}
+            disabled={!updateReady}
+            aria-label={updateText}
+            title={updateText}
+          >
+            <span className="update-dot" aria-hidden="true" />
+            <span>{updateText}</span>
+          </button>
+        )}
         <div className="sidebar-security"><span className="shield">S</span><div><strong>Protected locally</strong><small>Write actions ask first</small></div></div>
         <button className="account-button" onClick={() => setAccountOpen(true)} aria-label="Open account">
           <span className="avatar">A</span>
