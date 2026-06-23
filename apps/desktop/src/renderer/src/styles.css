@@ -183,12 +183,23 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 @keyframes update-pulse { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,.45); } 70% { box-shadow: 0 0 0 6px rgba(52,211,153,0); } 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); } }
 
 /* Attachment chips above the composer tools row. */
-.attachment-row { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 14px 4px; }
-.attachment-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 220px; padding: 5px 8px 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font-size: 12px; }
+/* Attachment chips sit at the top of the composer. Each shows a circular spinner
+   on its name while it uploads, then a small dot when ready (or "!" on error). */
+.attachment-row { display: flex; flex-wrap: wrap; gap: 7px; padding: 12px 14px 4px; }
+.attachment-chip { display: inline-flex; align-items: center; gap: 8px; max-width: 240px; padding: 6px 8px 6px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); font-size: 12px; }
 .attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.attachment-chip button { border: 0; cursor: pointer; color: var(--muted); background: none; font-size: 12px; line-height: 1; padding: 0 2px; }
+.attachment-chip button { border: 0; cursor: pointer; color: var(--muted); background: none; font-size: 13px; line-height: 1; padding: 0 2px; }
 .attachment-chip button:hover { color: var(--text); }
-.attach-error { align-self: center; color: #d98a93; font-size: 12px; }
+.attachment-chip .chip-icon { flex: none; font-size: 9px; color: var(--accent-soft); }
+.attachment-chip.chip-error { border-color: rgba(217,138,147,.5); }
+.attachment-chip.chip-error .chip-icon { color: #d98a93; font-weight: 700; }
+.attach-error-row { padding: 2px 14px 0; color: #d98a93; font-size: 12px; }
+/* Circular loading spinner, used on uploading chips and the mic while busy. */
+.chip-spinner { display: inline-block; flex: none; width: 13px; height: 13px; border: 2px solid rgba(167,139,250,.3); border-top-color: var(--accent-soft); border-radius: 50%; animation: chip-spin .7s linear infinite; }
+@keyframes chip-spin { to { transform: rotate(360deg); } }
+/* Drop target highlight and hint when dragging files over the composer. */
+.composer-drag { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139,92,246,.18); }
+.drop-hint { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 16px; color: var(--text); background: rgba(20,18,26,.78); font-size: 14px; font-weight: 650; pointer-events: none; }
 /* Automation panel: task box, step list, and outcome summary. */
 .automation-task { width: 100%; resize: vertical; min-height: 70px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; color: var(--text); background: var(--panel-2); font-size: var(--fs-ui); line-height: 1.5; }
 .automation-task:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
@@ -248,6 +259,23 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 /* Dark, themed option list for every dropdown, replacing the default light popup. */
 select option { background-color: #201f25; color: var(--text); }
 select option:checked { background-color: var(--panel-2); }
+
+/* Custom dropdown styled like the Claude desktop popup: rounded dark card,
+   selected checkmark, opens up or down. Used for the effort selector and the
+   routine cadence/day pickers. */
+.wc-dropdown { position: relative; display: inline-block; }
+.composer-tools .wc-dropdown { margin-left: auto; }
+.wc-dropdown-trigger { display: inline-flex; align-items: center; gap: 8px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; color: var(--text); background: var(--panel-2); font-size: var(--fs-small); }
+.wc-dropdown-trigger:hover { border-color: var(--muted); }
+.wc-dropdown-chevron { flex: none; color: var(--muted); }
+.wc-dropdown-menu { position: absolute; left: 0; top: calc(100% + 6px); z-index: 40; min-width: 196px; padding: 6px; border: 1px solid var(--line); border-radius: 13px; background: #201f25; box-shadow: 0 18px 50px rgba(0,0,0,.5); }
+.wc-dropdown-up { top: auto; bottom: calc(100% + 6px); }
+.wc-dropdown-right { left: auto; right: 0; }
+.wc-dropdown-header { padding: 6px 10px 5px; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .3px; }
+.wc-dropdown-item { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; cursor: pointer; text-align: left; color: var(--text); background: transparent; font-size: 13px; }
+.wc-dropdown-item:hover { background: var(--panel-2); }
+.wc-dropdown-item.is-selected { background: rgba(139,92,246,.16); }
+.wc-dropdown-check { flex: none; color: var(--accent-soft); font-size: 12px; }
 /* Settings: read-only info rows (version, sign in mode, billing mode). Each row
    is a card with the label on the left and the value on the right, both on a
    single baseline so the line reads as balanced rather than two mismatched
@@ -264,7 +292,7 @@ select option:checked { background-color: var(--panel-2); }
 .workspace-content > h1 { margin: 0 0 18px; font-family: var(--font-serif); font-size: var(--fs-greeting); font-weight: 500; line-height: 1.2; letter-spacing: normal; }
 .workspace-subtitle { margin: 0 0 18px; color: var(--muted); font-size: var(--fs-ui); }
 /* Composer is a bordered surface lifted by border, not shadow (calmer). */
-.composer { overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--panel-2); transition: border .2s, box-shadow .2s; }
+.composer { position: relative; overflow: visible; border: 1px solid var(--line); border-radius: 16px; background: var(--panel-2); transition: border .2s, box-shadow .2s; }
 .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .composer-running { border-color: var(--accent); }
 .composer textarea { width: 100%; min-height: 52px; max-height: 220px; resize: none; padding: 16px 18px 6px; border: 0; outline: 0; color: var(--text); background: transparent; font-size: var(--fs-body); line-height: 1.5; }
@@ -284,6 +312,33 @@ select option:checked { background-color: var(--panel-2); }
 .run-button, .stop-button { min-width: 82px; padding: 8px 12px; border: 0; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 750; }
 .run-button { color: var(--accent-ink); background: var(--lime); }
 .stop-button { color: white; background: #a34049; }
+
+/* Push the effort dropdown (and the Send button after it) to the right edge of
+   the composer toolbar, like before. */
+.composer-tools .wc-dropdown { margin-left: auto; }
+
+/* Claude-style effort dropdown: a rounded trigger and a rounded dark popup with
+   a checkmark on the selected option. The popup is fixed-positioned by the
+   component so it is never clipped. */
+.wc-dropdown { position: relative; }
+.wc-dropdown-trigger { display: inline-flex; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; color: var(--text); background: var(--panel-2); font-size: var(--fs-small); }
+.wc-dropdown-trigger:hover { border-color: var(--muted); }
+.wc-dropdown-chevron { flex: none; color: var(--muted); }
+.wc-dropdown-menu { min-width: 190px; padding: 6px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel-2); box-shadow: 0 18px 44px rgba(0,0,0,.5); z-index: 200; }
+.wc-dropdown-header { padding: 6px 10px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .3px; }
+.wc-dropdown-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; cursor: pointer; text-align: left; color: var(--text); background: transparent; font-size: 13px; }
+.wc-dropdown-item:hover { background: var(--panel); }
+.wc-dropdown-check { flex: none; color: var(--accent-soft); font-size: 12px; }
+
+/* Circular loading spinner on an uploading file chip (and the mic while it
+   transcribes). */
+.chip-spinner { width: 13px; height: 13px; flex: none; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent-soft); animation: chip-spin .7s linear infinite; }
+@keyframes chip-spin { to { transform: rotate(360deg); } }
+
+/* Drag-and-drop affordance on the composer. */
+.composer-drag { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.drop-hint { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 16px; background: rgba(139,92,246,.12); color: var(--accent-soft); font-size: 13px; font-weight: 650; pointer-events: none; }
+.attach-error-row { padding: 4px 14px 0; color: #d98a93; font-size: 12px; }
 .suggestions { margin-top: 18px; }
 .suggestions > span { display: block; margin-bottom: 7px; color: var(--muted); font-size: var(--fs-eyebrow); font-weight: 650; }
 .suggestions button { width: 100%; display: flex; align-items: center; gap: 12px; padding: 13px 8px; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; text-align: left; color: var(--muted); background: transparent; font-size: var(--fs-ui); }

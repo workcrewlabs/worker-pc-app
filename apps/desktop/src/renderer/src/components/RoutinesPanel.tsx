@@ -9,6 +9,7 @@ import {
   type Routine,
   type RoutineCadence
 } from "../lib/storage";
+import { Dropdown } from "./Dropdown";
 import { PanelShell } from "./PanelShell";
 
 // Routines are saved tasks that run on a schedule while WorkCrew is open. The
@@ -109,17 +110,19 @@ export function RoutinesPanel({
           rows={2}
         />
         <div className="routine-schedule">
-          <select value={cadence} onChange={(event) => setCadence(event.target.value as RoutineCadence)} aria-label="How often">
-            {CADENCES.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
+          <Dropdown
+            value={cadence}
+            options={CADENCES}
+            onChange={(value) => setCadence(value)}
+            ariaLabel="How often"
+          />
           {cadence === "weekly" && (
-            <select value={weekday} onChange={(event) => setWeekday(Number(event.target.value))} aria-label="Day of week">
-              {WEEKDAYS.map((day, index) => (
-                <option key={day} value={index}>{day}</option>
-              ))}
-            </select>
+            <Dropdown
+              value={String(weekday)}
+              options={WEEKDAYS.map((day, index) => ({ value: String(index), label: day }))}
+              onChange={(value) => setWeekday(Number(value))}
+              ariaLabel="Day of week"
+            />
           )}
           {timed && (
             <>

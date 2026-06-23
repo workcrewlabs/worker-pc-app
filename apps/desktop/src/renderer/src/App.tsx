@@ -482,7 +482,12 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade }: { info: AppInfo;
       <aside className="sidebar">
         <Brand compact />
         <button className="new-chat" onClick={startNewChat} aria-label="New chat">
-          <span className="new-chat-plus" aria-hidden="true">+</span> New chat
+          <span className="new-chat-plus" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </span> New chat
         </button>
         <nav aria-label="Workspace sections">
           <button

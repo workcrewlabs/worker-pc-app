@@ -6,14 +6,19 @@
 // The WorkCrew app icon as inline vector: just the purple quatrefoil mark
 // (no background), so it's clean and matches the brand everywhere. Ids are
 // suffixed so multiple marks could coexist on the same page.
+// Matches apps/desktop/resources/icon.svg exactly: the dark rounded tile with the
+// bold cropped quatrefoil, so the website header and favicon look identical to
+// the app icon and the taskbar icon.
 function brandMark(size: number): string {
   return `<svg width="${size}" height="${size}" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="display:block;flex:0 0 auto">
 <defs>
+<linearGradient id="bmTile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#221F2E"/><stop offset="1" stop-color="#17151E"/></linearGradient>
 <linearGradient id="bmMark" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a78bfa"/><stop offset="0.55" stop-color="#7c3aed"/><stop offset="1" stop-color="#5b21b6"/></linearGradient>
-<mask id="bmPlus"><rect width="512" height="512" fill="white"/><rect x="222" y="150" width="68" height="212" rx="34" fill="black"/><rect x="150" y="222" width="212" height="68" rx="34" fill="black"/></mask>
+<mask id="bmPlus"><rect width="100" height="100" fill="white"/><rect x="41" y="29" width="18" height="42" rx="9" fill="black"/><rect x="29" y="41" width="42" height="18" rx="9" fill="black"/></mask>
 </defs>
-<g mask="url(#bmPlus)" fill="url(#bmMark)" transform="translate(256 256) scale(2.05) translate(-50 -50)">
-<circle cx="50" cy="28" r="22"/><circle cx="50" cy="72" r="22"/><circle cx="28" cy="50" r="22"/><circle cx="72" cy="50" r="22"/><rect x="28" y="28" width="44" height="44" rx="14"/>
+<rect x="0" y="0" width="512" height="512" rx="116" fill="url(#bmTile)"/>
+<g transform="translate(256 256) scale(4.6) translate(-50 -50)">
+<g mask="url(#bmPlus)" fill="url(#bmMark)"><circle cx="50" cy="28" r="22"/><circle cx="50" cy="72" r="22"/><circle cx="28" cy="50" r="22"/><circle cx="72" cy="50" r="22"/><rect x="28" y="28" width="44" height="44" rx="14"/></g>
 </g>
 </svg>`;
 }

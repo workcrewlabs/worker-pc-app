@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AttachmentRef,
   AutomationAction,
@@ -116,7 +116,11 @@ const workcrew = {
     }
   },
   files: {
-    pick: (): Promise<PickedFile[]> => ipcRenderer.invoke("dialog:open-files")
+    pick: (): Promise<PickedFile[]> => ipcRenderer.invoke("dialog:open-files"),
+    // Resolve the absolute path of a file dropped onto the window, so it can be
+    // uploaded through the same path-based pipeline as the file picker. Guarded
+    // so an unavailable webUtils never breaks the bridge; the caller falls back.
+    pathForFile: (file: File): string => (webUtils ? webUtils.getPathForFile(file) : "")
   },
   attachments: {
     // Upload picked files and return a reference for each successfully stored
