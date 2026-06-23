@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SUPPORT_EMAIL } from "@workcrew/contracts";
 import { PanelShell } from "./PanelShell";
 
 // Settings shows app information and software updates. The backend address is
@@ -68,6 +69,14 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
           )}
         </div>
         {update && <p className="notice">{describeUpdate(update)}</p>}
+      </div>
+
+      <div className="save-form update-section">
+        <label className="field-label">Support</label>
+        <p className="field-hint">Questions or a problem? Reach the WorkCrew team at {SUPPORT_EMAIL}.</p>
+        <div className="save-row">
+          <button className="secondary" onClick={() => void window.workcrew.support.contact()}>Contact support</button>
+        </div>
       </div>
     </PanelShell>
   );

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 import {
   APP_NAME,
+  SUPPORT_EMAIL,
   chatSendSchema,
   chatDeltaFrameSchema,
   createCheckoutSchema,
@@ -373,6 +374,14 @@ function registerIpc(): void {
   ipcMain.handle("conversations:delete", (_event, id) => {
     const safeId = z.string().uuid().parse(id);
     return api.request(`/v1/conversations/${safeId}`, { method: "DELETE" });
+  });
+
+  // Contact support: open the user's mail client to the support address. Opening
+  // a mailto goes through the OS, not the sandboxed renderer, so it is handled in
+  // the main process like the other external-link actions.
+  ipcMain.handle("support:contact", async () => {
+    await shell.openExternal(`mailto:${SUPPORT_EMAIL}`);
+    return { opened: true };
   });
 
   ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));

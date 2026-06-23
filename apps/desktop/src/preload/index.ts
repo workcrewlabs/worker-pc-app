@@ -44,6 +44,10 @@ const workcrew = {
   app: {
     info: (): Promise<{ name: string; version: string; authMode: string; billingMode: string }> => ipcRenderer.invoke("app:info")
   },
+  support: {
+    // Open the user's mail client to the support address.
+    contact: (): Promise<{ opened: boolean }> => ipcRenderer.invoke("support:contact")
+  },
   settings: {
     getBackendUrl: (): Promise<string> => ipcRenderer.invoke("settings:get-backend-url"),
     setBackendUrl: (url: string): Promise<string> => ipcRenderer.invoke("settings:set-backend-url", url)

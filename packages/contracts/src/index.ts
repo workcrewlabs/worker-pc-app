@@ -2,6 +2,9 @@ import { z } from "zod";
 
 export const APP_NAME = "WorkCrew" as const;
 export const APP_PROTOCOL = "workcrew" as const;
+/** Address the "Contact support" action opens. Shared so the main process and
+ * the renderer never drift on it. */
+export const SUPPORT_EMAIL = "workcrew.support@gmail.com" as const;
 
 export const planIdSchema = z.enum(["pro", "ultra"]);
 export type PlanId = z.infer<typeof planIdSchema>;
