@@ -1,8 +1,8 @@
 import Stripe from "stripe";
 import { PLAN_CATALOG, REFERRAL_BONUS_MICRODOLLARS, type BillingInterval, type PlanId } from "@workcrew/contracts";
 import { config } from "./config.js";
+import { creditReferralOnPayment } from "./budget.js";
 import {
-  creditReferrer,
   getSubscription,
   getSubscriptionByStripeId,
   hasStripeEvent,
@@ -171,7 +171,7 @@ async function synchronizeSubscription(subscription: Stripe.Subscription): Promi
   // The first time a referred user becomes a paying subscriber, credit the
   // inviter. Guarded in the database, so repeated subscription webhook events
   // (created, updated, renewals) never double-credit.
-  if (active) await creditReferrer(userId, REFERRAL_BONUS_MICRODOLLARS);
+  if (active) await creditReferralOnPayment(userId, REFERRAL_BONUS_MICRODOLLARS);
 }
 
 export async function handleStripeWebhook(rawBody: Buffer, signature: string): Promise<void> {

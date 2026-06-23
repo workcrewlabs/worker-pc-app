@@ -44,14 +44,13 @@ import {
 import { processAndStoreAttachment } from "./attachments.js";
 import { changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { landingPage } from "./landing.js";
-import { getBudgetUsage, getBudgetWindow, planBudget, reserveBudget, settleBudget } from "./budget.js";
+import { creditReferralOnPayment, getBudgetUsage, getBudgetWindow, planBudget, reserveBudget, settleBudget } from "./budget.js";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
 import {
   client,
   countReferrals,
   createRun,
-  creditReferrer,
   deleteConversation,
   ensureReferralCode,
   getConversation,
@@ -145,7 +144,7 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
     currentPeriodEnd: new Date(subscription.currentPeriodEndMs).toISOString(),
     budgetPeriodStart: new Date(window.startMs).toISOString(),
     budgetPeriodEnd: new Date(window.endMs).toISOString(),
-    budgetMicrodollars: planBudget(subscription.plan) + (subscription.referralBonusMicrodollars ?? 0),
+    budgetMicrodollars: planBudget(subscription.plan),
     usedMicrodollars: usage.used,
     reservedMicrodollars: usage.reserved
   };
@@ -333,8 +332,8 @@ app.post("/v1/billing/simulate", async (request) => {
   }
   const body = createCheckoutSchema.parse(request.body);
   await simulatedBillingProvider.activate(userId, body.plan, body.interval);
-  // First paid activation credits the inviter who referred this user (idempotent).
-  await creditReferrer(userId, REFERRAL_BONUS_MICRODOLLARS);
+  // First paid activation grants the inviter their one-time referral bonus (idempotent).
+  await creditReferralOnPayment(userId, REFERRAL_BONUS_MICRODOLLARS);
   return subscriptionState(userId);
 });
 
