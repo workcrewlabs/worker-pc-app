@@ -98,7 +98,10 @@ export async function checkForUpdates(manual = false): Promise<{ supported: bool
 export async function installUpdate(): Promise<void> {
   const instance = await getUpdater();
   if (instance) {
-    instance.quitAndInstall();
+    // (isSilent = true, isForceRunAfter = true): install the downloaded update
+    // silently (no installer wizard) and relaunch the app straight into the new
+    // version, so from the user's view the app simply restarts itself updated.
+    instance.quitAndInstall(true, true);
     return;
   }
   // Development preview: there is nothing to install, so reload the windows to
