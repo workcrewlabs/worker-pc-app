@@ -19,4 +19,16 @@ describe("landingPage", () => {
     const html = landingPage("");
     expect(html).toContain('data-missing="1"');
   });
+
+  it("has a Help section with a working Manage billing control", () => {
+    const html = landingPage("");
+    // The app's Help button deep-links to #help, so the section must exist.
+    expect(html).toContain('id="help"');
+    expect(html.toLowerCase()).toContain("manage billing");
+    // Manage billing signs in then opens the billing portal endpoint.
+    expect(html).toContain("/v1/billing/portal");
+    expect(html).toContain("manageBilling()");
+    // The support address is shown for contact.
+    expect(html).toContain("workcrew.support@gmail.com");
+  });
 });

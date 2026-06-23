@@ -388,10 +388,11 @@ function registerIpc(): void {
     return { opened: true };
   });
 
-  // Opens the WorkCrew website in the browser. Billing (payment changes and
-  // cancellation) is managed there, not through an in-app portal.
+  // Opens the WorkCrew website at its Help section, where support and billing
+  // (payment changes and cancellation) live. Billing is managed on the website,
+  // not through an in-app portal, so the Help button lands the user right there.
   ipcMain.handle("support:billing", async () => {
-    await shell.openExternal("https://getworkcrew.com/");
+    await shell.openExternal("https://getworkcrew.com/#help");
     return { opened: true };
   });
 
