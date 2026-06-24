@@ -26,6 +26,28 @@ MAX_BODY_BYTES = 64 * 1024
 MAX_TEXT_LENGTH = 10_000
 CONTROL_WAIT_TIMEOUT = 10
 CONTROL_PROBE_TIMEOUT = 1
+
+# Navigation and editing keys the model may send via press-key. These are plain,
+# non-destructive keys (no system hotkeys, no modifier chords), so a spreadsheet
+# or form can be navigated and confirmed (select a cell, type, press Enter) while
+# type-keys still rejects arbitrary brace sequences and chords for safety.
+SAFE_KEYS = {
+    "enter": "{ENTER}",
+    "tab": "{TAB}",
+    "escape": "{ESC}",
+    "esc": "{ESC}",
+    "up": "{UP}",
+    "down": "{DOWN}",
+    "left": "{LEFT}",
+    "right": "{RIGHT}",
+    "home": "{HOME}",
+    "end": "{END}",
+    "pageup": "{PGUP}",
+    "pagedown": "{PGDN}",
+    "backspace": "{BACKSPACE}",
+    "delete": "{DELETE}",
+    "space": "{SPACE}",
+}
 ALLOWED_COMMANDS = {
     "list-windows",
     "connect",
@@ -33,6 +55,8 @@ ALLOWED_COMMANDS = {
     "click",
     "set-text",
     "type-keys",
+    "type-text",
+    "press-key",
     "get-text",
     "screenshot",
     "record-start",
@@ -79,6 +103,8 @@ VK_BACK = 0x08
 VK_TAB = 0x09
 VK_RETURN = 0x0D
 VK_SHIFT = 0x10
+VK_CONTROL = 0x11
+VK_MENU = 0x12
 VK_CAPITAL = 0x14
 RECORD_POLL_SECONDS = 0.02          # ~50 Hz: responsive without busy-spinning.
 RECORD_MAX_EVENTS = 400             # Caps memory; matches the summarize request limit.
@@ -412,10 +438,12 @@ class ClickRecorder:
             mouse_down = current_mouse
             shift = bool(user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
             caps = bool(user32.GetKeyState(VK_CAPITAL) & 1)
+            ctrl = bool(user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
+            alt = bool(user32.GetAsyncKeyState(VK_MENU) & 0x8000)
             for vk in tracked:
                 down = bool(user32.GetAsyncKeyState(vk) & 0x8000)
                 if down and not key_down[vk]:
-                    self._on_key(vk, shift, caps)
+                    self._on_key(vk, shift, caps, ctrl, alt)
                 key_down[vk] = down
             time.sleep(RECORD_POLL_SECONDS)
 
@@ -432,7 +460,11 @@ class ClickRecorder:
                 with self._lock:
                     event.update(resolved)
 
-    def _on_key(self, vk: int, shift: bool, caps: bool) -> None:
+    def _on_key(self, vk: int, shift: bool, caps: bool, ctrl: bool = False, alt: bool = False) -> None:
+        # A held Ctrl or Alt means a hotkey (Ctrl+S, Alt+Tab), not text, so it is
+        # never captured as typed characters.
+        if ctrl or alt:
+            return
         # Enter and Tab commit the current run (move to the next field/cell).
         if vk in (VK_RETURN, VK_TAB):
             with self._lock:
@@ -579,6 +611,26 @@ def execute_action(action: dict[str, Any]) -> str:
             output = Path(tempfile.gettempdir()) / f"workcrew-window-{os.getpid()}.png"
             image.save(output)
             return str(output)
+        if command == "press-key":
+            # Send one allowlisted navigation/editing key to the focused control,
+            # for example to confirm a spreadsheet cell with Enter. Only the safe
+            # keys above are permitted; anything else is rejected.
+            key = require_text(action.get("value"), "value", 40).lower()
+            sequence = SAFE_KEYS.get(key)
+            if sequence is None:
+                raise ValueError("That key is not allowed")
+            require_window().type_keys(sequence, set_foreground=True)
+            return f"Pressed {key}"
+        if command == "type-text":
+            # Type literal text into whatever is focused in the connected window
+            # (for example the active spreadsheet cell after it is selected), with
+            # no control lookup. Braces are rejected so it can only ever produce
+            # plain text, never a key chord or hotkey.
+            value = optional_text(action.get("value"), MAX_TEXT_LENGTH) or ""
+            if re.search(r"[{}]", value):
+                raise ValueError("Special key sequences are not allowed")
+            require_window().type_keys(value, with_spaces=True, set_foreground=True)
+            return "Typed text"
 
         selector = require_text(action.get("control"), "control")
         control = find_control(selector)

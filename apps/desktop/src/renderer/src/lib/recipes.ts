@@ -98,7 +98,9 @@ export function parseWindowsSnapshot(text: string | null): Map<string, string> {
 }
 
 const WINDOWS_CONTROL_COMMANDS = new Set(["click", "set-text", "type-keys", "get-text"]);
-const WINDOWS_NO_CONTROL_COMMANDS = new Set(["launch", "list-windows", "connect", "inspect"]);
+// type-text and press-key carry no control reference (they act on whatever is
+// focused) and a fixed value, so they replay deterministically.
+const WINDOWS_NO_CONTROL_COMMANDS = new Set(["launch", "list-windows", "connect", "inspect", "type-text", "press-key"]);
 // open/goto/navigation are URL or stateless, and the selector-targeted commands
 // produced by the click recorder carry a stable CSS selector, so all replay
 // deterministically. The plain click/fill (which target an ephemeral e12 ref) do
@@ -139,19 +141,23 @@ export function stabilizeAction(action: AutomationAction, snapshot: string | nul
 
 /**
  * Build a recipe from the actions executed during a successful run, each paired
- * with the snapshot that was current when it was chosen. Returns null if any
- * step cannot be made replay-stable, so a partially-deterministic run is never
- * recorded (replay must be all-or-nothing safe). The trailing finish is dropped;
- * replay completes after the last concrete step.
+ * with the snapshot that was current when it was chosen. Actions that failed or
+ * were declined (ok === false) are skipped, so a recipe captures only the clean
+ * successful path, not the model's wrong turns, which makes replay both faster
+ * and more reliable. Returns null if any KEPT step cannot be made replay-stable,
+ * so a partially-deterministic run is never recorded (replay must be all-or-
+ * nothing safe). The trailing finish is dropped; replay completes after the last
+ * concrete step.
  */
 export function buildRecipe(
   task: string,
-  recorded: { action: AutomationAction; snapshot: string | null }[],
+  recorded: { action: AutomationAction; snapshot: string | null; ok?: boolean }[],
   summary: string
 ): Recipe | null {
   if (recorded.length === 0) return null;
   const steps: RecipeStep[] = [];
-  for (const { action, snapshot } of recorded) {
+  for (const { action, snapshot, ok } of recorded) {
+    if (ok === false) continue; // skip a failed or declined action
     const stable = stabilizeAction(action, snapshot);
     if (!stable) return null;
     if (stable.kind === "finish") continue;

@@ -446,6 +446,18 @@ class BuildRecordTraceTests(unittest.TestCase):
         self.assertEqual(agent.build_record_trace([]), [])
 
 
+class SafeKeysTests(unittest.TestCase):
+    def test_press_key_and_type_text_are_allowlisted(self):
+        self.assertIn("press-key", agent.ALLOWED_COMMANDS)
+        self.assertIn("type-text", agent.ALLOWED_COMMANDS)
+
+    def test_safe_keys_map_known_navigation_keys(self):
+        self.assertEqual(agent.SAFE_KEYS["enter"], "{ENTER}")
+        self.assertEqual(agent.SAFE_KEYS["tab"], "{TAB}")
+        self.assertEqual(agent.SAFE_KEYS["down"], "{DOWN}")
+        self.assertNotIn("f5", agent.SAFE_KEYS)  # function/system keys are not allowed
+
+
 class TypingMapTests(unittest.TestCase):
     def test_digit_letter_and_numpad(self):
         self.assertEqual(agent._TYPING_MAP[0x31], ("1", "!"))   # 1 / shift+1
