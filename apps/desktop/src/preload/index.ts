@@ -159,9 +159,10 @@ const workcrew = {
     // Upload picked files and return a reference for each successfully stored
     // file. The bytes are read in the main process and posted to the backend.
     upload: (files: PickedFile[]): Promise<AttachmentRef[]> => ipcRenderer.invoke("attachments:upload", files),
-    // Upload the image currently on the OS clipboard (a copied screenshot), so it
-    // can be pasted into the chat with Ctrl+V. Returns null if there is no image.
-    pasteImage: (): Promise<AttachmentRef | null> => ipcRenderer.invoke("attachments:paste-image")
+    // Upload raw image bytes (a pasted screenshot read from the paste event), so a
+    // copied image can be pasted into the chat with Ctrl+V or the right-click menu.
+    uploadBytes: (name: string, mimeType: string, bytes: ArrayBuffer): Promise<AttachmentRef | null> =>
+      ipcRenderer.invoke("attachments:upload-bytes", { name, mimeType, bytes })
   }
 };
 

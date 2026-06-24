@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { join } from "node:path";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, session, shell } from "electron";
 import {
   APP_NAME,
   SUPPORT_EMAIL,
@@ -215,6 +215,25 @@ function createWindow(): void {
     const allowed = process.env.ELECTRON_RENDERER_URL;
     if (!allowed || !url.startsWith(allowed)) event.preventDefault();
   });
+  // Right-click menu with the standard editing actions. Without this, Electron
+  // shows no context menu, so the user cannot right-click to paste text, files, or
+  // images. The Paste role runs a real paste, which fires a paste event in the
+  // renderer (handled there to attach pasted images and files).
+  mainWindow.webContents.on("context-menu", (_event, params) => {
+    const flags = params.editFlags;
+    const editable = params.isEditable;
+    const template: Electron.MenuItemConstructorOptions[] = [];
+    if (editable || params.selectionText) {
+      if (flags.canCut && editable) template.push({ role: "cut" });
+      if (flags.canCopy) template.push({ role: "copy" });
+      if (editable) template.push({ role: "paste" });
+      if (template.length) template.push({ type: "separator" });
+      template.push({ role: "selectAll" });
+    }
+    if (template.length && mainWindow) {
+      Menu.buildFromTemplate(template).popup({ window: mainWindow });
+    }
+  });
   mainWindow.once("ready-to-show", () => mainWindow?.show());
   // Destroy the overlay when the main window closes. It is a separate top-level
   // window, so leaving it alive would stop "window-all-closed" from firing and the
@@ -386,22 +405,21 @@ function registerIpc(): void {
     return run;
   });
 
-  // Upload an image from the OS clipboard (a copied screenshot) so it can be
-  // pasted into the chat. Electron reads the clipboard image directly in the main
-  // process; the sandboxed renderer cannot. Returns null when there is no image.
-  ipcMain.handle("attachments:paste-image", async () => {
-    const image = clipboard.readImage();
-    if (image.isEmpty()) return null;
-    const buffer = image.toPNG();
+  // Upload raw bytes (a pasted screenshot or any clipboard image the browser
+  // decoded for the paste event). The renderer reads the image from the paste
+  // event and sends its bytes here, which is more reliable than reading the OS
+  // clipboard separately. Returns null for empty input.
+  ipcMain.handle("attachments:upload-bytes", async (_event, raw) => {
+    const input = raw as { name?: unknown; mimeType?: unknown; bytes?: unknown };
+    if (!input || (!(input.bytes instanceof ArrayBuffer) && !ArrayBuffer.isView(input.bytes as ArrayBufferView))) return null;
+    const buffer = Buffer.from(input.bytes as ArrayBuffer);
     if (!buffer.byteLength) return null;
     if (buffer.byteLength > MAX_UPLOAD_BYTES) {
       throw new Error("That image is too large. The limit is 10 MB.");
     }
-    const body = {
-      filename: `pasted-image-${Date.now()}.png`,
-      mimeType: "image/png",
-      base64: buffer.toString("base64")
-    };
+    const name = typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, 200) : `pasted-image-${Date.now()}.png`;
+    const mimeType = typeof input.mimeType === "string" && input.mimeType ? input.mimeType : "image/png";
+    const body = { filename: name, mimeType, base64: buffer.toString("base64") };
     const run = attachmentUploadChain.then(() => api.request("/v1/attachments", { method: "POST", body }));
     attachmentUploadChain = run.catch(() => {});
     return run;

@@ -9,8 +9,10 @@ import { AutomationActivity } from "./AutomationActivity";
 
 type PickedFile = { path: string; name: string; size: number };
 // A file in the composer: it shows immediately with a spinner while it uploads,
-// then becomes ready (or shows an error).
-type Attachment = { id: string; filename: string; status: "uploading" | "ready" | "error"; ref?: AttachmentRef };
+// then becomes ready (or shows an error). path is the file's real location on the
+// computer when known (drag, file picker, or a pasted copied file), so a task can
+// work on the original file locally instead of only the uploaded copy.
+type Attachment = { id: string; filename: string; status: "uploading" | "ready" | "error"; ref?: AttachmentRef; path?: string };
 
 function PlusIcon() {
   return (
@@ -139,7 +141,7 @@ export function ChatView({
   streaming: boolean;
   model: ModelTier;
   onModelChange: (model: ModelTier) => void;
-  onSend: (text: string, attachments: AttachmentRef[]) => void;
+  onSend: (text: string, attachments: AttachmentRef[], localPaths: string[]) => void;
   onStop: () => void;
   onAutomate: (task: string) => void;
   onRecord?: () => void;
@@ -170,6 +172,9 @@ export function ChatView({
 
   const uploading = attachments.some((item) => item.status === "uploading");
   const readyRefs = attachments.filter((item) => item.status === "ready" && item.ref).map((item) => item.ref as AttachmentRef);
+  // Real local paths of attached files (drag, picker, or pasted copied files), so
+  // a processing task can work on the originals on the computer.
+  const readyPaths = attachments.filter((item) => item.status === "ready" && item.path).map((item) => item.path as string);
 
   // Show the one-time model setup progress on first voice use.
   useEffect(() => window.workcrew.dictation.onStatus((status) => {
@@ -253,7 +258,7 @@ export function ChatView({
     setAttachments((current) => {
       const room = Math.max(0, 20 - current.length);
       const accepted = picked.slice(0, room);
-      const chips: Attachment[] = accepted.map((file) => ({ id: localId(), filename: file.name, status: "uploading" }));
+      const chips: Attachment[] = accepted.map((file) => ({ id: localId(), filename: file.name, status: "uploading", path: file.path }));
       accepted.forEach((file, index) => {
         const chip = chips[index];
         if (!chip) return;
@@ -274,17 +279,19 @@ export function ChatView({
     });
   }
 
-  // Paste an image straight from the clipboard (for example a screenshot taken
-  // with the snipping tool). The main process reads the OS clipboard image and
-  // uploads it, so a copied image can be pasted into the chat with Ctrl+V.
-  function pasteImageFromClipboard() {
+  // Add an image (or other) blob that has no file path, for example a screenshot
+  // pasted from the clipboard. The bytes are read here and uploaded directly, so
+  // it does not depend on reading the OS clipboard a second time.
+  function addImageBlob(file: File) {
     const id = localId();
     setAttachError("");
-    setAttachments((current) => [...current, { id, filename: "Pasted image", status: "uploading" }]);
-    window.workcrew.attachments.pasteImage()
+    const filename = file.name || "Pasted image";
+    setAttachments((current) => [...current, { id, filename, status: "uploading" }]);
+    file.arrayBuffer()
+      .then((bytes) => window.workcrew.attachments.uploadBytes(filename, file.type || "image/png", bytes))
       .then((ref) => {
         setAttachments((list) => list.map((item) =>
-          item.id === id ? (ref ? { ...item, status: "ready", ref, filename: ref.filename || "Pasted image" } : { ...item, status: "error" }) : item
+          item.id === id ? (ref ? { ...item, status: "ready", ref } : { ...item, status: "error" }) : item
         ));
         if (!ref) setAttachError("That image could not be pasted. Try copying it again.");
       })
@@ -294,14 +301,25 @@ export function ChatView({
       });
   }
 
+  // Handle paste (Ctrl+V or the right-click Paste menu). Files copied from the
+  // file manager keep their path and are located locally; a pasted screenshot has
+  // no path, so its bytes are read straight from the paste event. Plain text falls
+  // through to the normal paste so typing and pasting text still work.
   function onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
-    if (streaming) return;
-    const items = event.clipboardData?.items;
-    if (!items) return;
-    const hasImage = Array.from(items).some((item) => item.kind === "file" && item.type.startsWith("image/"));
-    if (!hasImage) return; // let normal text paste happen
+    if (streaming || runner.running) return;
+    const data = event.clipboardData;
+    if (!data) return;
+    const files = Array.from(data.files);
+    if (files.length === 0) return;
     event.preventDefault();
-    pasteImageFromClipboard();
+    const picked: PickedFile[] = [];
+    for (const file of files) {
+      let path = "";
+      try { path = window.workcrew.files.pathForFile(file); } catch { path = ""; }
+      if (path) picked.push({ path, name: file.name, size: file.size });
+      else addImageBlob(file);
+    }
+    if (picked.length) addFiles(picked);
   }
 
   async function pickFiles() {
@@ -347,7 +365,7 @@ export function ChatView({
     // Block while a chat is streaming, files are uploading, or an automation is
     // running, so a message is never silently dropped against a busy engine.
     if ((!trimmed && readyRefs.length === 0) || streaming || uploading || runner.running) return;
-    onSend(trimmed, readyRefs);
+    onSend(trimmed, readyRefs, readyPaths);
     setDraft("");
     setAttachments([]);
     setAttachError("");

@@ -555,20 +555,31 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEn
     }
   }
 
-  function send(text: string, attachments: AttachmentRef[]) {
-    if (attachments.length === 0 && !runner.running) {
-      // While iterating on a task in this chat, a follow-up that is not a plain
-      // question is treated as a correction: re-run the task with the fix added so
-      // the user can keep refining and re-running before saving it as a routine.
-      if (automationMode && !isQuestionLike(text)) {
-        const combined = `${automationTask}\n\nThe last attempt was not right. Correction from the user: ${text}\nPlease do the whole task again with this fix.`;
-        runAutomation(combined, "Task");
+  function send(text: string, attachments: AttachmentRef[], localPaths: string[] = []) {
+    if (!runner.running) {
+      // Files attached with a request to act on them (for example "crop this
+      // image" or "clean up this spreadsheet") run as an automation that works on
+      // the real files on the computer, by passing their local paths to the model
+      // so it can edit the originals with its tools rather than only the copy.
+      if (localPaths.length > 0 && looksLikeAutomation(text)) {
+        const list = localPaths.map((path) => `"${path}"`).join(", ");
+        runAutomation(`${text}\n\nWork on these local files directly on the computer: ${list}`, "Task");
         return;
       }
-      // A fresh request to act on the computer starts an inline automation.
-      if (!automationMode && looksLikeAutomation(text)) {
-        runAutomation(text, "Task");
-        return;
+      if (attachments.length === 0) {
+        // While iterating on a task in this chat, a follow-up that is not a plain
+        // question is treated as a correction: re-run the task with the fix added
+        // so the user can keep refining and re-running before saving a routine.
+        if (automationMode && !isQuestionLike(text)) {
+          const combined = `${automationTask}\n\nThe last attempt was not right. Correction from the user: ${text}\nPlease do the whole task again with this fix.`;
+          runAutomation(combined, "Task");
+          return;
+        }
+        // A fresh request to act on the computer starts an inline automation.
+        if (!automationMode && looksLikeAutomation(text)) {
+          runAutomation(text, "Task");
+          return;
+        }
       }
     }
     // Otherwise answer in chat. A normal chat message (with no in-flight run)
