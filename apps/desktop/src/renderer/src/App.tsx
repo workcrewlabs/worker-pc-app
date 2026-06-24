@@ -79,6 +79,9 @@ function looksLikeAutomation(text: string): boolean {
   ) {
     return true;
   }
+  // Coding and media tasks that need the workspace and command execution.
+  if (/\b(clone|git |github|repo|repositor|run (the |a )?(script|command|tool)|ffmpeg)\b/.test(t)) return true;
+  if (/\b(edit|crop|resize|trim|compress|rotate|convert|render|encode)\b.*\b(image|images|photo|photos|picture|video|videos|clip|gif|file)\b/.test(t)) return true;
   return false;
 }
 

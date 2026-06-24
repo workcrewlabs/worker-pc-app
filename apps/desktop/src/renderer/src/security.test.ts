@@ -11,6 +11,10 @@ describe("desktop action approvals", () => {
     expect(actionNeedsApproval({ kind: "windows", command: "set-text", control: "Editor", value: "Hello" })).toBe(true);
     expect(actionNeedsApproval({ kind: "windows", command: "inspect" })).toBe(false);
   });
+
+  it("always requires approval for shell commands", () => {
+    expect(actionNeedsApproval({ kind: "shell", command: "git clone https://example.com/repo" })).toBe(true);
+  });
 });
 
 describe("desktop result redaction", () => {

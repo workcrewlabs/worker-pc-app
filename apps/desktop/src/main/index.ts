@@ -5,6 +5,7 @@ import {
   APP_NAME,
   SUPPORT_EMAIL,
   recordedEventSchema,
+  shellActionSchema,
   summarizeRecordingRequestSchema,
   chatSendSchema,
   chatDeltaFrameSchema,
@@ -23,6 +24,7 @@ import { transcribeSamples } from "./transcription.js";
 import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
 import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
 import { extractOfficeText } from "./office.js";
+import { runShellCommand } from "./shell-cli.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -430,6 +432,10 @@ function registerIpc(): void {
     await shell.openExternal("https://getworkcrew.com/#help");
     return { opened: true };
   });
+
+  // Run one shell command in the workspace. The renderer only sends this after the
+  // user has approved the exact command, so this just validates and runs it.
+  ipcMain.handle("shell:run", (_event, raw) => runShellCommand(shellActionSchema.parse(raw).command));
 
   ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));
   ipcMain.handle("automation:windows", (_event, action) => windowsAgent.execute(action));

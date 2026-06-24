@@ -211,7 +211,10 @@ export function useAutomationRunner(): AutomationRunner {
         const id = stepId();
         setSteps((current) => [...current, { id, label: actionLabel(action), detail: actionDetail(action), status: "running" }]);
 
-        if (actionNeedsApproval(action) && !autoApproveRef.current) {
+        // Shell commands always require explicit approval, even when Always allow
+        // is on; everything else respects the Always allow setting.
+        const mustApprove = actionNeedsApproval(action) && (action.kind === "shell" || !autoApproveRef.current);
+        if (mustApprove) {
           const approved = await requestApproval(action);
           if (!approved) {
             recordEntry.ok = false;

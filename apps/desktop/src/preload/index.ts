@@ -114,6 +114,7 @@ const workcrew = {
     execute: (action: AutomationAction): Promise<string> => {
       if (action.kind === "browser") return ipcRenderer.invoke("automation:browser", action);
       if (action.kind === "windows") return ipcRenderer.invoke("automation:windows", action);
+      if (action.kind === "shell") return ipcRenderer.invoke("shell:run", action);
       return Promise.resolve(action.summary);
     },
     launchBrowser: (): Promise<{ launched: boolean; message: string }> => ipcRenderer.invoke("automation:launch-browser"),

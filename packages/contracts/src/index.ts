@@ -125,6 +125,15 @@ export const windowsActionSchema = z.object({
   value: z.string().max(10_000).optional()
 }).strict();
 
+// Run one shell command on the user's computer, inside WorkCrew's workspace
+// folder. This is what lets the assistant clone a repo, install and run tools
+// (ffmpeg, image libraries, scripts), and edit files. Every command is shown to
+// the user and runs only after explicit approval.
+export const shellActionSchema = z.object({
+  kind: z.literal("shell"),
+  command: z.string().min(1).max(4_000)
+}).strict();
+
 export const finishActionSchema = z.object({
   kind: z.literal("finish"),
   summary: z.string().min(1).max(10_000)
@@ -133,11 +142,13 @@ export const finishActionSchema = z.object({
 export const automationActionSchema = z.discriminatedUnion("kind", [
   browserActionSchema,
   windowsActionSchema,
+  shellActionSchema,
   finishActionSchema
 ]);
 export type AutomationAction = z.infer<typeof automationActionSchema>;
 export type BrowserAction = z.infer<typeof browserActionSchema>;
 export type WindowsAction = z.infer<typeof windowsActionSchema>;
+export type ShellAction = z.infer<typeof shellActionSchema>;
 
 // ---------------------------------------------------------------------------
 // Click recording -> AI-written routine.
