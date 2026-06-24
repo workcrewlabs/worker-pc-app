@@ -19,6 +19,7 @@
     "@workcrew/contracts": "0.1.0",
     "dotenv": "latest",
     "electron-updater": "^6.3.9",
+    "jszip": "^3.10.1",
     "playwright-core": "^1.61.0",
     "react": "latest",
     "react-dom": "latest",
@@ -40,19 +41,41 @@
     "appId": "com.workcrew.desktop",
     "productName": "WorkCrew",
     "asar": true,
-    "files": ["out/**/*", "resources/**/*", "package.json"],
+    "files": [
+      "out/**/*",
+      "resources/**/*",
+      "package.json"
+    ],
     "asarUnpack": [
       "node_modules/playwright-core/**/*",
       "node_modules/onnxruntime-node/**/*",
       "node_modules/@huggingface/transformers/**/*"
     ],
     "extraResources": [
-      { "from": "../../python/windows-agent/dist/workcrew-windows-agent.exe", "to": "windows-agent/workcrew-windows-agent.exe" }
+      {
+        "from": "../../python/windows-agent/dist/workcrew-windows-agent.exe",
+        "to": "windows-agent/workcrew-windows-agent.exe"
+      }
     ],
-    "publish": [{ "provider": "github", "owner": "nazihbizriai-lab", "repo": "worker-pc-app" }],
-    "protocols": [{ "name": "WorkCrew", "schemes": ["workcrew"] }],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "nazihbizriai-lab",
+        "repo": "worker-pc-app"
+      }
+    ],
+    "protocols": [
+      {
+        "name": "WorkCrew",
+        "schemes": [
+          "workcrew"
+        ]
+      }
+    ],
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "resources/icon.ico",
       "artifactName": "WorkCrew-Setup-${version}.${ext}"
     },

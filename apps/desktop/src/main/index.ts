@@ -22,6 +22,7 @@ import { getBackendUrl, setBackendUrl } from "./settings.js";
 import { transcribeSamples } from "./transcription.js";
 import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
 import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
+import { extractOfficeText } from "./office.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -176,6 +177,10 @@ function guessMimeType(filename: string): string {
   return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
 }
 
+// Word/Excel/PowerPoint files are read locally and only their extracted text is
+// uploaded, so the binary never leaves the machine (like Claude Code's skills).
+const OFFICE_EXTENSIONS = new Set(["docx", "xlsx", "pptx"]);
+
 function createWindow(): void {
   console.info("[WorkCrew] creating main window");
   mainWindow = new BrowserWindow({
@@ -319,7 +324,7 @@ function registerIpc(): void {
       buttonLabel: "Add",
       properties: ["openFile", "multiSelections"],
       filters: [
-        { name: "Documents and images", extensions: ["pdf", "txt", "md", "csv", "doc", "docx", "xls", "xlsx", "png", "jpg", "jpeg", "gif", "webp"] },
+        { name: "Documents and images", extensions: ["pdf", "txt", "md", "csv", "docx", "xlsx", "pptx", "png", "jpg", "jpeg", "gif", "webp"] },
         { name: "All files", extensions: ["*"] }
       ]
     });
@@ -346,14 +351,17 @@ function registerIpc(): void {
         if (buffer.byteLength > MAX_UPLOAD_BYTES) {
           throw new Error(`${file.name} is too large. The limit is 10 MB per file.`);
         }
-        const ref = await api.request("/v1/attachments", {
-          method: "POST",
-          body: {
-            filename: file.name,
-            mimeType: guessMimeType(file.name),
-            base64: buffer.toString("base64")
-          }
-        });
+        const ext = (file.name.split(".").pop() ?? "").toLowerCase();
+        let body: { filename: string; mimeType: string; base64: string };
+        if (OFFICE_EXTENSIONS.has(ext)) {
+          let text = "";
+          try { text = await extractOfficeText(ext, buffer); } catch { text = ""; }
+          if (!text.trim()) throw new Error(`${file.name} could not be read, or it has no text.`);
+          body = { filename: file.name, mimeType: "text/plain", base64: Buffer.from(text, "utf8").toString("base64") };
+        } else {
+          body = { filename: file.name, mimeType: guessMimeType(file.name), base64: buffer.toString("base64") };
+        }
+        const ref = await api.request("/v1/attachments", { method: "POST", body });
         refs.push(ref);
       }
       return refs;
