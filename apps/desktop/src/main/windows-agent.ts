@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
-import { windowsActionSchema } from "@workcrew/contracts";
+import { APP_NAME, windowsActionSchema } from "@workcrew/contracts";
 
 // Where the packaged Windows helper executable lives. In an installed build it
 // is bundled under the app resources; in development it is the PyInstaller output
@@ -164,7 +164,10 @@ export class WindowsAgent {
   // Begin recording the user's clicks in desktop apps. The helper polls the mouse
   // in its own process between this call and recordStop, so this returns at once.
   async recordStart(): Promise<void> {
-    await this.execute({ kind: "windows", command: "record-start" });
+    // Pass WorkCrew's own window title so the helper ignores clicks and typing
+    // that happen in WorkCrew itself (starting/stopping, its panels and buttons),
+    // recording only the user's work in the target app.
+    await this.execute({ kind: "windows", command: "record-start", windowTitle: APP_NAME });
   }
 
   // Stop recording and return the captured steps as raw action objects (the

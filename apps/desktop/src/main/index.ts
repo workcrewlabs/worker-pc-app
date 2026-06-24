@@ -21,6 +21,7 @@ import { BrowserCli } from "./browser-cli.js";
 import { getBackendUrl, setBackendUrl } from "./settings.js";
 import { transcribeSamples } from "./transcription.js";
 import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
+import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -200,6 +201,10 @@ function createWindow(): void {
     if (!allowed || !url.startsWith(allowed)) event.preventDefault();
   });
   mainWindow.once("ready-to-show", () => mainWindow?.show());
+  // Destroy the overlay when the main window closes. It is a separate top-level
+  // window, so leaving it alive would stop "window-all-closed" from firing and the
+  // app would never quit on Windows/Linux.
+  mainWindow.on("closed", () => { closeAutomationOverlay(); mainWindow = null; });
 
   const capturePath = process.env.WORKCREW_CAPTURE;
   if (capturePath) {
@@ -405,8 +410,17 @@ function registerIpc(): void {
   ipcMain.handle("dictation:transcribe", (_event, buffer: ArrayBuffer) => transcribeSamples(new Float32Array(buffer)));
   ipcMain.handle("automation:launch-browser", () => browserCli.launchBrowser());
   ipcMain.handle("automation:stop", async () => {
+    // The overlay is lowered by the renderer's run-exit path (or the safety timer)
+    // after the in-flight action settles, so it stays up until the mouse actually
+    // stops moving rather than disappearing the instant Stop is pressed.
     await Promise.allSettled([browserCli.stop(), windowsAgent.stop()]);
     return { stopped: true };
+  });
+  // The renderer turns the "do not touch the mouse" overlay on before a Windows
+  // automation acts and off when the run ends.
+  ipcMain.handle("automation:overlay", (_event, active: boolean) => {
+    setAutomationOverlay(active === true);
+    return { shown: active === true };
   });
 
   // Click recording. Start begins capturing what the user does (in the automation
@@ -421,15 +435,25 @@ function registerIpc(): void {
   ipcMain.handle("recorder:stop", async (_event, target: "browser" | "windows") => {
     const events: RecordedEvent[] = [];
     if (target === "windows") {
-      // The Windows helper returns clicks as { window, control, controlType }.
-      // Normalize each into a descriptive click event, clamping to the contract
-      // limits so a long control name is kept (truncated) rather than failing
-      // validation and dropping the whole click.
+      // The Windows helper returns clicks as { kind: "click", window, control,
+      // controlType } and typing as { kind: "type", window, text }. Normalize each
+      // into a descriptive event, clamping to the contract limits so a long name
+      // is kept (truncated) rather than failing validation and dropping the event.
       for (const item of await windowsAgent.recordStop()) {
-        const it = item as { window?: unknown; control?: unknown; controlType?: unknown };
+        const it = item as { kind?: unknown; window?: unknown; control?: unknown; controlType?: unknown; text?: unknown };
+        const window = typeof it.window === "string" ? it.window.slice(0, 300) : undefined;
+        if (it.kind === "type") {
+          const parsed = recordedEventSchema.safeParse({
+            kind: "type",
+            window,
+            value: typeof it.text === "string" ? it.text.slice(0, 2000) : undefined
+          });
+          if (parsed.success && parsed.data.value) events.push(parsed.data);
+          continue;
+        }
         const parsed = recordedEventSchema.safeParse({
           kind: "click",
-          window: typeof it.window === "string" ? it.window.slice(0, 300) : undefined,
+          window,
           target: typeof it.control === "string" ? it.control.slice(0, 300) : undefined,
           role: typeof it.controlType === "string" && it.controlType ? it.controlType.slice(0, 80) : undefined
         });
@@ -488,6 +512,7 @@ else {
 app.on("before-quit", () => {
   for (const controller of chatStreams.values()) controller.abort();
   chatStreams.clear();
+  closeAutomationOverlay();
   void browserCli.stop();
   void windowsAgent.stop();
 });

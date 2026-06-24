@@ -5,6 +5,7 @@ import ctypes
 import hmac
 import json
 import os
+import queue
 import re
 import sys
 import tempfile
@@ -74,9 +75,46 @@ MAX_INSPECT_CONTROLS = 200
 # press it resolves the UI Automation element under the cursor, so a recorded
 # session replays by control name, never by screen coordinates.
 VK_LBUTTON = 0x01
+VK_BACK = 0x08
+VK_TAB = 0x09
+VK_RETURN = 0x0D
+VK_SHIFT = 0x10
+VK_CAPITAL = 0x14
 RECORD_POLL_SECONDS = 0.02          # ~50 Hz: responsive without busy-spinning.
 RECORD_MAX_EVENTS = 400             # Caps memory; matches the summarize request limit.
 RECORD_MAX_SECONDS = 20 * 60        # Safety stop so a forgotten session ends.
+RECORD_MAX_TYPED = 1000             # Caps the length of one captured typing run.
+
+
+def _build_typing_map() -> dict[int, tuple[str, str]]:
+    """Map virtual-key codes to the (normal, shifted) character they produce, so
+    polled key presses can be turned into the text the user typed. Covers digits,
+    letters, the numpad, and common punctuation: enough to capture data entry like
+    spreadsheet values without a full keyboard-layout engine."""
+    mapping: dict[int, tuple[str, str]] = {}
+    shifted_digits = ")!@#$%^&*("
+    for vk in range(0x30, 0x3A):  # 0-9
+        mapping[vk] = (chr(vk), shifted_digits[vk - 0x30])
+    for vk in range(0x41, 0x5B):  # A-Z
+        mapping[vk] = (chr(vk).lower(), chr(vk))
+    for i in range(10):  # numpad 0-9
+        mapping[0x60 + i] = (str(i), str(i))
+    mapping[0x20] = (" ", " ")
+    mapping[0x6E] = (".", ".")  # numpad decimal
+    mapping[0x6B] = ("+", "+")  # numpad add
+    mapping[0x6D] = ("-", "-")  # numpad subtract
+    mapping[0x6F] = ("/", "/")  # numpad divide
+    mapping[0xBA] = (";", ":")
+    mapping[0xBB] = ("=", "+")
+    mapping[0xBC] = (",", "<")
+    mapping[0xBD] = ("-", "_")
+    mapping[0xBE] = (".", ">")
+    mapping[0xBF] = ("/", "?")
+    mapping[0xC0] = ("`", "~")
+    return mapping
+
+
+_TYPING_MAP = _build_typing_map()
 
 
 class AgentState:
@@ -268,6 +306,22 @@ def _cursor_point() -> tuple[int, int]:
     return int(point.x), int(point.y)
 
 
+def _foreground_window_title() -> str:
+    """The title of the window currently in front, used to tag typed text with the
+    app it went into (and to drop typing that happened in WorkCrew itself)."""
+    try:
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        length = int(user32.GetWindowTextLengthW(hwnd))
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buffer, length + 1)
+        return str(buffer.value or "")
+    except Exception:
+        return ""
+
+
 def _resolve_element(x: int, y: int) -> dict[str, str] | None:
     """Resolve the UI Automation element under a screen point to a stable
     description (window title, control name, automation id, control type). Returns
@@ -292,81 +346,178 @@ def _resolve_element(x: int, y: int) -> dict[str, str] | None:
 
 
 class ClickRecorder:
-    """Records the user's left clicks by polling the mouse button and cursor. On
-    each new press it resolves the element under the cursor on a worker thread, so
-    the recording is a list of named controls that can be replayed deterministically.
+    """Records the user's clicks AND typing by polling the mouse and keyboard. On
+    each new click it resolves the element under the cursor; key presses accumulate
+    into the text the user typed and are emitted as a "type" event when a click,
+    Enter/Tab, or stop ends the run. The result is a readable trace the model turns
+    into a reusable instruction.
+
+    ignore_window is the WorkCrew window title: clicks and typing that happen in
+    WorkCrew itself (starting/stopping the recording, its own panels and buttons)
+    are dropped so only the user's work in the target app is recorded.
 
     The capture loop touches only ctypes and pywinauto, never AgentState, so it
     needs no lock and cannot deadlock with the request handler."""
 
-    def __init__(self) -> None:
+    def __init__(self, ignore_window: str = "") -> None:
+        self.ignore_window = (ignore_window or "").strip()
+        self._ignore_lower = self.ignore_window.lower()
         self._events: list[dict[str, Any]] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Element resolution (a slow UI Automation round trip) runs on a separate
+        # thread so it never stalls keyboard/mouse sampling on the poll loop. The
+        # poll loop appends a placeholder click immediately and queues it here.
+        self._resolver: threading.Thread | None = None
+        self._queue: "queue.Queue[tuple[dict[str, Any], int, int] | None]" = queue.Queue()
         self._lock = threading.Lock()
+        # Typed characters accumulate here with the window they were typed in, then
+        # flush to one "type" event on the next click, Enter/Tab, or stop.
+        self._typed: list[str] = []
+        self._typed_window: str = ""
 
     def start(self) -> None:
+        self._resolver = threading.Thread(target=self._resolve_loop, name="wc-click-resolver", daemon=True)
+        self._resolver.start()
         self._thread = threading.Thread(target=self._loop, name="wc-click-recorder", daemon=True)
         self._thread.start()
 
     def stop(self) -> list[dict[str, Any]]:
         self._stop.set()
-        thread = self._thread
-        if thread is not None:
-            thread.join(timeout=3)
+        if self._thread is not None:
+            self._thread.join(timeout=3)
+        # The poll loop has stopped, so no more clicks will be queued. Let the
+        # resolver finish the ones already queued, then exit on the sentinel.
+        self._queue.put(None)
+        if self._resolver is not None:
+            self._resolver.join(timeout=3)
         with self._lock:
+            self._flush_typed_locked()
             return list(self._events)
 
     def _loop(self) -> None:
         started = time.monotonic()
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-        # Prime the previous state from the live button so a click already held
-        # when recording begins is not captured as a fresh press.
-        was_down = bool(user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+        tracked = list(_TYPING_MAP.keys()) + [VK_BACK, VK_RETURN, VK_TAB]
+        # Prime previous states so keys/buttons already held when recording begins
+        # are not captured as fresh presses.
+        mouse_down = bool(user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+        key_down: dict[int, bool] = {vk: bool(user32.GetAsyncKeyState(vk) & 0x8000) for vk in tracked}
         while not self._stop.is_set():
             if time.monotonic() - started > RECORD_MAX_SECONDS:
                 break
-            is_down = bool(user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
-            if is_down and not was_down:
+            current_mouse = bool(user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+            if current_mouse and not mouse_down:
                 self._capture(*_cursor_point())
-            was_down = is_down
+            mouse_down = current_mouse
+            shift = bool(user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
+            caps = bool(user32.GetKeyState(VK_CAPITAL) & 1)
+            for vk in tracked:
+                down = bool(user32.GetAsyncKeyState(vk) & 0x8000)
+                if down and not key_down[vk]:
+                    self._on_key(vk, shift, caps)
+                key_down[vk] = down
             time.sleep(RECORD_POLL_SECONDS)
 
-    def _capture(self, x: int, y: int) -> None:
+    def _resolve_loop(self) -> None:
+        # Drain queued clicks, resolving each element off the poll thread and
+        # filling the placeholder in place. Exits on the None sentinel.
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            event, x, y = item
+            resolved = _resolve_element(x, y)
+            if resolved:
+                with self._lock:
+                    event.update(resolved)
+
+    def _on_key(self, vk: int, shift: bool, caps: bool) -> None:
+        # Enter and Tab commit the current run (move to the next field/cell).
+        if vk in (VK_RETURN, VK_TAB):
+            with self._lock:
+                self._flush_typed_locked()
+            return
+        if vk == VK_BACK:
+            with self._lock:
+                if self._typed:
+                    self._typed.pop()
+            return
+        pair = _TYPING_MAP.get(vk)
+        if pair is None:
+            return
+        if 0x41 <= vk <= 0x5A:  # letters: Caps Lock and Shift combine
+            character = pair[1] if (shift ^ caps) else pair[0]
+        else:
+            character = pair[1] if shift else pair[0]
+        # Scope typing to the foreground app, re-checked every key. Typing in
+        # WorkCrew itself is never captured, and a change of foreground window ends
+        # the current run so each run is attributed to one app.
+        window = _foreground_window_title()
+        if self._ignore_lower and window.strip().lower().startswith(self._ignore_lower):
+            return
         with self._lock:
+            if self._typed and window != self._typed_window:
+                self._flush_typed_locked()
+            if not self._typed:
+                self._typed_window = window
+            if len(self._typed) < RECORD_MAX_TYPED:
+                self._typed.append(character)
+
+    def _flush_typed_locked(self) -> None:
+        # Emit the accumulated typing as one event. Caller holds self._lock.
+        if not self._typed:
+            return
+        text = "".join(self._typed).strip()
+        window = self._typed_window
+        self._typed = []
+        self._typed_window = ""
+        if text and len(self._events) < RECORD_MAX_EVENTS:
+            self._events.append({"kind": "type", "window": window[:500], "text": text[:RECORD_MAX_TYPED]})
+
+    def _capture(self, x: int, y: int) -> None:
+        # A click ends the current typing run so events stay in order. The click is
+        # appended immediately as a placeholder and resolved off-thread.
+        with self._lock:
+            self._flush_typed_locked()
             if len(self._events) >= RECORD_MAX_EVENTS:
                 return
-        resolved = _resolve_element(x, y)
-        event: dict[str, Any] = {"x": x, "y": y}
-        if resolved:
-            event.update(resolved)
-        with self._lock:
+            event: dict[str, Any] = {"kind": "click", "x": x, "y": y}
             self._events.append(event)
+        self._queue.put((event, x, y))
 
 
-def build_record_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Turn recorded click events into a readable trace for the model to describe.
+def build_record_trace(events: list[dict[str, Any]], ignore_window: str = "") -> list[dict[str, Any]]:
+    """Turn recorded click and type events into a readable trace for the model.
 
     Pure and side-effect free so it can be unit tested without pywinauto or a
-    desktop. Each click becomes one entry with the window title, the control name
-    (or automation id when unnamed), and the control type. Clicks whose element
-    did not resolve to a name are dropped, and a click identical to the one just
-    before it is collapsed. The trace is descriptive, not replayable steps: the
-    model turns it into a reusable instruction that the automation loop runs.
+    desktop. A click becomes a {kind: click, window, control, controlType} entry
+    (clicks whose element did not resolve to a name are dropped, and a click
+    identical to the one just before it is collapsed). A typing run becomes a
+    {kind: type, window, text} entry. Anything that happened in ignore_window (the
+    WorkCrew app itself: starting/stopping the recording, its own panels and
+    buttons) is dropped, so only the user's work in the target app is described.
+    The trace is descriptive, not replayable steps: the model turns it into a
+    reusable instruction that the automation loop runs.
     """
+    ignore = (ignore_window or "").strip().lower()
     trace: list[dict[str, Any]] = []
     for event in events:
         window = (event.get("window") or "").strip()
+        # Drop WorkCrew's own window and its child dialogs (title-prefixed).
+        if ignore and window.lower().startswith(ignore):
+            continue
+        if event.get("kind") == "type":
+            text = (event.get("text") or "").strip()
+            if text:
+                trace.append({"kind": "type", "window": window, "text": text})
+            continue
         name = (event.get("name") or "").strip()
         auto_id = (event.get("auto_id") or "").strip()
         control = name or auto_id
         if not control:
             continue
-        entry = {
-            "window": window,
-            "control": control,
-            "controlType": (event.get("control_type") or "").strip(),
-        }
+        entry = {"kind": "click", "window": window, "control": control, "controlType": (event.get("control_type") or "").strip()}
         if trace and trace[-1] == entry:
             continue
         trace.append(entry)
@@ -401,10 +552,13 @@ def execute_action(action: dict[str, Any]) -> str:
     if command == "connect":
         return connect_window(require_text(action.get("windowTitle"), "windowTitle"))
     if command == "record-start":
+        # windowTitle carries the WorkCrew window title to ignore, so the user's
+        # own clicks in WorkCrew (start/stop, panels) are not part of the recording.
+        ignore_window = optional_text(action.get("windowTitle"), 500) or ""
         with STATE.lock:
             if STATE.recorder is not None:
                 return "Recording is already in progress"
-            recorder = ClickRecorder()
+            recorder = ClickRecorder(ignore_window=ignore_window)
             STATE.recorder = recorder
         recorder.start()
         return "Recording started"
@@ -415,7 +569,7 @@ def execute_action(action: dict[str, Any]) -> str:
         if recorder is None:
             return json.dumps([], ensure_ascii=True)
         events = recorder.stop()
-        return json.dumps(build_record_trace(events), ensure_ascii=True)
+        return json.dumps(build_record_trace(events, recorder.ignore_window), ensure_ascii=True)
 
     with STATE.lock:
         if command == "inspect":

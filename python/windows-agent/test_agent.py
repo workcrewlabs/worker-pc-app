@@ -365,11 +365,11 @@ class FindControlTests(unittest.TestCase):
 class BuildRecordTraceTests(unittest.TestCase):
     def test_describes_each_resolved_click(self):
         events = [
-            {"x": 10, "y": 20, "window": "Excel", "name": "Save", "auto_id": "btnSave", "control_type": "Button"},
+            {"kind": "click", "x": 10, "y": 20, "window": "Excel", "name": "Save", "auto_id": "btnSave", "control_type": "Button"},
         ]
         trace = agent.build_record_trace(events)
         self.assertEqual(trace, [
-            {"window": "Excel", "control": "Save", "controlType": "Button"},
+            {"kind": "click", "window": "Excel", "control": "Save", "controlType": "Button"},
         ])
 
     def test_keeps_order_across_windows(self):
@@ -387,7 +387,7 @@ class BuildRecordTraceTests(unittest.TestCase):
             {"window": "Excel", "name": "Ok", "auto_id": "", "control_type": "Button"},
         ]
         trace = agent.build_record_trace(events)
-        self.assertEqual(trace, [{"window": "Excel", "control": "Ok", "controlType": "Button"}])
+        self.assertEqual(trace, [{"kind": "click", "window": "Excel", "control": "Ok", "controlType": "Button"}])
 
     def test_collapses_identical_consecutive_clicks(self):
         events = [
@@ -400,8 +400,109 @@ class BuildRecordTraceTests(unittest.TestCase):
         events = [{"window": "App", "name": "", "auto_id": "okButton", "control_type": "Button"}]
         self.assertEqual(agent.build_record_trace(events)[-1]["control"], "okButton")
 
+    def test_includes_typed_text_in_order(self):
+        events = [
+            {"kind": "click", "window": "Book1 - Excel", "name": "A2", "control_type": "DataItem"},
+            {"kind": "type", "window": "Book1 - Excel", "text": "1234"},
+        ]
+        trace = agent.build_record_trace(events)
+        self.assertEqual(trace, [
+            {"kind": "click", "window": "Book1 - Excel", "control": "A2", "controlType": "DataItem"},
+            {"kind": "type", "window": "Book1 - Excel", "text": "1234"},
+        ])
+
+    def test_drops_empty_typed_text(self):
+        events = [{"kind": "type", "window": "Excel", "text": "   "}]
+        self.assertEqual(agent.build_record_trace(events), [])
+
+    def test_ignores_events_in_the_ignored_window(self):
+        # Clicks and typing in WorkCrew itself (start/stop, panels) are dropped.
+        events = [
+            {"kind": "click", "window": "WorkCrew", "name": "Stop recording", "control_type": "Button"},
+            {"kind": "type", "window": "WorkCrew", "text": "noise"},
+            {"kind": "click", "window": "Book1 - Excel", "name": "A2", "control_type": "DataItem"},
+            {"kind": "type", "window": "Book1 - Excel", "text": "1"},
+        ]
+        trace = agent.build_record_trace(events, "WorkCrew")
+        self.assertEqual(trace, [
+            {"kind": "click", "window": "Book1 - Excel", "control": "A2", "controlType": "DataItem"},
+            {"kind": "type", "window": "Book1 - Excel", "text": "1"},
+        ])
+
+    def test_ignore_window_is_case_insensitive(self):
+        events = [{"kind": "click", "window": "workcrew", "name": "X", "control_type": "Button"}]
+        self.assertEqual(agent.build_record_trace(events, "WorkCrew"), [])
+
+    def test_ignore_window_covers_child_dialogs_by_prefix(self):
+        events = [
+            {"kind": "click", "window": "WorkCrew - Settings", "name": "X", "control_type": "Button"},
+            {"kind": "type", "window": "WorkCrew", "text": "noise"},
+            {"kind": "click", "window": "Book1 - Excel", "name": "A2", "control_type": "DataItem"},
+        ]
+        trace = agent.build_record_trace(events, "WorkCrew")
+        self.assertEqual(trace, [{"kind": "click", "window": "Book1 - Excel", "control": "A2", "controlType": "DataItem"}])
+
     def test_empty_input_yields_no_trace(self):
         self.assertEqual(agent.build_record_trace([]), [])
+
+
+class TypingMapTests(unittest.TestCase):
+    def test_digit_letter_and_numpad(self):
+        self.assertEqual(agent._TYPING_MAP[0x31], ("1", "!"))   # 1 / shift+1
+        self.assertEqual(agent._TYPING_MAP[0x41], ("a", "A"))   # a / shift+a
+        self.assertEqual(agent._TYPING_MAP[0x60], ("0", "0"))   # numpad 0
+
+
+# The keyboard accumulation is testable without Windows: _on_key only reads the
+# foreground window through a guarded ctypes call that returns "" off-Windows, so
+# the text-building logic runs anywhere.
+class KeyboardCaptureTests(unittest.TestCase):
+    def _flush(self, rec):
+        with rec._lock:
+            rec._flush_typed_locked()
+
+    def test_builds_typed_text(self):
+        rec = agent.ClickRecorder()
+        rec._on_key(0x48, False, False)  # h
+        rec._on_key(0x49, False, False)  # i
+        self._flush(rec)
+        self.assertEqual(rec._events[-1]["kind"], "type")
+        self.assertEqual(rec._events[-1]["text"], "hi")
+
+    def test_shift_uppercases_letters(self):
+        rec = agent.ClickRecorder()
+        rec._on_key(0x48, True, False)  # shift+h -> H
+        self._flush(rec)
+        self.assertEqual(rec._events[-1]["text"], "H")
+
+    def test_caps_lock_uppercases_and_shift_inverts(self):
+        rec = agent.ClickRecorder()
+        rec._on_key(0x48, False, True)  # caps on -> H
+        rec._on_key(0x49, True, True)   # caps on + shift -> lowercase i
+        self._flush(rec)
+        self.assertEqual(rec._events[-1]["text"], "Hi")
+
+    def test_digits_ignore_caps_lock(self):
+        rec = agent.ClickRecorder()
+        rec._on_key(0x31, False, True)  # caps must not affect digits
+        self._flush(rec)
+        self.assertEqual(rec._events[-1]["text"], "1")
+
+    def test_enter_commits_typing(self):
+        rec = agent.ClickRecorder()
+        rec._on_key(0x31, False, False)             # 1
+        rec._on_key(agent.VK_RETURN, False, False)  # commits
+        self.assertEqual(rec._events[-1]["kind"], "type")
+        self.assertEqual(rec._events[-1]["text"], "1")
+        self.assertEqual(rec._typed, [])
+
+    def test_backspace_removes_last_char(self):
+        rec = agent.ClickRecorder()
+        rec._on_key(0x31, False, False)            # 1
+        rec._on_key(0x32, False, False)            # 2
+        rec._on_key(agent.VK_BACK, False, False)   # delete the 2
+        self._flush(rec)
+        self.assertEqual(rec._events[-1]["text"], "1")
 
 
 if __name__ == "__main__":

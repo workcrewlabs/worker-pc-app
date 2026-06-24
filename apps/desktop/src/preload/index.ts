@@ -112,7 +112,9 @@ const workcrew = {
       return Promise.resolve(action.summary);
     },
     launchBrowser: (): Promise<{ launched: boolean; message: string }> => ipcRenderer.invoke("automation:launch-browser"),
-    stop: () => ipcRenderer.invoke("automation:stop")
+    stop: () => ipcRenderer.invoke("automation:stop"),
+    // Show or hide the "do not move the mouse" overlay during a Windows automation.
+    overlay: (active: boolean): Promise<{ shown: boolean }> => ipcRenderer.invoke("automation:overlay", active === true)
   },
   // Click recording: capture what the user does (in the automation browser or a
   // desktop app) as a readable trace, then summarize that trace into one reusable
