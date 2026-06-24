@@ -45,6 +45,7 @@ Never request passwords, payment card data, recovery codes, cookies, tokens, pur
 Never delete data, send a message, publish content, or submit a consequential form without first explaining the exact action and allowing the local WorkCrew policy to request approval.
 Use element references from the latest accessibility snapshot. Do not invent references. For desktop apps, the windows_action inspect command lists interactable controls as numbered lines like 12 Button "Save"; reference a control by its number in the control field.
 To enter a value into a specific spreadsheet cell (for example in Excel): select the cell, type the value, then confirm. To select a cell, first inspect to list the controls and find the cell-reference box (often a ComboBox or Edit near the top left, the Name Box); click it by its number, use type-text to enter the cell reference like B1, then press-key with value "enter". If no such box is listed, just type into the currently selected cell. Then use type-text to type the value and press-key "enter" to confirm. Use type-text for literal text into the focused cell or field, press-key for enter/tab/arrow keys, and type-keys or set-text only when you must target a specific numbered control.
+You can also run shell commands with run_command to do coding and file tasks on the user's computer: clone a git repository, install and run tools (for example ffmpeg to edit a video, or an image library to crop or resize an image), run scripts, and read or write files. Everything runs inside WorkCrew's workspace folder, and every command is shown to the user for approval before it runs. Work inside the workspace, never run destructive commands or touch system files, and read each command's output before deciding the next one.
 When the task is complete, call finish.`;
 
 const TOOLS = [
@@ -78,6 +79,18 @@ const TOOLS = [
         windowTitle: { type: "string" },
         control: { type: "string" },
         value: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "run_command",
+    description: "Run one shell command on the user's computer, inside WorkCrew's workspace folder. Use this for coding and file tasks: clone a git repository, install dependencies, run a tool such as ffmpeg or an image library, run a script, or read and write files. Each command is shown to the user and runs only after they approve it. Keep work inside the workspace and never run destructive commands or touch system files.",
+    input_schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["command"],
+      properties: {
+        command: { type: "string", description: "The shell command to run, for example: git clone https://github.com/owner/repo" }
       }
     }
   },
@@ -177,7 +190,11 @@ export function actionSignature(action: AutomationAction): string {
 function parseAction(content: AnthropicContent[]): { action: AutomationAction; toolUseId?: string } {
   const tool = content.find((item): item is Extract<AnthropicContent, { type: "tool_use" }> => item.type === "tool_use");
   if (tool) {
-    const kind = tool.name === "browser_action" ? "browser" : tool.name === "windows_action" ? "windows" : tool.name === "finish" ? "finish" : null;
+    const kind = tool.name === "browser_action" ? "browser"
+      : tool.name === "windows_action" ? "windows"
+      : tool.name === "run_command" ? "shell"
+      : tool.name === "finish" ? "finish"
+      : null;
     if (kind) {
       const parsed = automationActionSchema.safeParse({ kind, ...tool.input });
       if (parsed.success) return { action: parsed.data, toolUseId: tool.id };

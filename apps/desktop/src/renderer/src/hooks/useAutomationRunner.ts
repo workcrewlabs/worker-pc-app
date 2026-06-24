@@ -110,7 +110,9 @@ export function useAutomationRunner(): AutomationRunner {
       const id = stepId();
       setSteps((current) => [...current, { id, label: actionLabel(action), detail: actionDetail(action), status: "running" }]);
 
-      if (step.needsApproval && !autoApproveRef.current) {
+      // Re-derive approval from the action itself rather than trusting the stored
+      // flag (a tampered recipe could lie); shell is gated by the main process.
+      if (actionNeedsApproval(action) && action.kind !== "shell" && !autoApproveRef.current) {
         const approved = await requestApproval(action);
         if (!approved) {
           setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "declined" } : item)));
@@ -211,7 +213,11 @@ export function useAutomationRunner(): AutomationRunner {
         const id = stepId();
         setSteps((current) => [...current, { id, label: actionLabel(action), detail: actionDetail(action), status: "running" }]);
 
-        if (actionNeedsApproval(action) && !autoApproveRef.current) {
+        // Shell commands are approved by the main process itself (a native prompt
+        // that cannot be bypassed), so they are not prompted again here. Other
+        // writes use the in-app approval unless Always allow is on.
+        const mustApprove = actionNeedsApproval(action) && action.kind !== "shell" && !autoApproveRef.current;
+        if (mustApprove) {
           const approved = await requestApproval(action);
           if (!approved) {
             recordEntry.ok = false;

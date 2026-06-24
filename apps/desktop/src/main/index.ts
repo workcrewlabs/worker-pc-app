@@ -5,6 +5,7 @@ import {
   APP_NAME,
   SUPPORT_EMAIL,
   recordedEventSchema,
+  shellActionSchema,
   summarizeRecordingRequestSchema,
   chatSendSchema,
   chatDeltaFrameSchema,
@@ -23,6 +24,7 @@ import { transcribeSamples } from "./transcription.js";
 import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
 import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
 import { extractOfficeText } from "./office.js";
+import { runShellCommand } from "./shell-cli.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -429,6 +431,27 @@ function registerIpc(): void {
   ipcMain.handle("support:billing", async () => {
     await shell.openExternal("https://getworkcrew.com/#help");
     return { opened: true };
+  });
+
+  // Run one shell command in the workspace. The main process itself shows the
+  // approval here, so a command can never run without the user allowing the exact
+  // command, even if some other renderer code tried to call this directly.
+  ipcMain.handle("shell:run", async (_event, raw) => {
+    const { command } = shellActionSchema.parse(raw);
+    const target = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    const options = {
+      type: "warning" as const,
+      buttons: ["Cancel", "Run"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: "Run a command?",
+      message: "WorkCrew wants to run a command on your computer.",
+      detail: `${command}\n\nThis runs in WorkCrew's workspace folder. Only allow commands you understand and trust.`
+    };
+    const { response } = target ? await dialog.showMessageBox(target, options) : await dialog.showMessageBox(options);
+    if (response !== 1) return "The user declined to run this command.";
+    return runShellCommand(command);
   });
 
   ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));

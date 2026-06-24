@@ -56,6 +56,9 @@ describe("stabilizeAction", () => {
     expect(stabilizeAction({ kind: "windows", command: "type-text", value: "B1" }, null)).not.toBeNull();
     expect(stabilizeAction({ kind: "windows", command: "press-key", value: "enter" }, null)).not.toBeNull();
   });
+  it("never makes a shell command replay-stable", () => {
+    expect(stabilizeAction({ kind: "shell", command: "git clone https://example.com/repo" }, null)).toBeNull();
+  });
 });
 
 describe("buildRecipe", () => {
@@ -92,6 +95,14 @@ describe("buildRecipe", () => {
 
   it("returns null for an empty run", () => {
     expect(buildRecipe("x", [], "")).toBeNull();
+  });
+
+  it("never caches a run that contains a shell command", () => {
+    const withShell = [
+      { action: { kind: "windows", command: "connect", windowTitle: "App" } as AutomationAction, snapshot: null },
+      { action: { kind: "shell", command: "git clone https://example.com/repo" } as AutomationAction, snapshot: null }
+    ];
+    expect(buildRecipe("x", withShell, "")).toBeNull();
   });
 
   it("builds a spreadsheet recipe from type-text and press-key", () => {

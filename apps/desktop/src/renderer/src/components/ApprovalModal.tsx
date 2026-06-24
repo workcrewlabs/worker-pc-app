@@ -27,12 +27,15 @@ export function ApprovalModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onDecide]);
 
+  const isShell = action.kind === "shell";
   const detail =
-    action.kind === "browser"
-      ? action.url ?? action.value ?? action.target ?? action.key
-      : action.kind === "windows"
-        ? action.value ?? action.control ?? action.windowTitle ?? action.application
-        : undefined;
+    action.kind === "shell"
+      ? action.command
+      : action.kind === "browser"
+        ? action.url ?? action.value ?? action.target ?? action.key
+        : action.kind === "windows"
+          ? action.value ?? action.control ?? action.windowTitle ?? action.application
+          : undefined;
 
   return (
     <div className="modal-overlay" onMouseDown={() => onDecide(false)}>
@@ -45,9 +48,11 @@ export function ApprovalModal({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <span className="modal-badge">Approval needed</span>
-        <h2 id="approval-title">WorkCrew wants to make a change</h2>
+        <h2 id="approval-title">{isShell ? "WorkCrew wants to run a command" : "WorkCrew wants to make a change"}</h2>
         <p id="approval-desc" className="modal-text">
-          Review this action before it runs. WorkCrew will only proceed if you allow it.
+          {isShell
+            ? "This runs on your computer in WorkCrew's workspace folder. Only allow commands you understand and trust."
+            : "Review this action before it runs. WorkCrew will only proceed if you allow it."}
         </p>
         <div className="modal-action">
           <strong>{label}</strong>
@@ -58,16 +63,21 @@ export function ApprovalModal({
             Decline
           </button>
           <button ref={allowRef} className="primary" onClick={() => onDecide(true)}>
-            Allow once
+            {isShell ? "Run it" : "Allow once"}
           </button>
         </div>
-        <button className="modal-allow-always" onClick={onAllowAlways}>
-          Allow always
-        </button>
-        <p className="modal-safe-note">
-          Always allow lets WorkCrew act without asking each time.{" "}
-          <a href="https://getworkcrew.com/safety" target="_blank" rel="noreferrer">See best practices for safe use</a>
-        </p>
+        {/* Commands are always confirmed one at a time, so "Allow always" is hidden. */}
+        {!isShell && (
+          <>
+            <button className="modal-allow-always" onClick={onAllowAlways}>
+              Allow always
+            </button>
+            <p className="modal-safe-note">
+              Always allow lets WorkCrew act without asking each time.{" "}
+              <a href="https://getworkcrew.com/safety" target="_blank" rel="noreferrer">See best practices for safe use</a>
+            </p>
+          </>
+        )}
       </section>
     </div>
   );
