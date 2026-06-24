@@ -154,6 +154,24 @@ function Brand({ compact = false }: { compact?: boolean }) {
   );
 }
 
+// Sidebar nav icons: a lightning bolt for Routines, a lock for Permissions, and a
+// gear for Settings, matching common app conventions.
+function BoltIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12z" /></svg>
+  );
+}
+function LockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+  );
+}
+function GearIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2" /><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z" /></svg>
+  );
+}
+
 function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
   const [mode, setMode] = useState<"signin" | "signup" | "reset">("signin");
   // When set, we show a "check your inbox" confirmation instead of the form:
@@ -529,32 +547,25 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan }: { 
         </button>
         <nav aria-label="Workspace sections">
           <button
-            className={view === "automation" ? "nav-active" : ""}
-            aria-current={view === "automation" ? "page" : undefined}
-            onClick={() => { setAutomationSeed(""); setView("automation"); }}
-          >
-            <span>A</span> Automation
-          </button>
-          <button
             className={view === "routines" ? "nav-active" : ""}
             aria-current={view === "routines" ? "page" : undefined}
             onClick={() => { setRoutineSeed(""); setView("routines"); }}
           >
-            <span>R</span> Routines
+            <span className="nav-icon"><BoltIcon /></span> Routines
           </button>
           <button
             className={view === "permissions" ? "nav-active" : ""}
             aria-current={view === "permissions" ? "page" : undefined}
             onClick={() => setView("permissions")}
           >
-            <span>P</span> Permissions
+            <span className="nav-icon"><LockIcon /></span> Permissions
           </button>
           <button
             className={view === "settings" ? "nav-active" : ""}
             aria-current={view === "settings" ? "page" : undefined}
             onClick={() => setView("settings")}
           >
-            <span>S</span> Settings
+            <span className="nav-icon"><GearIcon /></span> Settings
           </button>
         </nav>
         <div className="recents" aria-label="Recent conversations">
@@ -609,7 +620,6 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan }: { 
             <span>{updateText}</span>
           </button>
         )}
-        <div className="sidebar-security"><span className="shield">S</span><div><strong>Protected locally</strong><small>Write actions ask first</small></div></div>
         <button className="account-button" onClick={() => setAccountOpen(true)} aria-label="Open account">
           <span className="avatar">A</span>
           <span><strong>Account</strong><small>{planLabel}</small></span>

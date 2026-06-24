@@ -130,6 +130,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .sidebar nav { display: grid; gap: 4px; }
 .sidebar nav button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid transparent; border-radius: 9px; cursor: pointer; text-align: left; color: var(--muted); background: transparent; font-size: var(--fs-ui); }
 .sidebar nav button span { width: 20px; text-align: center; font-size: var(--fs-small); color: var(--muted); }
+.sidebar nav button .nav-icon { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
 .sidebar nav button:hover { color: var(--text); background: var(--panel-2); }
 /* Active nav item carries the purple accent on its glyph. */
 .sidebar nav .nav-active { color: var(--text); border-color: var(--line); background: var(--panel-2); }
