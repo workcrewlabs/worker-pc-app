@@ -182,6 +182,9 @@ export function RecorderDialog({
             <p className="modal-text">
               Recording your {target === "browser" ? "browser" : "app"}. Do the task now, then press Stop.
             </p>
+            {target === "windows" && (
+              <p className="field-hint">While recording, what you type is captured. Please do not enter passwords or other secrets until you press Stop.</p>
+            )}
             <p className="field-hint">Recording time: {elapsed}s</p>
             <button className="primary full" onClick={() => void stop()} disabled={busy}>{busy ? "Finishing..." : "Stop recording"}</button>
           </div>

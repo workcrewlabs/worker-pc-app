@@ -433,6 +433,15 @@ class BuildRecordTraceTests(unittest.TestCase):
         events = [{"kind": "click", "window": "workcrew", "name": "X", "control_type": "Button"}]
         self.assertEqual(agent.build_record_trace(events, "WorkCrew"), [])
 
+    def test_ignore_window_covers_child_dialogs_by_prefix(self):
+        events = [
+            {"kind": "click", "window": "WorkCrew - Settings", "name": "X", "control_type": "Button"},
+            {"kind": "type", "window": "WorkCrew", "text": "noise"},
+            {"kind": "click", "window": "Book1 - Excel", "name": "A2", "control_type": "DataItem"},
+        ]
+        trace = agent.build_record_trace(events, "WorkCrew")
+        self.assertEqual(trace, [{"kind": "click", "window": "Book1 - Excel", "control": "A2", "controlType": "DataItem"}])
+
     def test_empty_input_yields_no_trace(self):
         self.assertEqual(agent.build_record_trace([]), [])
 
@@ -454,31 +463,44 @@ class KeyboardCaptureTests(unittest.TestCase):
 
     def test_builds_typed_text(self):
         rec = agent.ClickRecorder()
-        rec._on_key(0x48, False)  # h
-        rec._on_key(0x49, False)  # i
+        rec._on_key(0x48, False, False)  # h
+        rec._on_key(0x49, False, False)  # i
         self._flush(rec)
         self.assertEqual(rec._events[-1]["kind"], "type")
         self.assertEqual(rec._events[-1]["text"], "hi")
 
     def test_shift_uppercases_letters(self):
         rec = agent.ClickRecorder()
-        rec._on_key(0x48, True)  # shift+h -> H
+        rec._on_key(0x48, True, False)  # shift+h -> H
         self._flush(rec)
         self.assertEqual(rec._events[-1]["text"], "H")
 
+    def test_caps_lock_uppercases_and_shift_inverts(self):
+        rec = agent.ClickRecorder()
+        rec._on_key(0x48, False, True)  # caps on -> H
+        rec._on_key(0x49, True, True)   # caps on + shift -> lowercase i
+        self._flush(rec)
+        self.assertEqual(rec._events[-1]["text"], "Hi")
+
+    def test_digits_ignore_caps_lock(self):
+        rec = agent.ClickRecorder()
+        rec._on_key(0x31, False, True)  # caps must not affect digits
+        self._flush(rec)
+        self.assertEqual(rec._events[-1]["text"], "1")
+
     def test_enter_commits_typing(self):
         rec = agent.ClickRecorder()
-        rec._on_key(0x31, False)             # 1
-        rec._on_key(agent.VK_RETURN, False)  # commits
+        rec._on_key(0x31, False, False)             # 1
+        rec._on_key(agent.VK_RETURN, False, False)  # commits
         self.assertEqual(rec._events[-1]["kind"], "type")
         self.assertEqual(rec._events[-1]["text"], "1")
         self.assertEqual(rec._typed, [])
 
     def test_backspace_removes_last_char(self):
         rec = agent.ClickRecorder()
-        rec._on_key(0x31, False)            # 1
-        rec._on_key(0x32, False)            # 2
-        rec._on_key(agent.VK_BACK, False)   # delete the 2
+        rec._on_key(0x31, False, False)            # 1
+        rec._on_key(0x32, False, False)            # 2
+        rec._on_key(agent.VK_BACK, False, False)   # delete the 2
         self._flush(rec)
         self.assertEqual(rec._events[-1]["text"], "1")
 

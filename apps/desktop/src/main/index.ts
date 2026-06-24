@@ -21,7 +21,7 @@ import { BrowserCli } from "./browser-cli.js";
 import { getBackendUrl, setBackendUrl } from "./settings.js";
 import { transcribeSamples } from "./transcription.js";
 import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
-import { setAutomationOverlay } from "./overlay.js";
+import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -201,6 +201,10 @@ function createWindow(): void {
     if (!allowed || !url.startsWith(allowed)) event.preventDefault();
   });
   mainWindow.once("ready-to-show", () => mainWindow?.show());
+  // Destroy the overlay when the main window closes. It is a separate top-level
+  // window, so leaving it alive would stop "window-all-closed" from firing and the
+  // app would never quit on Windows/Linux.
+  mainWindow.on("closed", () => { closeAutomationOverlay(); mainWindow = null; });
 
   const capturePath = process.env.WORKCREW_CAPTURE;
   if (capturePath) {
@@ -406,7 +410,9 @@ function registerIpc(): void {
   ipcMain.handle("dictation:transcribe", (_event, buffer: ArrayBuffer) => transcribeSamples(new Float32Array(buffer)));
   ipcMain.handle("automation:launch-browser", () => browserCli.launchBrowser());
   ipcMain.handle("automation:stop", async () => {
-    setAutomationOverlay(false);
+    // The overlay is lowered by the renderer's run-exit path (or the safety timer)
+    // after the in-flight action settles, so it stays up until the mouse actually
+    // stops moving rather than disappearing the instant Stop is pressed.
     await Promise.allSettled([browserCli.stop(), windowsAgent.stop()]);
     return { stopped: true };
   });
@@ -506,6 +512,7 @@ else {
 app.on("before-quit", () => {
   for (const controller of chatStreams.values()) controller.abort();
   chatStreams.clear();
+  closeAutomationOverlay();
   void browserCli.stop();
   void windowsAgent.stop();
 });

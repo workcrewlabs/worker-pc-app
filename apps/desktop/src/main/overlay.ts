@@ -10,8 +10,10 @@ let overlay: BrowserWindow | null = null;
 let safetyTimer: ReturnType<typeof setTimeout> | null = null;
 
 // If the renderer ever fails to turn the overlay off (a crash or reload mid-run),
-// hide it on our own after this long so it can never get stuck on screen.
-const SAFETY_HIDE_MS = 30_000;
+// hide it on our own after this long so it can never get stuck on screen. Kept
+// well above the Windows agent's 30s per-action timeout so this backstop can only
+// fire after an action has surely ended, never mid-action.
+const SAFETY_HIDE_MS = 60_000;
 
 function overlayHtml(): string {
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
@@ -79,5 +81,20 @@ export function setAutomationOverlay(active: boolean): void {
     }
   } catch {
     // Never let the overlay interfere with the run.
+  }
+}
+
+/**
+ * Fully tear down the overlay window. Must be called when the main window closes
+ * or the app quits: the overlay is a top-level BrowserWindow, so a lingering
+ * hidden one would keep the app alive and stop "window-all-closed" from firing.
+ */
+export function closeAutomationOverlay(): void {
+  try {
+    if (safetyTimer) { clearTimeout(safetyTimer); safetyTimer = null; }
+    if (overlay && !overlay.isDestroyed()) overlay.destroy();
+    overlay = null;
+  } catch {
+    // Best effort teardown.
   }
 }

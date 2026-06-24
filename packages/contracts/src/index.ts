@@ -153,7 +153,10 @@ export const recordedEventSchema = z.object({
   // The kind of control: a web role/tag (button, link, textbox) or a Windows
   // control type (Button, Edit, ...).
   role: z.string().max(80).optional(),
-  // Text the user typed (never a password; those are dropped at capture time).
+  // Text the user typed. Browser recordings skip password inputs; Windows
+  // recordings capture raw keystrokes scoped to the foreground app (so typing in
+  // WorkCrew is dropped), and the user is warned not to enter passwords or secrets
+  // while recording, since field-type detection is not available there.
   value: z.string().max(2_000).optional(),
   // The desktop window title (Windows recordings).
   window: z.string().max(300).optional()

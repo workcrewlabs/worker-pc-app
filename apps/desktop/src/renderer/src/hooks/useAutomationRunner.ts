@@ -13,9 +13,12 @@ import { buildRecipe, getRecipe, isReplayEnabled, normalizeTaskKey, saveRecipe, 
 
 const MAX_STEPS = 24;
 
-// Windows commands that physically move the mouse or type, so the renderer raises
-// the "do not move the mouse" overlay while they run.
-const WINDOWS_MOUSE_COMMANDS = new Set(["click", "set-text", "type-keys"]);
+// Windows commands that do NOT move the mouse or type (read-only or app launch).
+// The overlay is raised for every OTHER windows command, so a future command that
+// drives input cannot silently bypass the "do not move the mouse" overlay.
+const WINDOWS_NON_INPUT_COMMANDS = new Set([
+  "launch", "list-windows", "connect", "inspect", "get-text", "screenshot", "record-start", "record-stop"
+]);
 
 export type StepStatus = "running" | "ok" | "error" | "declined";
 export type RunStep = { id: string; label: string; detail?: string; status: StepStatus };
@@ -60,7 +63,7 @@ export function useAutomationRunner(): AutomationRunner {
   // it is raised once and reliably lowered when the run ends, on every exit path.
   const mouseActiveRef = useRef(false);
   function showOverlayFor(action: AutomationAction): void {
-    if (action.kind === "windows" && WINDOWS_MOUSE_COMMANDS.has(action.command)) {
+    if (action.kind === "windows" && !WINDOWS_NON_INPUT_COMMANDS.has(action.command)) {
       mouseActiveRef.current = true;
       void window.workcrew.automation.overlay(true);
     }
@@ -88,7 +91,9 @@ export function useAutomationRunner(): AutomationRunner {
 
   function stop(): void {
     stoppedRef.current = true;
-    hideOverlay();
+    // Stop the mouse-driving helper first; the overlay is lowered by the run's
+    // exit path (or the main-process safety timer) once the in-flight action has
+    // actually settled, so it never disappears while the mouse is still moving.
     void window.workcrew.automation.stop();
     setStatus("stopped");
   }

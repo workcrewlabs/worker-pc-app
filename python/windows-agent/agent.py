@@ -5,6 +5,7 @@ import ctypes
 import hmac
 import json
 import os
+import queue
 import re
 import sys
 import tempfile
@@ -78,6 +79,7 @@ VK_BACK = 0x08
 VK_TAB = 0x09
 VK_RETURN = 0x0D
 VK_SHIFT = 0x10
+VK_CAPITAL = 0x14
 RECORD_POLL_SECONDS = 0.02          # ~50 Hz: responsive without busy-spinning.
 RECORD_MAX_EVENTS = 400             # Caps memory; matches the summarize request limit.
 RECORD_MAX_SECONDS = 20 * 60        # Safety stop so a forgotten session ends.
@@ -359,9 +361,15 @@ class ClickRecorder:
 
     def __init__(self, ignore_window: str = "") -> None:
         self.ignore_window = (ignore_window or "").strip()
+        self._ignore_lower = self.ignore_window.lower()
         self._events: list[dict[str, Any]] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Element resolution (a slow UI Automation round trip) runs on a separate
+        # thread so it never stalls keyboard/mouse sampling on the poll loop. The
+        # poll loop appends a placeholder click immediately and queues it here.
+        self._resolver: threading.Thread | None = None
+        self._queue: "queue.Queue[tuple[dict[str, Any], int, int] | None]" = queue.Queue()
         self._lock = threading.Lock()
         # Typed characters accumulate here with the window they were typed in, then
         # flush to one "type" event on the next click, Enter/Tab, or stop.
@@ -369,14 +377,20 @@ class ClickRecorder:
         self._typed_window: str = ""
 
     def start(self) -> None:
+        self._resolver = threading.Thread(target=self._resolve_loop, name="wc-click-resolver", daemon=True)
+        self._resolver.start()
         self._thread = threading.Thread(target=self._loop, name="wc-click-recorder", daemon=True)
         self._thread.start()
 
     def stop(self) -> list[dict[str, Any]]:
         self._stop.set()
-        thread = self._thread
-        if thread is not None:
-            thread.join(timeout=3)
+        if self._thread is not None:
+            self._thread.join(timeout=3)
+        # The poll loop has stopped, so no more clicks will be queued. Let the
+        # resolver finish the ones already queued, then exit on the sentinel.
+        self._queue.put(None)
+        if self._resolver is not None:
+            self._resolver.join(timeout=3)
         with self._lock:
             self._flush_typed_locked()
             return list(self._events)
@@ -397,14 +411,28 @@ class ClickRecorder:
                 self._capture(*_cursor_point())
             mouse_down = current_mouse
             shift = bool(user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
+            caps = bool(user32.GetKeyState(VK_CAPITAL) & 1)
             for vk in tracked:
                 down = bool(user32.GetAsyncKeyState(vk) & 0x8000)
                 if down and not key_down[vk]:
-                    self._on_key(vk, shift)
+                    self._on_key(vk, shift, caps)
                 key_down[vk] = down
             time.sleep(RECORD_POLL_SECONDS)
 
-    def _on_key(self, vk: int, shift: bool) -> None:
+    def _resolve_loop(self) -> None:
+        # Drain queued clicks, resolving each element off the poll thread and
+        # filling the placeholder in place. Exits on the None sentinel.
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            event, x, y = item
+            resolved = _resolve_element(x, y)
+            if resolved:
+                with self._lock:
+                    event.update(resolved)
+
+    def _on_key(self, vk: int, shift: bool, caps: bool) -> None:
         # Enter and Tab commit the current run (move to the next field/cell).
         if vk in (VK_RETURN, VK_TAB):
             with self._lock:
@@ -418,10 +446,21 @@ class ClickRecorder:
         pair = _TYPING_MAP.get(vk)
         if pair is None:
             return
-        character = pair[1] if shift else pair[0]
+        if 0x41 <= vk <= 0x5A:  # letters: Caps Lock and Shift combine
+            character = pair[1] if (shift ^ caps) else pair[0]
+        else:
+            character = pair[1] if shift else pair[0]
+        # Scope typing to the foreground app, re-checked every key. Typing in
+        # WorkCrew itself is never captured, and a change of foreground window ends
+        # the current run so each run is attributed to one app.
+        window = _foreground_window_title()
+        if self._ignore_lower and window.strip().lower().startswith(self._ignore_lower):
+            return
         with self._lock:
+            if self._typed and window != self._typed_window:
+                self._flush_typed_locked()
             if not self._typed:
-                self._typed_window = _foreground_window_title()
+                self._typed_window = window
             if len(self._typed) < RECORD_MAX_TYPED:
                 self._typed.append(character)
 
@@ -437,17 +476,15 @@ class ClickRecorder:
             self._events.append({"kind": "type", "window": window[:500], "text": text[:RECORD_MAX_TYPED]})
 
     def _capture(self, x: int, y: int) -> None:
-        # A click ends the current typing run so events stay in order.
+        # A click ends the current typing run so events stay in order. The click is
+        # appended immediately as a placeholder and resolved off-thread.
         with self._lock:
             self._flush_typed_locked()
             if len(self._events) >= RECORD_MAX_EVENTS:
                 return
-        resolved = _resolve_element(x, y)
-        event: dict[str, Any] = {"kind": "click", "x": x, "y": y}
-        if resolved:
-            event.update(resolved)
-        with self._lock:
+            event: dict[str, Any] = {"kind": "click", "x": x, "y": y}
             self._events.append(event)
+        self._queue.put((event, x, y))
 
 
 def build_record_trace(events: list[dict[str, Any]], ignore_window: str = "") -> list[dict[str, Any]]:
@@ -467,7 +504,8 @@ def build_record_trace(events: list[dict[str, Any]], ignore_window: str = "") ->
     trace: list[dict[str, Any]] = []
     for event in events:
         window = (event.get("window") or "").strip()
-        if ignore and window.lower() == ignore:
+        # Drop WorkCrew's own window and its child dialogs (title-prefixed).
+        if ignore and window.lower().startswith(ignore):
             continue
         if event.get("kind") == "type":
             text = (event.get("text") or "").strip()
