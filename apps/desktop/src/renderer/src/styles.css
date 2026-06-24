@@ -549,6 +549,8 @@ select option:checked { background-color: var(--panel-2); }
 .recorder-live .modal-text { margin-bottom: 8px; }
 .recorder-dot { display: inline-block; width: 14px; height: 14px; margin-bottom: 12px; border-radius: 50%; background: #e0575f; box-shadow: 0 0 0 0 rgba(224,87,95,.6); animation: recorder-pulse 1.4s infinite; }
 @keyframes recorder-pulse { 0% { box-shadow: 0 0 0 0 rgba(224,87,95,.55); } 70% { box-shadow: 0 0 0 12px rgba(224,87,95,0); } 100% { box-shadow: 0 0 0 0 rgba(224,87,95,0); } }
+.recorder-instruction { width: 100%; margin: 4px 0 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); font: inherit; font-size: 14px; line-height: 1.5; resize: vertical; min-height: 96px; }
+.recorder-instruction:focus { outline: none; border-color: var(--accent); }
 
 @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes panel-in { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }

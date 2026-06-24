@@ -133,6 +133,40 @@ export type AutomationAction = z.infer<typeof automationActionSchema>;
 export type BrowserAction = z.infer<typeof browserActionSchema>;
 export type WindowsAction = z.infer<typeof windowsActionSchema>;
 
+// ---------------------------------------------------------------------------
+// Click recording -> AI-written routine.
+//
+// Recording captures a readable trace of what the user did (which elements,
+// what they typed, which pages/windows), NOT replayable coordinates or brittle
+// selectors. The trace is sent to the model, which writes one generalized,
+// reusable instruction. That instruction is saved as a routine and run by the
+// normal model loop every time, so it adapts to different content on each run.
+
+export const recordedEventSchema = z.object({
+  kind: z.enum(["navigate", "click", "type", "key"]),
+  // Web context (browser recordings).
+  url: z.string().max(2_048).optional(),
+  title: z.string().max(300).optional(),
+  // What was interacted with, in human terms: a button's visible text, a field
+  // label, or a desktop control name.
+  target: z.string().max(300).optional(),
+  // The kind of control: a web role/tag (button, link, textbox) or a Windows
+  // control type (Button, Edit, ...).
+  role: z.string().max(80).optional(),
+  // Text the user typed (never a password; those are dropped at capture time).
+  value: z.string().max(2_000).optional(),
+  // The desktop window title (Windows recordings).
+  window: z.string().max(300).optional()
+}).strict();
+export type RecordedEvent = z.infer<typeof recordedEventSchema>;
+
+export const summarizeRecordingRequestSchema = z.object({
+  surface: z.enum(["browser", "windows"]),
+  events: z.array(recordedEventSchema).min(1).max(400)
+}).strict();
+export type SummarizeRecordingRequest = z.infer<typeof summarizeRecordingRequestSchema>;
+export type SummarizeRecordingResponse = { task: string };
+
 export const createCheckoutSchema = z.object({
   plan: planIdSchema,
   interval: billingIntervalSchema

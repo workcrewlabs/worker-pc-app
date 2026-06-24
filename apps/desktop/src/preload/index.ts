@@ -8,6 +8,7 @@ import type {
   Message,
   ModelTier,
   PlanId,
+  RecordedEvent,
   ReferralInfo,
   RunStepResponse,
   SubscriptionState
@@ -113,11 +114,13 @@ const workcrew = {
     launchBrowser: (): Promise<{ launched: boolean; message: string }> => ipcRenderer.invoke("automation:launch-browser"),
     stop: () => ipcRenderer.invoke("automation:stop")
   },
-  // Click recording: capture the user's clicks (in the automation browser or in
-  // a desktop app) and get them back as replayable steps to save as a recipe.
+  // Click recording: capture what the user does (in the automation browser or a
+  // desktop app) as a readable trace, then summarize that trace into one reusable
+  // instruction (via the backend model) to save as a routine the model runs.
   recorder: {
     start: (target: "browser" | "windows"): Promise<{ started: boolean }> => ipcRenderer.invoke("recorder:start", target),
-    stop: (target: "browser" | "windows"): Promise<{ steps: AutomationAction[] }> => ipcRenderer.invoke("recorder:stop", target)
+    stop: (target: "browser" | "windows"): Promise<{ surface: "browser" | "windows"; events: RecordedEvent[] }> => ipcRenderer.invoke("recorder:stop", target),
+    summarize: (surface: "browser" | "windows", events: RecordedEvent[]): Promise<{ task: string }> => ipcRenderer.invoke("recorder:summarize", { surface, events })
   },
   // On-device voice input. The renderer records the mic and decodes it to 16 kHz
   // mono samples; the main process transcribes locally and returns the text.

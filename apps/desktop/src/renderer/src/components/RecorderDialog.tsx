@@ -1,28 +1,45 @@
 import { useEffect, useRef, useState } from "react";
-import type { AutomationAction } from "@workcrew/contracts";
-import { recipeFromSteps, saveRecipe } from "../lib/recipes";
+import type { RecordedEvent } from "@workcrew/contracts";
 import { addRoutine } from "../lib/storage";
 
-// Record clicks: the user records their own clicks in the automation browser or
-// in a desktop app, names the result, and it is saved as a routine that replays
-// those exact steps with no model call (much faster, and free of model tokens).
-// Writes are still approved on replay, like any other automation.
+// Record clicks: the user demonstrates a task once in the automation browser or a
+// desktop app. WorkCrew captures a readable trace of what they did, the model
+// turns it into one reusable instruction, and that instruction is saved as a
+// routine. Every run goes through the normal model loop, so it adapts to whatever
+// is on screen that day (a different email, a different value) instead of
+// replaying the exact clicks, which would break the moment the page changes.
 
 type Target = "browser" | "windows";
-type Phase = "choose" | "recording" | "review";
+type Phase = "choose" | "recording" | "summarizing" | "review";
 
 function friendly(error: unknown): string {
   let message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   message = message.replace(/^Error invoking remote method '[^']*':\s*/i, "").replace(/^[A-Za-z]*Error:\s*/, "").trim();
-  return message || "Something went wrong. Please try again.";
+  if (/unsupported windows command/i.test(message)) {
+    return "Windows recording needs the updated helper. Rebuild the app (or the Windows helper) and try again.";
+  }
+  // A raw validation error serializes to a JSON issues array; never show that.
+  if (!message || message.startsWith("[") || message.startsWith("{")) {
+    return "That recording could not be used. Please try again.";
+  }
+  return message;
 }
 
-export function RecorderDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+export function RecorderDialog({
+  onClose,
+  onSaved,
+  onRun
+}: {
+  onClose: () => void;
+  onSaved: () => void;
+  onRun?: (task: string, name: string) => void;
+}) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [phase, setPhase] = useState<Phase>("choose");
   const [target, setTarget] = useState<Target>("browser");
-  const [steps, setSteps] = useState<AutomationAction[]>([]);
+  const [task, setTask] = useState("");
   const [name, setName] = useState("");
+  const [stepCount, setStepCount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [elapsed, setElapsed] = useState(0);
@@ -30,7 +47,7 @@ export function RecorderDialog({ onClose, onSaved }: { onClose: () => void; onSa
   useEffect(() => {
     closeRef.current?.focus();
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape" && phase !== "recording") onClose();
+      if (event.key === "Escape" && phase !== "recording" && phase !== "summarizing") onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -63,14 +80,15 @@ export function RecorderDialog({ onClose, onSaved }: { onClose: () => void; onSa
     setBusy(true);
     setError("");
     try {
-      const result = await window.workcrew.recorder.stop(target);
-      if (!result.steps.length) {
-        setError("No clicks were recorded. Start again and click the buttons or fields you want to capture.");
+      const { surface, events } = await window.workcrew.recorder.stop(target);
+      if (!events.length) {
+        setError("Nothing was captured. Start again and click the buttons or fields that make up your task.");
         setPhase("choose");
         return;
       }
-      setSteps(result.steps);
-      setPhase("review");
+      setStepCount(events.length);
+      setPhase("summarizing");
+      await writeInstruction(surface, events);
     } catch (caught) {
       setError(friendly(caught));
       setPhase("choose");
@@ -79,29 +97,54 @@ export function RecorderDialog({ onClose, onSaved }: { onClose: () => void; onSa
     }
   }
 
-  function save() {
-    const trimmed = name.trim();
-    if (trimmed.length < 2) {
-      setError("Give this recorded task a name so you can run it later.");
-      return;
+  // Ask the model to turn the recorded trace into one reusable instruction. If it
+  // cannot be reached, drop to the review step with an empty box so the user can
+  // still write the instruction themselves and save it.
+  async function writeInstruction(surface: Target, events: RecordedEvent[]) {
+    try {
+      const { task: written } = await window.workcrew.recorder.summarize(surface, events);
+      const cleaned = written.trim();
+      setTask(cleaned);
+      if (!name.trim()) setName(cleaned.split(/[.\n]/)[0]?.slice(0, 48).trim() ?? "");
+      setPhase("review");
+    } catch (caught) {
+      setError(`${friendly(caught)} You can write the instruction yourself below.`);
+      setPhase("review");
     }
-    const recipe = recipeFromSteps(trimmed, steps);
-    if (!recipe) {
-      setError("These steps could not be saved. Please record again.");
-      return;
-    }
-    saveRecipe(recipe);
-    // Also save it as a manual routine so it appears in Routines with a Run button.
-    addRoutine({ name: trimmed, task: trimmed, cadence: "manual", hour: 9, minute: 0, weekday: 1, enabled: true });
-    onSaved();
-    onClose();
   }
 
-  // The number of real clicks/edits captured (connect steps are setup, not clicks).
-  const actionCount = steps.filter((step) => !(step.kind === "windows" && step.command === "connect")).length;
+  function persist(): { name: string; task: string } | null {
+    const trimmedName = name.trim();
+    const trimmedTask = task.trim();
+    if (trimmedTask.length < 3) {
+      setError("Write a short instruction describing the task before saving.");
+      return null;
+    }
+    if (trimmedName.length < 2) {
+      setError("Give this task a name so you can find it in Routines.");
+      return null;
+    }
+    // Save as a manual routine. Running it goes through the normal model loop,
+    // which performs the instruction and adapts to whatever is on screen.
+    addRoutine({ name: trimmedName, task: trimmedTask, cadence: "manual", hour: 9, minute: 0, weekday: 1, enabled: true });
+    onSaved();
+    return { name: trimmedName, task: trimmedTask };
+  }
+
+  function save() {
+    if (persist()) onClose();
+  }
+
+  function saveAndRun() {
+    const saved = persist();
+    if (saved) {
+      onRun?.(saved.task, saved.name);
+      onClose();
+    }
+  }
 
   return (
-    <div className="modal-overlay" onMouseDown={() => { if (phase !== "recording") onClose(); }}>
+    <div className="modal-overlay" onMouseDown={() => { if (phase !== "recording" && phase !== "summarizing") onClose(); }}>
       <section
         className="modal"
         role="dialog"
@@ -110,7 +153,7 @@ export function RecorderDialog({ onClose, onSaved }: { onClose: () => void; onSa
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="account-head">
-          <h2 id="recorder-title">Record clicks</h2>
+          <h2 id="recorder-title">Record a task</h2>
           <button ref={closeRef} className="panel-close" onClick={onClose} aria-label="Close recorder">Close</button>
         </div>
 
@@ -118,15 +161,15 @@ export function RecorderDialog({ onClose, onSaved }: { onClose: () => void; onSa
 
         {phase === "choose" && (
           <>
-            <p className="modal-text">Record yourself doing a task once. WorkCrew saves the steps and can repeat them for you, instantly, without using tokens.</p>
+            <p className="modal-text">Do a task once. WorkCrew watches what you do, then writes a reusable instruction so it can do it again for you, adapting each time.</p>
             <div className="recorder-choice">
               <button className="recorder-target" onClick={() => void start("browser")} disabled={busy}>
                 <strong>My browser</strong>
-                <span>Record clicks and typing on a website.</span>
+                <span>Record a task on a website.</span>
               </button>
               <button className="recorder-target" onClick={() => void start("windows")} disabled={busy}>
                 <strong>A Windows app</strong>
-                <span>Open the app first, then record clicks in it.</span>
+                <span>Open the app first, then record the task in it.</span>
               </button>
             </div>
             {busy && <p className="field-hint">Getting ready...</p>}
@@ -137,29 +180,45 @@ export function RecorderDialog({ onClose, onSaved }: { onClose: () => void; onSa
           <div className="recorder-live">
             <span className="recorder-dot" aria-hidden="true" />
             <p className="modal-text">
-              Recording your {target === "browser" ? "browser" : "app"} clicks. Do the task now, then press Stop.
+              Recording your {target === "browser" ? "browser" : "app"}. Do the task now, then press Stop.
             </p>
             <p className="field-hint">Recording time: {elapsed}s</p>
-            <button className="primary full" onClick={() => void stop()} disabled={busy}>{busy ? "Saving..." : "Stop recording"}</button>
+            <button className="primary full" onClick={() => void stop()} disabled={busy}>{busy ? "Finishing..." : "Stop recording"}</button>
+          </div>
+        )}
+
+        {phase === "summarizing" && (
+          <div className="recorder-live">
+            <span className="chip-spinner" aria-label="Working" />
+            <p className="modal-text">Writing your routine from {stepCount} recorded {stepCount === 1 ? "step" : "steps"}...</p>
           </div>
         )}
 
         {phase === "review" && (
           <>
-            <p className="modal-text">Captured {actionCount} {actionCount === 1 ? "step" : "steps"}. Name this task so you can run it again anytime.</p>
+            <p className="modal-text">Here is the instruction WorkCrew will follow each time. Edit it if you like, name it, and save.</p>
+            <textarea
+              className="recorder-instruction"
+              value={task}
+              onChange={(event) => setTask(event.target.value)}
+              placeholder="For example: Open Gmail, open the most recent unread email, and summarize it for me."
+              rows={4}
+              maxLength={2_000}
+              aria-label="Task instruction"
+            />
             <input
               className="invite-link"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="For example: Fill my daily timesheet"
+              placeholder="Name this task, for example: Summarize my latest email"
               maxLength={80}
-              autoFocus
               onKeyDown={(event) => { if (event.key === "Enter") save(); }}
-              aria-label="Recorded task name"
+              aria-label="Task name"
             />
             <div className="account-buttons">
-              <button className="secondary full" onClick={() => { setPhase("choose"); setSteps([]); setName(""); }}>Record again</button>
-              <button className="primary full" onClick={save}>Save task</button>
+              <button className="secondary full" onClick={() => { setPhase("choose"); setTask(""); setName(""); setError(""); }}>Record again</button>
+              <button className="secondary full" onClick={save}>Save</button>
+              {onRun && <button className="primary full" onClick={saveAndRun}>Save and run now</button>}
             </div>
           </>
         )}
