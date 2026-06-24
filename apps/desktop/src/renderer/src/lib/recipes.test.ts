@@ -52,6 +52,10 @@ describe("stabilizeAction", () => {
   it("keeps finish", () => {
     expect(stabilizeAction({ kind: "finish", summary: "done" }, null)).not.toBeNull();
   });
+  it("keeps type-text and press-key (no control, fixed value)", () => {
+    expect(stabilizeAction({ kind: "windows", command: "type-text", value: "B1" }, null)).not.toBeNull();
+    expect(stabilizeAction({ kind: "windows", command: "press-key", value: "enter" }, null)).not.toBeNull();
+  });
 });
 
 describe("buildRecipe", () => {
@@ -88,6 +92,29 @@ describe("buildRecipe", () => {
 
   it("returns null for an empty run", () => {
     expect(buildRecipe("x", [], "")).toBeNull();
+  });
+
+  it("builds a spreadsheet recipe from type-text and press-key", () => {
+    const excel = [
+      { action: { kind: "windows", command: "click", control: "Name Box" } as AutomationAction, snapshot: null },
+      { action: { kind: "windows", command: "type-text", value: "B1" } as AutomationAction, snapshot: null },
+      { action: { kind: "windows", command: "press-key", value: "enter" } as AutomationAction, snapshot: null },
+      { action: { kind: "windows", command: "type-text", value: "1" } as AutomationAction, snapshot: null },
+      { action: { kind: "windows", command: "press-key", value: "enter" } as AutomationAction, snapshot: null }
+    ];
+    const recipe = buildRecipe("Enter values in Excel", excel, "Done.");
+    expect(recipe).not.toBeNull();
+    expect(recipe!.steps).toHaveLength(5);
+  });
+
+  it("collapses an adjacent identical repeated step", () => {
+    const dup = [
+      { action: { kind: "windows", command: "connect", windowTitle: "Excel" } as AutomationAction, snapshot: null },
+      { action: { kind: "windows", command: "type-text", value: "1" } as AutomationAction, snapshot: null },
+      { action: { kind: "windows", command: "type-text", value: "1" } as AutomationAction, snapshot: null }
+    ];
+    const recipe = buildRecipe("x", dup, "");
+    expect(recipe!.steps).toHaveLength(2); // connect + one type-text; the duplicate dropped
   });
 });
 

@@ -55,7 +55,7 @@ export function InviteDialog({ onClose }: { onClose: () => void }) {
   async function copyLink() {
     if (!info) return;
     try {
-      await navigator.clipboard.writeText(info.link);
+      await window.workcrew.clipboard.write(info.link);
       setCopied(true);
       setTimeout(() => setCopied(false), 1_500);
     } catch {

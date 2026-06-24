@@ -102,6 +102,12 @@ export const windowsCommandSchema = z.enum([
   "click",
   "set-text",
   "type-keys",
+  // Type literal text into whatever is focused (e.g. the active spreadsheet cell),
+  // with no control lookup needed.
+  "type-text",
+  // Send one safe navigation/editing key (Enter, Tab, arrows, Home/End, ...) to
+  // the focused control, for example to confirm a spreadsheet cell.
+  "press-key",
   "get-text",
   "screenshot",
   // Click recording: start begins capturing the user's clicks in desktop apps,

@@ -46,6 +46,11 @@ const workcrew = {
   app: {
     info: (): Promise<{ name: string; version: string; authMode: string; billingMode: string }> => ipcRenderer.invoke("app:info")
   },
+  clipboard: {
+    // Copy via the OS clipboard in the main process; the sandboxed renderer is
+    // not a secure context and cannot use the browser clipboard API.
+    write: (text: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("clipboard:write", text)
+  },
   support: {
     // Open the user's mail client to the support address.
     contact: (): Promise<{ opened: boolean }> => ipcRenderer.invoke("support:contact"),

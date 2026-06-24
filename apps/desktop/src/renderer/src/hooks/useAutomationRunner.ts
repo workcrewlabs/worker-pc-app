@@ -120,6 +120,12 @@ export function useAutomationRunner(): AutomationRunner {
 
       try {
         showOverlayFor(action);
+        // type-text and press-key act on whatever is focused and do not wait on a
+        // control like other commands, so on fast replay give the app a brief
+        // moment to settle the focus the previous step set (e.g. a cell jump).
+        if (action.kind === "windows" && (action.command === "type-text" || action.command === "press-key")) {
+          await new Promise((settle) => setTimeout(settle, 150));
+        }
         await window.workcrew.automation.execute(action);
         setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
       } catch {
@@ -170,7 +176,7 @@ export function useAutomationRunner(): AutomationRunner {
     // next identical task can skip the model entirely. snapshot is the inspect
     // output current when each action was chosen, used to turn a numeric control
     // reference into a stable name at record time.
-    const recorded: { action: AutomationAction; snapshot: string | null }[] = [];
+    const recorded: { action: AutomationAction; snapshot: string | null; ok: boolean }[] = [];
     let lastSnapshot: string | null = null;
     let finishSummary = "Task complete.";
 
@@ -198,13 +204,17 @@ export function useAutomationRunner(): AutomationRunner {
         if (!response.action || !response.toolUseId) break;
 
         const action = response.action;
-        recorded.push({ action, snapshot: lastSnapshot });
+        // Tracked per action so a failed or declined step is excluded from the
+        // saved recipe (only the clean successful path is cached).
+        const recordEntry = { action, snapshot: lastSnapshot, ok: true };
+        recorded.push(recordEntry);
         const id = stepId();
         setSteps((current) => [...current, { id, label: actionLabel(action), detail: actionDetail(action), status: "running" }]);
 
         if (actionNeedsApproval(action) && !autoApproveRef.current) {
           const approved = await requestApproval(action);
           if (!approved) {
+            recordEntry.ok = false;
             setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "declined" } : item)));
             result = { toolUseId: response.toolUseId, ok: false, output: "You declined this action." };
             continue;
@@ -220,6 +230,7 @@ export function useAutomationRunner(): AutomationRunner {
           // reference can be recorded as the stable control name.
           if (action.kind === "windows" && action.command === "inspect") lastSnapshot = output;
         } catch (caught) {
+          recordEntry.ok = false;
           setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "error" } : item)));
           const message = caught instanceof Error ? caught.message : "That step could not be completed.";
           result = { toolUseId: response.toolUseId, ok: false, output: redactResult(message) };
@@ -237,9 +248,10 @@ export function useAutomationRunner(): AutomationRunner {
           outcome: current === "complete" ? "complete" : current === "stopped" ? "stopped" : "failed",
           activityCount: 0
         });
-        // Only a clean, fully-deterministic completed run becomes a recipe;
-        // buildRecipe returns null for anything that cannot be replayed safely.
-        if (current === "complete") {
+        // Only a clean, fully-deterministic completed run becomes a recipe. A run
+        // with any failed or declined step is never cached: dropping such a step
+        // could replay a path that silently skips a write yet reports success.
+        if (current === "complete" && !recorded.some((entry) => entry.ok === false)) {
           const recipe = buildRecipe(trimmed, recorded, finishSummary);
           if (recipe) saveRecipe(recipe);
         }

@@ -234,25 +234,22 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(req.status, 404)
 
 
-class ExecuteActionTests(unittest.TestCase):
-    def test_type_keys_rejects_brace_sequences(self):
-        # type-keys with braces must be rejected before any desktop interaction,
-        # so this raises without touching pywinauto. We point STATE.window at a
-        # sentinel so require_window passes and find_control would be reached
-        # only after the brace guard.
-        original = agent.STATE.window
-        agent.STATE.window = object()
-        try:
-            with self.assertRaises(ValueError):
-                agent.execute_action({
-                    "kind": "windows",
-                    "command": "type-keys",
-                    "control": "field",
-                    "value": "{ENTER}",
-                })
-        finally:
-            agent.STATE.window = original
+class EscapeForTypeKeysTests(unittest.TestCase):
+    def test_escapes_keystroke_metacharacters_to_literal(self):
+        # Each pywinauto metacharacter is wrapped in braces so it types literally,
+        # never as a chord/hotkey, and ordinary values type verbatim.
+        self.assertEqual(agent.escape_for_type_keys("50% off"), "50{%} off")
+        self.assertEqual(agent.escape_for_type_keys("2+2"), "2{+}2")
+        self.assertEqual(agent.escape_for_type_keys("(note)"), "{(}note{)}")
+        self.assertEqual(agent.escape_for_type_keys("a~b"), "a{~}b")
+        self.assertEqual(agent.escape_for_type_keys("^s"), "{^}s")
+        self.assertEqual(agent.escape_for_type_keys("{ENTER}"), "{{}ENTER{}}")
 
+    def test_plain_text_is_unchanged(self):
+        self.assertEqual(agent.escape_for_type_keys("Hello World 123"), "Hello World 123")
+
+
+class ExecuteActionTests(unittest.TestCase):
     def test_commands_requiring_window_fail_without_connect(self):
         original = agent.STATE.window
         agent.STATE.window = None
@@ -444,6 +441,18 @@ class BuildRecordTraceTests(unittest.TestCase):
 
     def test_empty_input_yields_no_trace(self):
         self.assertEqual(agent.build_record_trace([]), [])
+
+
+class SafeKeysTests(unittest.TestCase):
+    def test_press_key_and_type_text_are_allowlisted(self):
+        self.assertIn("press-key", agent.ALLOWED_COMMANDS)
+        self.assertIn("type-text", agent.ALLOWED_COMMANDS)
+
+    def test_safe_keys_map_known_navigation_keys(self):
+        self.assertEqual(agent.SAFE_KEYS["enter"], "{ENTER}")
+        self.assertEqual(agent.SAFE_KEYS["tab"], "{TAB}")
+        self.assertEqual(agent.SAFE_KEYS["down"], "{DOWN}")
+        self.assertNotIn("f5", agent.SAFE_KEYS)  # function/system keys are not allowed
 
 
 class TypingMapTests(unittest.TestCase):

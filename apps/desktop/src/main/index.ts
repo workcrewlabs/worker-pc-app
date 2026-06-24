@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { join } from "node:path";
-import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "electron";
 import {
   APP_NAME,
   SUPPORT_EMAIL,
@@ -33,6 +33,12 @@ let mainWindow: BrowserWindow | null = null;
 // One AbortController per in-flight chat stream, keyed by the renderer-supplied
 // request id so chat:stop can cancel exactly the right stream.
 const chatStreams = new Map<string, AbortController>();
+
+// Attachment uploads are serialized through this promise chain. Dragging in many
+// files fires one upload call per file at the same time; running them one after
+// another avoids concurrent attachment writes on the backend (which can fail
+// under SQLite write contention), so a multi-file drop no longer drops files.
+let attachmentUploadChain: Promise<unknown> = Promise.resolve();
 
 console.info("[WorkCrew] main process loaded");
 
@@ -330,24 +336,37 @@ function registerIpc(): void {
   // sequentially so a large selection cannot spike memory all at once.
   ipcMain.handle("attachments:upload", async (_event, raw) => {
     const files = pickedFilesSchema.parse(raw);
-    const fs = await import("node:fs/promises");
-    const refs = [];
-    for (const file of files) {
-      const buffer = await fs.readFile(file.path);
-      if (buffer.byteLength > MAX_UPLOAD_BYTES) {
-        throw new Error(`${file.name} is too large. The limit is 10 MB per file.`);
-      }
-      const ref = await api.request("/v1/attachments", {
-        method: "POST",
-        body: {
-          filename: file.name,
-          mimeType: guessMimeType(file.name),
-          base64: buffer.toString("base64")
+    // Queue behind any in-flight upload so concurrent calls (a multi-file drop)
+    // store one at a time. The chain keeps going even if one upload throws.
+    const run = attachmentUploadChain.then(async () => {
+      const fs = await import("node:fs/promises");
+      const refs = [];
+      for (const file of files) {
+        const buffer = await fs.readFile(file.path);
+        if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+          throw new Error(`${file.name} is too large. The limit is 10 MB per file.`);
         }
-      });
-      refs.push(ref);
-    }
-    return refs;
+        const ref = await api.request("/v1/attachments", {
+          method: "POST",
+          body: {
+            filename: file.name,
+            mimeType: guessMimeType(file.name),
+            base64: buffer.toString("base64")
+          }
+        });
+        refs.push(ref);
+      }
+      return refs;
+    });
+    attachmentUploadChain = run.catch(() => {});
+    return run;
+  });
+
+  // Copy text to the OS clipboard from the sandboxed renderer, which cannot use
+  // the browser clipboard API (not a secure context). Used by the invite link.
+  ipcMain.handle("clipboard:write", (_event, text: unknown) => {
+    clipboard.writeText(typeof text === "string" ? text.slice(0, 100_000) : "");
+    return { ok: true };
   });
 
   // Chat streaming. The renderer fires chat:send and then listens on the
