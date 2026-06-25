@@ -42,6 +42,17 @@ html, body, #root { margin: 0; width: 100%; height: 100%; overflow: hidden; }
 button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 
+/* A thin, subtle scrollbar everywhere (like the Claude and ChatGPT sidebars),
+   replacing the chunky default with arrow buttons. The thumb is faint and only
+   firms up on hover, so it never competes with the content. */
+* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.12) transparent; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 99px; background: rgba(255,255,255,.12); background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.26); background-clip: padding-box; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+::-webkit-scrollbar-corner { background: transparent; }
+
 .brand { display: inline-flex; align-items: center; gap: 12px; }
 .brand-mark { width: 39px; height: 39px; display: grid; place-items: center; filter: drop-shadow(0 0 22px var(--accent-glow)); }
 .brand-glyph { width: 100%; height: 100%; display: block; }
