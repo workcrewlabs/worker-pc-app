@@ -14,9 +14,22 @@ describe("plan catalog", () => {
     expect(PLAN_CATALOG.ultra.yearlyPriceUsd).toBe(PLAN_CATALOG.ultra.monthlyPriceUsd * 10);
   });
 
-  it("keeps API budgets at 25 percent of monthly list price", () => {
-    expect(PLAN_CATALOG.pro.monthlyApiBudgetMicrodollars).toBe(6_750_000);
-    expect(PLAN_CATALOG.ultra.monthlyApiBudgetMicrodollars).toBe(50_000_000);
+  it("sets the hard API-cost caps per plan", () => {
+    // Pro: $0.10 / 5h, $0.35 / day, $6 / month.
+    expect(PLAN_CATALOG.pro.fiveHourMicrodollars).toBe(100_000);
+    expect(PLAN_CATALOG.pro.dailyMicrodollars).toBe(350_000);
+    expect(PLAN_CATALOG.pro.monthlyApiBudgetMicrodollars).toBe(6_000_000);
+    // Ultra: $0.75 / 5h, $3 / day, $60 / month.
+    expect(PLAN_CATALOG.ultra.fiveHourMicrodollars).toBe(750_000);
+    expect(PLAN_CATALOG.ultra.dailyMicrodollars).toBe(3_000_000);
+    expect(PLAN_CATALOG.ultra.monthlyApiBudgetMicrodollars).toBe(60_000_000);
+  });
+
+  it("keeps each plan's caps consistent (5h below daily below monthly)", () => {
+    for (const plan of [PLAN_CATALOG.pro, PLAN_CATALOG.ultra]) {
+      expect(plan.fiveHourMicrodollars).toBeLessThan(plan.dailyMicrodollars);
+      expect(plan.dailyMicrodollars).toBeLessThan(plan.monthlyApiBudgetMicrodollars);
+    }
   });
 });
 

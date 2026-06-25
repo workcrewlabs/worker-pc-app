@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { actualCostMicrodollars, chooseModel, maximumReservationMicrodollars } from "./anthropic.js";
-import { getBudgetUsage, getBudgetWindow, reserveBudget, settleBudget } from "./budget.js";
+import { getBudgetUsage, getBudgetWindow, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
 import { client, initializeDatabase, type SubscriptionRow } from "./db.js";
 
 describe("monthly allowance windows", () => {
@@ -61,92 +61,103 @@ describe("budget ledger invariants", () => {
     };
   }
 
-  it("never lets concurrent reservations collectively exceed the cycle cap", async () => {
+  const HOUR = 60 * 60 * 1000;
+
+  // Insert a settled usage row directly, at a chosen time, to set up a window
+  // state without going through reserve (used to fill the monthly window).
+  async function seedSettled(userId: string, amount: number, createdAtMs: number, anchorMs: number) {
+    const window = getBudgetWindow(anchorMs, createdAtMs);
+    await client.execute({
+      sql: `INSERT INTO usage_ledger(id, user_id, run_id, period_start_ms, period_end_ms, model, reserved_microdollars, actual_microdollars, status, created_at_ms, settled_at_ms)
+            VALUES (?, ?, 'seed', ?, ?, 'haiku', 0, ?, 'settled', ?, ?)`,
+      args: [randomUUID(), userId, window.startMs, window.endMs, amount, createdAtMs, createdAtMs]
+    });
+  }
+
+  it("never lets concurrent reservations exceed the 5-hour cap", async () => {
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
-    const window = getBudgetWindow(subscription.budgetAnchorMs, nowMs);
-    // Pro budget is 6_750_000 microdollars. Each reservation asks for one tenth
-    // of the cap, so at most 10 of the 25 attempts may succeed.
-    const cap = 6_750_000;
+    // Pro's 5-hour cap is 100_000. Each asks for a tenth, so at most 10 succeed.
+    const cap = 100_000;
     const perReservation = cap / 10;
     const attempts = 25;
 
     const results = await Promise.allSettled(
       Array.from({ length: attempts }, () =>
-        reserveBudget({
-          subscription,
-          runId: randomUUID(),
-          model: "haiku",
-          amountMicrodollars: perReservation,
-          nowMs
-        })
+        reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: perReservation, nowMs })
       )
     );
 
     const accepted = results.filter((result) => result.status === "fulfilled").length;
-    const rejected = results.filter((result) => result.status === "rejected").length;
     expect(accepted).toBeLessThanOrEqual(10);
-    expect(accepted + rejected).toBe(attempts);
-
-    // The decisive invariant: total reserved must never exceed the cycle cap.
-    const usage = await getBudgetUsage(subscription.userId, window);
-    expect(usage.reserved).toBeLessThanOrEqual(cap);
-    expect(usage.reserved).toBe(accepted * perReservation);
+    const used = await rollingUsage(subscription.userId, nowMs - 5 * HOUR);
+    expect(used).toBeLessThanOrEqual(cap);
+    expect(used).toBe(accepted * perReservation);
   });
 
-  it("rejects a reservation that would push reserved plus settled past the cap", async () => {
+  it("blocks at the 5-hour cap", async () => {
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
-    const cap = 6_750_000;
-
-    // First reservation consumes almost the whole cap and settles at its full
-    // reserved amount.
-    const first = await reserveBudget({
-      subscription,
-      runId: randomUUID(),
-      model: "haiku",
-      amountMicrodollars: cap - 100,
-      nowMs
-    });
-    await settleBudget(first.reservationId, cap - 100);
-
-    // A second reservation for more than the 100 microdollars of headroom must
-    // be rejected as budget exhausted.
+    // Use the whole 5-hour cap, then a further reservation is rejected.
+    await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 100_000, nowMs });
     await expect(
-      reserveBudget({
-        subscription,
-        runId: randomUUID(),
-        model: "haiku",
-        amountMicrodollars: 1_000,
-        nowMs
-      })
+      reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs })
+    ).rejects.toMatchObject({ code: "RATE_LIMIT_5H" });
+  });
+
+  it("blocks at the daily cap across separate 5-hour windows", async () => {
+    const subscription = makeSubscription();
+    const t = subscription.budgetAnchorMs;
+    // Pro daily cap is 350_000; spread 100k across three separate 5-hour windows.
+    for (const offset of [0, 6, 12]) {
+      await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 100_000, nowMs: t + offset * HOUR });
+    }
+    // A fourth 100k (400k total in the day) exceeds the daily cap, even though its
+    // own 5-hour window is clear.
+    await expect(
+      reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 100_000, nowMs: t + 18 * HOUR })
+    ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
+  });
+
+  it("blocks at the monthly cap", async () => {
+    const subscription = makeSubscription();
+    const anchor = subscription.budgetAnchorMs;
+    // Fill the whole monthly cap as old usage, outside the rolling windows, so only
+    // the monthly cap is binding.
+    await seedSettled(subscription.userId, 6_000_000, anchor, anchor);
+    await expect(
+      reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs: anchor + 48 * HOUR })
     ).rejects.toMatchObject({ code: "BUDGET_EXHAUSTED" });
+  });
+
+  it("gives the bigger plan bigger caps", async () => {
+    const ultra = { ...makeSubscription(), plan: "ultra" as const };
+    const nowMs = ultra.budgetAnchorMs;
+    // 600k fits under Ultra's 750k 5-hour cap.
+    const ok = await reserveBudget({ subscription: ultra, runId: randomUUID(), model: "sonnet", amountMicrodollars: 600_000, nowMs });
+    expect(ok.reservationId).toBeTruthy();
+    // The same amount is over a Pro user's 100k 5-hour cap.
+    const pro = makeSubscription();
+    await expect(
+      reserveBudget({ subscription: pro, runId: randomUUID(), model: "sonnet", amountMicrodollars: 600_000, nowMs: pro.budgetAnchorMs })
+    ).rejects.toMatchObject({ code: "RATE_LIMIT_5H" });
   });
 
   it("releases the difference when actual usage settles below the reservation", async () => {
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
     const window = getBudgetWindow(subscription.budgetAnchorMs, nowMs);
-    const reserved = 1_000_000;
-    const actual = 250_000;
+    const reserved = 80_000;
+    const actual = 20_000;
 
-    const reservation = await reserveBudget({
-      subscription,
-      runId: randomUUID(),
-      model: "sonnet",
-      amountMicrodollars: reserved,
-      nowMs
-    });
+    const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "sonnet", amountMicrodollars: reserved, nowMs });
 
-    // While reserved, the full amount counts against the budget.
     const afterReserve = await getBudgetUsage(subscription.userId, window);
     expect(afterReserve.reserved).toBe(reserved);
     expect(afterReserve.used).toBe(0);
 
     await settleBudget(reservation.reservationId, actual);
 
-    // After settlement only the actual cost is charged and the difference is
-    // released back into the available budget.
     const afterSettle = await getBudgetUsage(subscription.userId, window);
     expect(afterSettle.reserved).toBe(0);
     expect(afterSettle.used).toBe(actual);

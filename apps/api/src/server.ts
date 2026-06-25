@@ -49,7 +49,8 @@ import {
 import { processAndStoreAttachment } from "./attachments.js";
 import { changePlan, createCheckout, createPortal, createTopupCheckout, handleStripeWebhook } from "./billing.js";
 import { landingPage } from "./landing.js";
-import { creditReferralOnPayment, getBudgetUsage, getBudgetWindow, getTopupThisPeriod, grantTokenCredit, planBudget, reserveBudget, settleBudget, tokenPackCharge } from "./budget.js";
+import { creditReferralOnPayment, getBudgetUsage, getBudgetWindow, getTopupThisPeriod, grantTokenCredit, planBudget, planLimits, reserveBudget, rollingUsage, settleBudget, tokenPackCharge } from "./budget.js";
+import { DAY_MS, FIVE_HOUR_MS } from "@workcrew/contracts";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
 import {
@@ -138,6 +139,10 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
       budgetMicrodollars: 0,
       usedMicrodollars: 0,
       reservedMicrodollars: 0,
+      fiveHourLimitMicrodollars: 0,
+      fiveHourUsedMicrodollars: 0,
+      dailyLimitMicrodollars: 0,
+      dailyUsedMicrodollars: 0,
       purchasedMicrodollars: 0,
       topupSpentMicrodollars: 0,
       monthlyTopupLimitMicrodollars: 0,
@@ -146,10 +151,14 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
       hasPaymentMethod: false
     };
   }
-  const window = getBudgetWindow(subscription.budgetAnchorMs);
-  const [usage, topup] = await Promise.all([
+  const nowMs = Date.now();
+  const window = getBudgetWindow(subscription.budgetAnchorMs, nowMs);
+  const limits = planLimits(subscription.plan);
+  const [usage, topup, fiveHourUsed, dailyUsed] = await Promise.all([
     getBudgetUsage(userId, window),
-    getTopupThisPeriod(userId, window)
+    getTopupThisPeriod(userId, window),
+    rollingUsage(userId, nowMs - FIVE_HOUR_MS),
+    rollingUsage(userId, nowMs - DAY_MS)
   ]);
   // Purchased top-up tokens lower the period's used total (they are settled credit
   // rows). Add them back into the reported "used" so the user sees the real model
@@ -165,6 +174,10 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
     budgetMicrodollars: planBudget(subscription.plan) + topup.purchased,
     usedMicrodollars: usage.used + topup.purchased,
     reservedMicrodollars: usage.reserved,
+    fiveHourLimitMicrodollars: limits.fiveHour,
+    fiveHourUsedMicrodollars: fiveHourUsed,
+    dailyLimitMicrodollars: limits.daily,
+    dailyUsedMicrodollars: dailyUsed,
     purchasedMicrodollars: topup.purchased,
     topupSpentMicrodollars: topup.autoReloaded,
     monthlyTopupLimitMicrodollars: subscription.monthlyTopupLimitMicro,

@@ -18,7 +18,8 @@ function makeSubscription(): SubscriptionRow {
     userId: randomUUID(),
     stripeCustomerId: null,
     stripeSubscriptionId: null,
-    plan: "pro",
+    // Ultra so a sonnet chat turn with an attachment fits the 5-hour cap.
+    plan: "ultra",
     interval: "month",
     status: "active",
     active: true,

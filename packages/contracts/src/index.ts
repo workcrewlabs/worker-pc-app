@@ -31,28 +31,42 @@ export type PlanId = z.infer<typeof planIdSchema>;
 export const billingIntervalSchema = z.enum(["month", "year"]);
 export type BillingInterval = z.infer<typeof billingIntervalSchema>;
 
+// Hard API-cost caps per plan, in microdollars (one dollar = 1,000,000). Three
+// rolling windows are enforced so the operator's API spend per user is strictly
+// bounded: a short 5-hour rate window, a daily cap, and a monthly cap. The
+// monthly figure is also the user's plain "tokens per month" allowance.
 export const PLAN_CATALOG = {
   pro: {
     name: "Pro",
     monthlyPriceUsd: 27,
     yearlyPriceUsd: 270,
-    monthlyApiBudgetMicrodollars: 6_750_000,
+    fiveHourMicrodollars: 100_000,
+    dailyMicrodollars: 350_000,
+    monthlyApiBudgetMicrodollars: 6_000_000,
     devices: 1
   },
   ultra: {
     name: "Ultra",
     monthlyPriceUsd: 200,
     yearlyPriceUsd: 2_000,
-    monthlyApiBudgetMicrodollars: 50_000_000,
+    fiveHourMicrodollars: 750_000,
+    dailyMicrodollars: 3_000_000,
+    monthlyApiBudgetMicrodollars: 60_000_000,
     devices: 5
   }
 } as const satisfies Record<PlanId, {
   name: string;
   monthlyPriceUsd: number;
   yearlyPriceUsd: number;
+  fiveHourMicrodollars: number;
+  dailyMicrodollars: number;
   monthlyApiBudgetMicrodollars: number;
   devices: number;
 }>;
+
+// The rolling-window durations the caps are measured over.
+export const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
+export const DAY_MS = 24 * 60 * 60 * 1000;
 
 // One-time token top-up packs. When the monthly allowance runs low the user can
 // add more tokens to keep working in the current period. Larger packs include a
@@ -262,6 +276,13 @@ export type SubscriptionState = {
   budgetMicrodollars: number;
   usedMicrodollars: number;
   reservedMicrodollars: number;
+  // The shorter rolling hard caps and how much real usage has gone against each
+  // in its window (credits are excluded so a top-up cannot lift a rate limit).
+  // The monthly cap and usage are budgetMicrodollars / usedMicrodollars above.
+  fiveHourLimitMicrodollars: number;
+  fiveHourUsedMicrodollars: number;
+  dailyLimitMicrodollars: number;
+  dailyUsedMicrodollars: number;
   // Token top-up and auto-reload state. purchasedMicrodollars is the extra tokens
   // bought this period (added on top of the plan allowance). topupSpentMicrodollars
   // is what has been spent on top-ups this period, measured against the
