@@ -692,7 +692,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEn
                   onClick={() => void openConversation(item.id)}
                   title={item.title}
                 >
-                  {item.title || "New conversation"}
+                  <span className="recent-title">{item.title || "New conversation"}</span>
                 </button>
               ))}
             </div>

@@ -414,8 +414,13 @@ select option:checked { background-color: var(--panel-2); }
 .recents { display: flex; flex-direction: column; min-height: 0; flex: 1; margin-top: 14px; overflow: hidden; }
 .recents-title { padding: 0 4px 8px; color: var(--muted); font-size: var(--fs-eyebrow); font-weight: 700; letter-spacing: .6px; }
 .recents-empty { margin: 0; padding: 0 4px; color: #6b6359; font-size: var(--fs-small); line-height: 1.5; }
-.recents-list { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
-.recents-list button { width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; cursor: pointer; text-align: left; color: var(--muted); background: transparent; font-size: var(--fs-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The list takes the remaining space inside .recents and scrolls on its own, so
+   older conversations are reachable instead of being clipped. */
+.recents-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
+/* Each item is a flex row so its label sits vertically centered in the box, with
+   the truncation handled by the inner span. */
+.recents-list button { display: flex; align-items: center; width: 100%; min-height: 34px; padding: 0 10px; border: 0; border-radius: 8px; cursor: pointer; color: var(--muted); background: transparent; font-size: var(--fs-ui); }
+.recents-list .recent-title { display: block; width: 100%; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .recents-list button:hover { color: var(--text); background: var(--panel-2); }
 .recents-list .recent-active { color: var(--text); background: var(--panel-2); }
 
