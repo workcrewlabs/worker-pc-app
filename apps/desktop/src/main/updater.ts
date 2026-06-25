@@ -41,6 +41,11 @@ async function getUpdater(): Promise<AutoUpdaterLike | null> {
   if (!updater) return null;
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = true;
+  // The installer has a stable, version-less name (so the website download link
+  // is permanent), which means electron-updater cannot compute a meaningful
+  // old-vs-new blockmap diff. Skip the futile differential round-trips and just
+  // download the full, signature- and sha512-verified installer.
+  updater.disableDifferentialDownload = true;
   updater.on("checking-for-update", () => broadcast({ state: "checking" }));
   updater.on("update-available", (info: { version?: string }) => broadcast({ state: "available", version: info?.version }));
   updater.on("update-not-available", () => broadcast({ state: "none" }));

@@ -3,7 +3,7 @@ import type { AutomationAction, ModelTier } from "@workcrew/contracts";
 import { actionDetail, actionLabel } from "../lib/automation";
 import { redactResult, requiresApproval } from "../security";
 import { addHistory } from "../lib/storage";
-import { buildRecipe, getRecipe, isReplayEnabled, normalizeTaskKey, saveRecipe, type Recipe } from "../lib/recipes";
+import { browserRefLabel, buildRecipe, getRecipe, isReplayEnabled, normalizeTaskKey, parseWindowsSnapshot, saveRecipe, type Recipe } from "../lib/recipes";
 
 // The shared automation engine. It runs one plan-act loop at a time: create a
 // run, then repeatedly ask the backend for the next action, execute it (asking
@@ -76,10 +76,36 @@ export function useAutomationRunner(): AutomationRunner {
   function setPermissions(permissions: Record<string, boolean>): void {
     permissionsRef.current = permissions;
   }
+  // Resolve a click's opaque target into the human label the model actually saw,
+  // using the snapshot that was current when it chose the action. A windows click
+  // carries a numeric control id; a browser click carries an aria ref like e12.
+  // Without this the consequential-action gate would test a bare id/ref and never
+  // match a real "Pay"/"Delete" label. Recipe replay passes no snapshot because
+  // its controls are already stable names (and browser steps use CSS selectors).
+  function resolveLabel(action: AutomationAction, snapshot: string | null): string | undefined {
+    if (action.kind === "windows" && action.command === "click") {
+      const control = action.control ?? "";
+      if (/^\d+$/.test(control)) return parseWindowsSnapshot(snapshot).get(control) ?? control;
+      return control;
+    }
+    if (action.kind === "browser" && (action.command === "click" || action.command === "click-selector")) {
+      const target = action.target ?? "";
+      if (/^e\d{1,6}$/.test(target)) return browserRefLabel(snapshot, target) ?? target;
+      return target;
+    }
+    return undefined;
+  }
+
   // Whether to show the in-app approval prompt for an action, given current
   // settings. Centralized so the model loop and recipe replay decide identically.
-  function shouldPrompt(action: AutomationAction): boolean {
-    return requiresApproval(action, { alwaysAllow: autoApproveRef.current, permissions: permissionsRef.current });
+  // `snapshot` is the most recent inspect/snapshot output, used to resolve a
+  // click target to its real label for the consequential-action gate.
+  function shouldPrompt(action: AutomationAction, snapshot: string | null = null): boolean {
+    return requiresApproval(action, {
+      alwaysAllow: autoApproveRef.current,
+      permissions: permissionsRef.current,
+      label: resolveLabel(action, snapshot)
+    });
   }
 
   // While a Windows automation physically uses the mouse/keyboard, show an
@@ -261,7 +287,7 @@ export function useAutomationRunner(): AutomationRunner {
         // that cannot be bypassed), so they are not prompted again here. Other
         // writes use the in-app approval based on Always allow and the per-category
         // Permissions toggles.
-        if (shouldPrompt(action)) {
+        if (shouldPrompt(action, lastSnapshot)) {
           const approved = await requestApproval(action);
           if (!approved) {
             recordEntry.ok = false;
@@ -276,9 +302,13 @@ export function useAutomationRunner(): AutomationRunner {
           const output = await window.workcrew.automation.execute(action);
           setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
           result = { toolUseId: response.toolUseId, ok: true, output: redactResult(output) };
-          // Remember the latest desktop snapshot so a later numeric control
-          // reference can be recorded as the stable control name.
+          // Remember the latest snapshot so a following click can be resolved to
+          // a stable name (recipe recording) and to its real label (approval
+          // gate). Windows inspect lists controls; every browser command returns
+          // a fresh aria snapshot, so capture both. The raw output is kept (not
+          // the redacted copy) so refs and names survive.
           if (action.kind === "windows" && action.command === "inspect") lastSnapshot = output;
+          else if (action.kind === "browser") lastSnapshot = output;
         } catch (caught) {
           recordEntry.ok = false;
           setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "error" } : item)));

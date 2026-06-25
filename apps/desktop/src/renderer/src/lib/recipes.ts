@@ -97,6 +97,22 @@ export function parseWindowsSnapshot(text: string | null): Map<string, string> {
   return map;
 }
 
+/**
+ * Find the human-readable line for a browser accessibility ref in an "ai" aria
+ * snapshot. Lines look like `- button "Pay $49" [ref=e12]`; given `e12` this
+ * returns that whole line (role plus visible name) so an approval check can read
+ * the real label a bare ref like `e12` hides. The closing bracket in the search
+ * keeps `e1` from matching `e12`. Returns null when the ref is not present.
+ */
+export function browserRefLabel(snapshot: string | null, ref: string): string | null {
+  if (!snapshot || !/^e\d{1,6}$/.test(ref)) return null;
+  const needle = `[ref=${ref}]`;
+  for (const raw of snapshot.split("\n")) {
+    if (raw.includes(needle)) return raw.trim();
+  }
+  return null;
+}
+
 const WINDOWS_CONTROL_COMMANDS = new Set(["click", "set-text", "type-keys", "get-text"]);
 // type-text and press-key carry no control reference (they act on whatever is
 // focused) and a fixed value, so they replay deterministically.

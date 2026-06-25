@@ -51,29 +51,46 @@ describe("approval policy (requiresApproval)", () => {
 });
 
 describe("consequential actions are never silenced by Always allow", () => {
-  const launchTerminal: AutomationAction = { kind: "windows", command: "launch", application: "powershell.exe" };
+  // Real action shapes: a browser click carries an aria ref (e12), a windows
+  // click carries a numeric id; the human label is resolved from the snapshot
+  // and passed in as opts.label. Tests must use these shapes, not a fake label
+  // in the ref field, or they would green-light a path the executor never sees.
+  const launchTerminalExe: AutomationAction = { kind: "windows", command: "launch", application: "powershell.exe" };
+  const launchTerminalAlias: AutomationAction = { kind: "windows", command: "launch", application: "terminal" };
+  const launchCmdAlias: AutomationAction = { kind: "windows", command: "launch", application: "command prompt" };
   const launchExcel: AutomationAction = { kind: "windows", command: "launch", application: "excel" };
-  const payButton: AutomationAction = { kind: "browser", command: "click", target: "Pay $49 now" };
-  const deleteButton: AutomationAction = { kind: "windows", command: "click", control: "Delete account" };
-  const safeButton: AutomationAction = { kind: "browser", command: "click", target: "Next" };
+  const payClick: AutomationAction = { kind: "browser", command: "click", target: "e12" };
+  const safeClick: AutomationAction = { kind: "browser", command: "click", target: "e8" };
+  const deleteWinClick: AutomationAction = { kind: "windows", command: "click", control: "12" };
+  const payLabel = 'button "Pay $49 now" [ref=e12]';
+  const safeLabel = 'button "Next" [ref=e8]';
 
-  it("flags terminal launches and money/destructive clicks as consequential", () => {
-    expect(isConsequentialAction(launchTerminal)).toBe(true);
-    expect(isConsequentialAction(payButton)).toBe(true);
-    expect(isConsequentialAction(deleteButton)).toBe(true);
+  it("flags every terminal launch, including the friendly aliases that resolve to a shell", () => {
+    expect(isConsequentialAction(launchTerminalExe)).toBe(true);
+    expect(isConsequentialAction(launchTerminalAlias)).toBe(true); // terminal -> wt
+    expect(isConsequentialAction(launchCmdAlias)).toBe(true); // command prompt -> cmd
     expect(isConsequentialAction(launchExcel)).toBe(false);
-    expect(isConsequentialAction(safeButton)).toBe(false);
+  });
+
+  it("flags money/destructive clicks by their RESOLVED label, not the opaque ref", () => {
+    expect(isConsequentialAction(payClick, payLabel)).toBe(true);
+    expect(isConsequentialAction(deleteWinClick, "Delete account")).toBe(true);
+    expect(isConsequentialAction(safeClick, safeLabel)).toBe(false);
+    // Without a resolved label a bare ref must not be mistaken for a safe label
+    // by accident: e12 contains no consequential word, so it is not flagged, which
+    // is why the runner must resolve and pass the label.
+    expect(isConsequentialAction(payClick)).toBe(false);
   });
 
   it("still prompts for consequential actions even with Always allow on and the category on", () => {
-    expect(requiresApproval(launchTerminal, { alwaysAllow: true, permissions: ALL_ON })).toBe(true);
-    expect(requiresApproval(payButton, { alwaysAllow: true, permissions: ALL_ON })).toBe(true);
-    expect(requiresApproval(deleteButton, { alwaysAllow: true, permissions: ALL_ON })).toBe(true);
+    expect(requiresApproval(launchTerminalAlias, { alwaysAllow: true, permissions: ALL_ON })).toBe(true);
+    expect(requiresApproval(payClick, { alwaysAllow: true, permissions: ALL_ON, label: payLabel })).toBe(true);
+    expect(requiresApproval(deleteWinClick, { alwaysAllow: true, permissions: ALL_ON, label: "Delete account" })).toBe(true);
   });
 
   it("leaves ordinary launches and clicks coverable by Always allow", () => {
     expect(requiresApproval(launchExcel, { alwaysAllow: true, permissions: ALL_ON })).toBe(false);
-    expect(requiresApproval(safeButton, { alwaysAllow: true, permissions: ALL_ON })).toBe(false);
+    expect(requiresApproval(safeClick, { alwaysAllow: true, permissions: ALL_ON, label: safeLabel })).toBe(false);
   });
 });
 

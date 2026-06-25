@@ -1,8 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { AutomationAction } from "@workcrew/contracts";
-import { buildRecipe, normalizeTaskKey, parseWindowsSnapshot, recipeFromSteps, stabilizeAction } from "./recipes";
+import { browserRefLabel, buildRecipe, normalizeTaskKey, parseWindowsSnapshot, recipeFromSteps, stabilizeAction } from "./recipes";
 
 const SNAPSHOT = '1 Button "Create Invoice"\n12 Edit "Quantity"\n13 Button "Save & Close"';
+
+describe("browserRefLabel", () => {
+  const ARIA = '- button "Pay $49 now" [ref=e12]\n- link "Next" [ref=e1]\n- textbox "Email" [ref=e2]';
+  it("returns the line for an exact ref, not a prefix match (e1 must not match e12)", () => {
+    expect(browserRefLabel(ARIA, "e12")).toContain("Pay $49 now");
+    expect(browserRefLabel(ARIA, "e1")).toContain("Next");
+    expect(browserRefLabel(ARIA, "e1")).not.toContain("Pay");
+  });
+  it("returns null for an unknown ref, a missing snapshot, or a non-ref string", () => {
+    expect(browserRefLabel(ARIA, "e9")).toBeNull();
+    expect(browserRefLabel(null, "e1")).toBeNull();
+    expect(browserRefLabel(ARIA, "not-a-ref")).toBeNull();
+  });
+});
 
 describe("normalizeTaskKey", () => {
   it("lowercases, trims, and collapses whitespace", () => {

@@ -341,7 +341,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
         // socket is left open.
         stream.abort();
         // If the client hung up, this is an expected cancellation, not a fault.
-        // Release the reservation (settle at zero) and stop quietly; nobody is
+        // Release the reservation (charge nothing) and stop quietly; nobody is
         // reading, so there is no error frame to send.
         if (input.signal?.aborted) {
           await releaseOnce();
