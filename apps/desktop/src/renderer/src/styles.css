@@ -126,7 +126,10 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .app-shell { height: 100%; display: grid; grid-template-columns: 250px 1fr; grid-template-rows: minmax(0, 1fr); background: var(--bg); }
 /* Sidebar is one luminance step darker than the page (spec 2.2). */
 .sidebar { display: flex; flex-direction: column; padding: 21px 16px 16px; border-right: 1px solid var(--line); background: var(--panel); }
-.sidebar > .brand { padding: 0 8px 22px; }
+.sidebar-brand-row { display: flex; align-items: center; gap: 8px; padding: 0 8px 22px; }
+.sidebar-brand-row .brand { padding: 0; }
+/* App version badge next to the logo, so an installed update is visible at a glance. */
+.app-version { margin-left: auto; padding: 2px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); background: var(--panel-2); font-size: 11px; font-weight: 650; letter-spacing: .2px; }
 .sidebar nav { display: grid; gap: 4px; }
 /* The Routines row pairs the nav item with a small circle-plus that saves the
    current chat as a routine. It appears only once a chat or automation exists. */

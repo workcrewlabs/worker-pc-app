@@ -631,7 +631,10 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEn
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <Brand compact />
+        <div className="sidebar-brand-row">
+          <Brand compact />
+          <span className="app-version" title="App version">v{info.version}</span>
+        </div>
         <button className="new-chat" onClick={startNewChat} aria-label="New chat">
           <span className="new-chat-plus" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
