@@ -180,6 +180,11 @@ export function useAutomationRunner(): AutomationRunner {
     // before any await so a second caller in the same tick cannot slip past it.
     if (trimmed.length < 3 || runningRef.current) return;
     runningRef.current = true;
+    // Wrap the whole run in try/finally so the in-flight guard is cleared on
+    // EVERY exit path, including an unexpected throw from the replay section
+    // below (which runs before the main loop's own try). Missing this would
+    // strand the runner with isBusy() stuck true until an app restart.
+    try {
     stoppedRef.current = false;
     mouseActiveRef.current = false;
     setSteps([]);
@@ -201,13 +206,11 @@ export function useAutomationRunner(): AutomationRunner {
         setStatus("complete");
         saveRecipe({ ...recipe, runCount: recipe.runCount + 1, updatedAtMs: Date.now() });
         addHistory({ task: trimmed, timestamp: Date.now(), outcome: "complete", activityCount: recipe.steps.length });
-        runningRef.current = false;
         return;
       }
       if (outcome === "stopped") {
         setStatus("stopped");
         addHistory({ task: trimmed, timestamp: Date.now(), outcome: "stopped", activityCount: 0 });
-        runningRef.current = false;
         return;
       }
       // outcome === "failed": clear the partial replay activity and let the model
@@ -288,7 +291,6 @@ export function useAutomationRunner(): AutomationRunner {
       setStatus("failed");
     } finally {
       hideOverlay();
-      runningRef.current = false;
       setStatus((current) => {
         addHistory({
           task: trimmed,
@@ -305,6 +307,9 @@ export function useAutomationRunner(): AutomationRunner {
         }
         return current;
       });
+    }
+    } finally {
+      runningRef.current = false;
     }
   }
 
