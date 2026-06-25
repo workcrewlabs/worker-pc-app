@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, session, shell } from "electron";
 import {
   APP_NAME,
@@ -378,11 +378,25 @@ function registerIpc(): void {
     const files = pickedFilesSchema.parse(raw);
     // Queue behind any in-flight upload so concurrent calls (a multi-file drop)
     // store one at a time. The chain keeps going even if one upload throws.
+    const userDataDir = resolve(app.getPath("userData"));
     const run = attachmentUploadChain.then(async () => {
       const fs = await import("node:fs/promises");
       const refs = [];
       for (const file of files) {
-        const buffer = await fs.readFile(file.path);
+        const resolved = resolve(file.path);
+        // Never read the app's own internal files (the encrypted session vault,
+        // settings, workspace, model cache, all under userData). A user attaches
+        // their own documents, never these, so blocking the app data directory
+        // closes the path where a compromised renderer could try to read and
+        // exfiltrate WorkCrew's own stored data through the upload channel.
+        if (resolved === userDataDir || resolved.toLowerCase().startsWith(userDataDir.toLowerCase() + sep)) {
+          throw new Error("That file cannot be attached.");
+        }
+        const stat = await fs.stat(resolved).catch(() => null);
+        if (!stat || !stat.isFile()) {
+          throw new Error(`${file.name} could not be read.`);
+        }
+        const buffer = await fs.readFile(resolved);
         if (buffer.byteLength > MAX_UPLOAD_BYTES) {
           throw new Error(`${file.name} is too large. The limit is 10 MB per file.`);
         }
@@ -510,7 +524,20 @@ function registerIpc(): void {
   ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));
   ipcMain.handle("automation:windows", (_event, action) => windowsAgent.execute(action));
   // Voice input: transcribe 16 kHz mono PCM samples sent from the renderer.
-  ipcMain.handle("dictation:transcribe", (_event, buffer: ArrayBuffer) => transcribeSamples(new Float32Array(buffer)));
+  ipcMain.handle("dictation:transcribe", (_event, buffer: unknown) => {
+    // Validate and cap the audio before allocating. Without this, a renderer
+    // could send an arbitrarily large buffer and exhaust memory. The cap is ~5
+    // minutes of 16 kHz mono float32 samples (16000 * 300 * 4 bytes).
+    const MAX_AUDIO_BYTES = 16_000 * 300 * 4;
+    const ab = buffer instanceof ArrayBuffer
+      ? buffer
+      : ArrayBuffer.isView(buffer as ArrayBufferView)
+        ? (buffer as ArrayBufferView).buffer
+        : null;
+    if (!ab) throw new Error("Invalid audio input.");
+    if (ab.byteLength > MAX_AUDIO_BYTES) throw new Error("That recording is too long.");
+    return transcribeSamples(new Float32Array(ab));
+  });
   ipcMain.handle("automation:launch-browser", () => browserCli.launchBrowser());
   ipcMain.handle("automation:stop", async () => {
     // The overlay is lowered by the renderer's run-exit path (or the safety timer)

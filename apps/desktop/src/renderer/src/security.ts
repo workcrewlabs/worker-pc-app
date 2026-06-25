@@ -19,6 +19,36 @@ export function permissionCategoryFor(action: AutomationAction): "browser-writes
   return null;
 }
 
+// Apps that are really a command line. Launching one and then typing into it is a
+// way to run arbitrary commands WITHOUT going through the main process's native
+// shell-approval dialog, so a launch of any of these is always confirmed, even
+// under "Always allow".
+const TERMINAL_APP = /(^|[\\/ ])(cmd|cmd\.exe|command prompt|powershell|powershell\.exe|pwsh|pwsh\.exe|windows ?terminal|wt|wt\.exe|conhost|conhost\.exe|bash|sh|git ?bash|wsl|wsl\.exe)([ "']|$)/i;
+
+// Words that mark a click or key press as money-moving or destructive. A control
+// whose visible text matches these always asks for confirmation, so prompt
+// injection cannot silently pay, send, submit, delete, or confirm while "Always
+// allow" is on.
+const CONSEQUENTIAL_TEXT = /\b(pay|payment|buy|purchase|order|checkout|place\s+order|send|transfer|wire|withdraw|deposit|submit|confirm|delete)\b/i;
+
+// Whether this action is consequential enough that it must ALWAYS be confirmed,
+// regardless of "Always allow" or the per-category toggles. This is the safety
+// floor that cannot be silenced.
+export function isConsequentialAction(action: AutomationAction): boolean {
+  if (action.kind === "windows") {
+    if (action.command === "launch") return TERMINAL_APP.test(action.application ?? "");
+    if (action.command === "click") return CONSEQUENTIAL_TEXT.test(action.control ?? "");
+    return false;
+  }
+  if (action.kind === "browser") {
+    if (action.command === "click" || action.command === "click-selector" || action.command === "press") {
+      return CONSEQUENTIAL_TEXT.test(action.target ?? "");
+    }
+    return false;
+  }
+  return false;
+}
+
 // Whether the in-app approval prompt must be shown before running this action,
 // given the user's settings. This is the single policy the runner uses, modelled
 // on Claude Code: when "Always allow" is off, every write action asks (and the
@@ -32,6 +62,10 @@ export function requiresApproval(
 ): boolean {
   if (action.kind === "shell") return false;
   if (!actionNeedsApproval(action)) return false; // reads and finish never prompt
+  // Money-moving, destructive, and terminal-launch actions are never silenced,
+  // even with "Always allow" on. This closes the path where Always allow lets
+  // injected content open a terminal or click a Pay button with no prompt.
+  if (isConsequentialAction(action)) return true;
   const category = permissionCategoryFor(action);
   const categoryAllowed = category ? opts.permissions[category] !== false : true;
   const covered = opts.alwaysAllow && categoryAllowed;

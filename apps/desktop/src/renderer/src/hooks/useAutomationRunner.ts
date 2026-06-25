@@ -42,6 +42,10 @@ export type AutomationRunner = {
   clear: () => void;
   setAutoApprove: (value: boolean) => void;
   setPermissions: (permissions: Record<string, boolean>) => void;
+  // Live, synchronous "is a run in progress" check. Unlike `running` (derived
+  // from React state, which lags a tick), this is set the instant a run starts,
+  // so callers can avoid launching a second run in the same tick.
+  isBusy: () => boolean;
 };
 
 export function useAutomationRunner(): AutomationRunner {
@@ -53,6 +57,12 @@ export function useAutomationRunner(): AutomationRunner {
   const [pending, setPending] = useState<{ action: AutomationAction; label: string } | null>(null);
 
   const stoppedRef = useRef(false);
+  // Set synchronously the instant a run begins and cleared on every exit path.
+  // The React `status` state lags a tick, so two callers (a manual send and the
+  // 30-second scheduler firing together) could both read status !== "running"
+  // and start two runs that drive the mouse at once and double-bill. This ref is
+  // the authoritative guard against that.
+  const runningRef = useRef(false);
   const approvalResolve = useRef<((approved: boolean) => void) | null>(null);
   // When on, write actions run without prompting ("Always allow").
   const autoApproveRef = useRef(false);
@@ -106,7 +116,7 @@ export function useAutomationRunner(): AutomationRunner {
   // Reset the inline run activity (steps, status, summary) so it does not linger
   // into a new chat or the next message. A no-op while a run is in progress.
   function clear(): void {
-    if (status === "running") return;
+    if (runningRef.current || status === "running") return;
     setSteps([]);
     setSummary("");
     setError("");
@@ -166,7 +176,10 @@ export function useAutomationRunner(): AutomationRunner {
 
   async function run(task: string, model: ModelTier, runLabel = ""): Promise<void> {
     const trimmed = task.trim();
-    if (trimmed.length < 3 || status === "running") return;
+    // Synchronous guard: if a run is already in flight, do nothing. This is set
+    // before any await so a second caller in the same tick cannot slip past it.
+    if (trimmed.length < 3 || runningRef.current) return;
+    runningRef.current = true;
     stoppedRef.current = false;
     mouseActiveRef.current = false;
     setSteps([]);
@@ -188,11 +201,13 @@ export function useAutomationRunner(): AutomationRunner {
         setStatus("complete");
         saveRecipe({ ...recipe, runCount: recipe.runCount + 1, updatedAtMs: Date.now() });
         addHistory({ task: trimmed, timestamp: Date.now(), outcome: "complete", activityCount: recipe.steps.length });
+        runningRef.current = false;
         return;
       }
       if (outcome === "stopped") {
         setStatus("stopped");
         addHistory({ task: trimmed, timestamp: Date.now(), outcome: "stopped", activityCount: 0 });
+        runningRef.current = false;
         return;
       }
       // outcome === "failed": clear the partial replay activity and let the model
@@ -273,6 +288,7 @@ export function useAutomationRunner(): AutomationRunner {
       setStatus("failed");
     } finally {
       hideOverlay();
+      runningRef.current = false;
       setStatus((current) => {
         addHistory({
           task: trimmed,
@@ -292,5 +308,5 @@ export function useAutomationRunner(): AutomationRunner {
     }
   }
 
-  return { steps, status, summary, error, label, pending, run, decide, stop, clear, setAutoApprove, setPermissions, running: status === "running" };
+  return { steps, status, summary, error, label, pending, run, decide, stop, clear, setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running" };
 }

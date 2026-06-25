@@ -154,21 +154,27 @@ export async function createTopupCheckout(userId: string, pack: TokenPackId): Pr
 
 // Charge the user's saved card for one auto-reload pack, off-session. Returns
 // true only when the charge succeeded; the caller grants the tokens. A decline or
-// an authentication requirement returns false and no tokens are added.
-export async function chargeAutoReload(subscription: SubscriptionRow, pack: TokenPackId): Promise<boolean> {
+// an authentication requirement returns false and no tokens are added. The
+// idempotency key makes a retried or concurrent charge for the SAME exhaustion
+// event resolve to a single PaymentIntent at Stripe, so the card is never double
+// charged for one reload.
+export async function chargeAutoReload(subscription: SubscriptionRow, pack: TokenPackId, idempotencyKey?: string): Promise<boolean> {
   const client = requireStripe();
   if (!subscription.stripeCustomerId || !subscription.stripePaymentMethodId) return false;
   const item = TOKEN_PACKS[pack];
   try {
-    const intent = await client.paymentIntents.create({
-      amount: item.priceUsd * 100,
-      currency: "usd",
-      customer: subscription.stripeCustomerId,
-      payment_method: subscription.stripePaymentMethodId,
-      off_session: true,
-      confirm: true,
-      metadata: { workcrew_user_id: subscription.userId, workcrew_topup_pack: pack, workcrew_auto_reload: "1" }
-    });
+    const intent = await client.paymentIntents.create(
+      {
+        amount: item.priceUsd * 100,
+        currency: "usd",
+        customer: subscription.stripeCustomerId,
+        payment_method: subscription.stripePaymentMethodId,
+        off_session: true,
+        confirm: true,
+        metadata: { workcrew_user_id: subscription.userId, workcrew_topup_pack: pack, workcrew_auto_reload: "1" }
+      },
+      idempotencyKey ? { idempotencyKey } : undefined
+    );
     return intent.status === "succeeded";
   } catch {
     return false;

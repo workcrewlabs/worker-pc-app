@@ -1,6 +1,6 @@
 {
   "name": "@workcrew/desktop",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
@@ -78,7 +78,7 @@
         "nsis"
       ],
       "icon": "resources/icon.ico",
-      "artifactName": "WorkCrew-Setup-${version}.${ext}"
+      "artifactName": "WorkCrew-Setup.${ext}"
     },
     "nsis": {
       "oneClick": true,

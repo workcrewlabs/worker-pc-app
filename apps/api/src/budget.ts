@@ -230,18 +230,26 @@ export async function grantTokenCredit(input: {
   source: "token_topup" | "auto_reload";
   providerRequestId?: string;
   nowMs?: number;
+  // A stable id for this grant. When supplied, a second insert with the same id
+  // is ignored instead of creating a duplicate credit row, so a retried or
+  // concurrent grant for one exhaustion event credits the user exactly once.
+  dedupeId?: string;
 }): Promise<{ window: BudgetWindow } | null> {
   const nowMs = input.nowMs ?? Date.now();
   const subscription = await getSubscription(input.userId);
   if (!subscription) return null;
   const window = getBudgetWindow(subscription.budgetAnchorMs, nowMs);
+  // When a dedupe id is given, swallow a primary-key conflict so a duplicate
+  // grant is a no-op. The two dialects spell this differently.
+  const insertVerb = input.dedupeId && client.dialect !== "postgres" ? "INSERT OR IGNORE INTO" : "INSERT INTO";
+  const onConflict = input.dedupeId && client.dialect === "postgres" ? " ON CONFLICT (id) DO NOTHING" : "";
   await client.execute({
-    sql: `INSERT INTO usage_ledger(
+    sql: `${insertVerb} usage_ledger(
         id, user_id, run_id, period_start_ms, period_end_ms, model,
         reserved_microdollars, actual_microdollars, status, provider_request_id, created_at_ms, settled_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'settled', ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'settled', ?, ?, ?)${onConflict}`,
     args: [
-      randomUUID(),
+      input.dedupeId ?? randomUUID(),
       input.userId,
       input.source,
       window.startMs,
@@ -297,13 +305,21 @@ export async function maybeAutoReload(subscription: SubscriptionRow, window: Bud
   // Never exceed the period cap on automatic spending.
   if (autoReloaded + grant > limit) return false;
 
+  // A stable key for THIS exhaustion event: the user, the budget period, and how
+  // much has already been auto-reloaded this period. Two concurrent reservations
+  // that both find the allowance exhausted compute the same key (neither has
+  // granted yet), so the Stripe charge dedupes to one PaymentIntent and the
+  // credit row dedupes to one grant. The next exhaustion has a higher baseline,
+  // hence a new key, so legitimate repeat reloads (up to the cap) still work.
+  const eventKey = `auto-reload:${subscription.userId}:${window.startMs}:${autoReloaded}:${pack}`;
+
   const charged = tokenPackCharge(pack);
   if (config.billingMode === "stripe") {
     // A saved card is required to charge off-session. Without one, auto-reload
     // quietly does nothing (the app prompts the user to add a payment method).
     if (!subscription.stripePaymentMethodId || !subscription.stripeCustomerId) return false;
     const { chargeAutoReload } = await import("./billing.js");
-    const ok = await chargeAutoReload(subscription, pack);
+    const ok = await chargeAutoReload(subscription, pack, eventKey);
     if (!ok) return false;
   }
 
@@ -312,7 +328,8 @@ export async function maybeAutoReload(subscription: SubscriptionRow, window: Bud
     grantedMicrodollars: grant,
     chargedMicrodollars: charged,
     source: "auto_reload",
-    nowMs
+    nowMs,
+    dedupeId: eventKey
   });
   return true;
 }

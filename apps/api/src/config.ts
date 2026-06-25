@@ -78,6 +78,15 @@ if (env.NODE_ENV === "production") {
   if (env.AUTH_MODE === "supabase" && !env.SUPABASE_URL) missing.push("SUPABASE_URL");
   if (env.AUTH_MODE === "local" && !env.WORKCREW_LOCAL_AUTH_SECRET) missing.push("WORKCREW_LOCAL_AUTH_SECRET");
 
+  // A production deployment must use a durable database. If no Postgres URL
+  // (DATABASE_URL, the Supabase path) is set and WORKCREW_DATA_URL still points
+  // at a local SQLite file, the server would silently run on an ephemeral file
+  // that is wiped on every redeploy, destroying all accounts, subscriptions, and
+  // history. A remote libsql endpoint (a non-file WORKCREW_DATA_URL) is also
+  // acceptable; only the local-file fallback is refused.
+  const usingLocalSqlite = !env.DATABASE_URL && /^file:/i.test(env.WORKCREW_DATA_URL);
+  if (usingLocalSqlite) missing.push("DATABASE_URL");
+
   if (missing.length > 0) {
     throw new Error(`Production configuration is incomplete: ${missing.join(", ")}`);
   }

@@ -433,6 +433,11 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEn
       if (running) return;
       const due = nextDueRoutine(current, Date.now());
       if (!due) return;
+      // Live guard: if a run started since the last state sync (e.g. the user
+      // just sent a task), do not start the routine and do not mark it ran, so
+      // it stays due and fires on the next free tick instead of silently being
+      // skipped. No await separates this check from run(), so it is atomic.
+      if (runner.isBusy()) return;
       setRoutines(markRoutineRan(due.id, Date.now()));
       void runner.run(due.task, model, due.name);
     }, 30_000);
@@ -507,7 +512,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEn
   // Running a task puts the chat in automation mode so follow-ups can re-run it.
   function runAutomation(task: string, label = "Task") {
     const trimmed = task.trim();
-    if (trimmed.length < 3 || runner.running) return;
+    if (trimmed.length < 3 || runner.isBusy()) return;
     setView("chat");
     setAccountOpen(false);
     setAutomationTask(trimmed);

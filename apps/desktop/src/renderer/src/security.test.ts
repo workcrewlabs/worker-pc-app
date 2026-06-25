@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AutomationAction } from "@workcrew/contracts";
-import { actionNeedsApproval, redactResult, requiresApproval } from "./security";
+import { actionNeedsApproval, isConsequentialAction, redactResult, requiresApproval } from "./security";
 
 const ALL_ON = { "browser-writes": true, "windows-writes": true };
 const browserWrite: AutomationAction = { kind: "browser", command: "click", target: "e1" };
@@ -47,6 +47,33 @@ describe("approval policy (requiresApproval)", () => {
 
   it("never prompts in-app for shell (the main process confirms it natively)", () => {
     expect(requiresApproval({ kind: "shell", command: "git status" }, { alwaysAllow: false, permissions: {} })).toBe(false);
+  });
+});
+
+describe("consequential actions are never silenced by Always allow", () => {
+  const launchTerminal: AutomationAction = { kind: "windows", command: "launch", application: "powershell.exe" };
+  const launchExcel: AutomationAction = { kind: "windows", command: "launch", application: "excel" };
+  const payButton: AutomationAction = { kind: "browser", command: "click", target: "Pay $49 now" };
+  const deleteButton: AutomationAction = { kind: "windows", command: "click", control: "Delete account" };
+  const safeButton: AutomationAction = { kind: "browser", command: "click", target: "Next" };
+
+  it("flags terminal launches and money/destructive clicks as consequential", () => {
+    expect(isConsequentialAction(launchTerminal)).toBe(true);
+    expect(isConsequentialAction(payButton)).toBe(true);
+    expect(isConsequentialAction(deleteButton)).toBe(true);
+    expect(isConsequentialAction(launchExcel)).toBe(false);
+    expect(isConsequentialAction(safeButton)).toBe(false);
+  });
+
+  it("still prompts for consequential actions even with Always allow on and the category on", () => {
+    expect(requiresApproval(launchTerminal, { alwaysAllow: true, permissions: ALL_ON })).toBe(true);
+    expect(requiresApproval(payButton, { alwaysAllow: true, permissions: ALL_ON })).toBe(true);
+    expect(requiresApproval(deleteButton, { alwaysAllow: true, permissions: ALL_ON })).toBe(true);
+  });
+
+  it("leaves ordinary launches and clicks coverable by Always allow", () => {
+    expect(requiresApproval(launchExcel, { alwaysAllow: true, permissions: ALL_ON })).toBe(false);
+    expect(requiresApproval(safeButton, { alwaysAllow: true, permissions: ALL_ON })).toBe(false);
   });
 });
 

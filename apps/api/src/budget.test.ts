@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { actualCostMicrodollars, chooseModel, maximumReservationMicrodollars } from "./anthropic.js";
-import { getBudgetUsage, getBudgetWindow, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
+import { getBudgetUsage, getBudgetWindow, releaseBudget, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
 import { client, initializeDatabase, type SubscriptionRow } from "./db.js";
 
 describe("monthly allowance windows", () => {
@@ -161,5 +161,30 @@ describe("budget ledger invariants", () => {
     const afterSettle = await getBudgetUsage(subscription.userId, window);
     expect(afterSettle.reserved).toBe(0);
     expect(afterSettle.used).toBe(actual);
+  });
+
+  it("charges nothing and frees the caps when a reservation is released", async () => {
+    const subscription = makeSubscription();
+    const nowMs = subscription.budgetAnchorMs;
+    const window = getBudgetWindow(subscription.budgetAnchorMs, nowMs);
+    const reserved = 90_000;
+
+    const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "sonnet", amountMicrodollars: reserved, nowMs });
+    expect((await getBudgetUsage(subscription.userId, window)).reserved).toBe(reserved);
+    expect(await rollingUsage(subscription.userId, nowMs - HOUR)).toBe(reserved);
+
+    // A failed turn releases the reservation: it must cost zero and must not
+    // count against the monthly, 5-hour, or daily caps, so the user is never
+    // billed or rate-limited for work they did not receive.
+    await releaseBudget(reservation.reservationId);
+
+    const after = await getBudgetUsage(subscription.userId, window);
+    expect(after.reserved).toBe(0);
+    expect(after.used).toBe(0);
+    expect(await rollingUsage(subscription.userId, nowMs - HOUR)).toBe(0);
+
+    // The freed headroom is usable: a fresh reservation for the full cap succeeds.
+    const next = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 100_000, nowMs });
+    expect(next.reservationId).toBeTruthy();
   });
 });

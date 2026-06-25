@@ -49,7 +49,7 @@ import {
 import { processAndStoreAttachment } from "./attachments.js";
 import { changePlan, createCheckout, createPortal, createTopupCheckout, handleStripeWebhook } from "./billing.js";
 import { landingPage } from "./landing.js";
-import { creditReferralOnPayment, getBudgetUsage, getBudgetWindow, getTopupThisPeriod, grantTokenCredit, planBudget, planLimits, reserveBudget, rollingUsage, settleBudget, tokenPackCharge } from "./budget.js";
+import { creditReferralOnPayment, getBudgetUsage, getBudgetWindow, getTopupThisPeriod, grantTokenCredit, planBudget, planLimits, releaseBudget, reserveBudget, rollingUsage, settleBudget, tokenPackCharge } from "./budget.js";
 import { DAY_MS, FIVE_HOUR_MS } from "@workcrew/contracts";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
@@ -72,7 +72,7 @@ import {
 } from "./db.js";
 
 /** Application version reported on /health for diagnostics. */
-const APP_VERSION = "0.1.0";
+const APP_VERSION = "0.1.3";
 
 /**
  * Maximum number of model planning steps a single run may consume. The desktop
@@ -530,7 +530,11 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", async (request):
     const result = await callModel({ tier, messages: run.messages, maxOutputTokens });
     const actualCost = actualCostMicrodollars(tier, result.usage);
     if (actualCost > reservationAmount) {
-      throw Object.assign(new Error("Provider usage exceeded the reserved maximum"), { code: "USAGE_RESERVATION_BREACH" });
+      throw Object.assign(new Error("Provider usage exceeded the reserved maximum"), {
+        code: "USAGE_RESERVATION_BREACH",
+        actualCost,
+        providerRequestId: result.providerRequestId
+      });
     }
     await settleBudget(reservation.reservationId, actualCost, result.providerRequestId);
     run.messages.push({ role: "assistant", content: result.content });
@@ -612,7 +616,18 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", async (request):
       usage: usagePayload
     };
   } catch (error) {
-    await settleBudget(reservation.reservationId, reservationAmount, (error as { providerRequestId?: string }).providerRequestId);
+    if ((error as { code?: string }).code === "USAGE_RESERVATION_BREACH") {
+      // The model finished but reported usage above the reserved maximum. Charge
+      // the real cost (settleBudget clamps it to the reservation) so a genuine
+      // overage is still billed at the ceiling.
+      const actualCost = (error as { actualCost?: number }).actualCost ?? reservationAmount;
+      await settleBudget(reservation.reservationId, actualCost, (error as { providerRequestId?: string }).providerRequestId);
+    } else {
+      // A genuine failure (model or network error) produced no trustworthy
+      // usage. Release the hold so a failed turn is never billed and cannot eat
+      // into the user's hard 5-hour, daily, or monthly caps.
+      await releaseBudget(reservation.reservationId);
+    }
     run.status = "failed";
     await updateRun(run);
     throw error;

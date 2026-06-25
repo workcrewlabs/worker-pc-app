@@ -8,7 +8,7 @@ import {
 } from "@workcrew/contracts";
 import { actualCostMicrodollars, maximumReservationMicrodollars, withRollingCacheBreakpoint } from "./anthropic.js";
 import { blocksForRow, estimateMediaTokens } from "./attachments.js";
-import { getBudgetUsage, reserveBudget, settleBudget } from "./budget.js";
+import { getBudgetUsage, releaseBudget, reserveBudget, settleBudget } from "./budget.js";
 import { config } from "./config.js";
 import {
   addMessage,
@@ -249,12 +249,22 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
   let reservationWindow: { startMs: number; endMs: number } | null = null;
   let settled = false;
 
-  // Settle the reservation exactly once. Called on both the success and failure
-  // paths so a reservation never lingers and double settling is a no-op.
+  // Settle the reservation exactly once. Called on the success path so a
+  // reservation never lingers and double settling is a no-op.
   const settleOnce = async (amountMicrodollars: number, providerRequestId?: string): Promise<void> => {
     if (settled || !reservationId) return;
     settled = true;
     await settleBudget(reservationId, amountMicrodollars, providerRequestId);
+  };
+
+  // Release the reservation (charge nothing) exactly once. Used on the abort and
+  // failure paths so a turn the user never received is not billed and cannot
+  // consume the hard 5-hour, daily, or monthly caps. Shares the same guard as
+  // settleOnce, so settle-then-release or release-then-settle is a no-op.
+  const releaseOnce = async (): Promise<void> => {
+    if (settled || !reservationId) return;
+    settled = true;
+    await releaseBudget(reservationId);
   };
 
   try {
@@ -334,7 +344,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
         // Release the reservation (settle at zero) and stop quietly; nobody is
         // reading, so there is no error frame to send.
         if (input.signal?.aborted) {
-          await settleOnce(0);
+          await releaseOnce();
           return;
         }
         throw streamError;
@@ -382,11 +392,11 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       }
     };
   } catch (error) {
-    // Settle the reservation at its full amount so a failed turn still releases
-    // its hold deterministically, then yield an error frame. A new conversation
-    // that failed before any assistant turn is left in place; the user can retry
-    // into it.
-    await settleOnce(reservationAmount);
+    // Release the reservation (charge nothing) so a failed turn never bills the
+    // user and cannot consume the hard caps, then yield an error frame. A new
+    // conversation that failed before any assistant turn is left in place; the
+    // user can retry into it.
+    await releaseOnce();
     void isNewConversation;
     const message = error instanceof Error ? error.message : "The chat request could not be completed";
     yield { type: "error", message };
