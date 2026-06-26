@@ -99,10 +99,23 @@ export async function createCheckout(userId: string, plan: PlanId, interval: Bil
   return session.url;
 }
 
+// The recurring price of a plan/interval in dollars, used to tell an upgrade
+// (must be paid before access is granted) from a downgrade (a credit).
+function planPriceUsd(plan: PlanId, interval: BillingInterval): number {
+  const item = PLAN_CATALOG[plan];
+  return interval === "year" ? item.yearlyPriceUsd : item.monthlyPriceUsd;
+}
+
 // Switch an existing active subscription to a different plan or interval (for
 // example Pro to Ultra) in place, with proration, instead of opening a second
 // checkout and creating a duplicate subscription. The webhook also fires, but we
 // synchronize here too so the caller can return the fresh state immediately.
+//
+// An UPGRADE (the new plan costs more) must be PAID before the higher tier is
+// granted, so a click can never hand a user a more expensive plan for free:
+// always_invoice bills the prorated difference immediately and
+// error_if_incomplete makes the change throw (no plan change, no grant) if that
+// charge cannot be collected now. A DOWNGRADE is a credit, applied normally.
 export async function changePlan(userId: string, plan: PlanId, interval: BillingInterval): Promise<void> {
   const client = requireStripe();
   const subscription = await getSubscription(userId);
@@ -113,16 +126,32 @@ export async function changePlan(userId: string, plan: PlanId, interval: Billing
   const itemId = stripeSub.items.data[0]?.id;
   if (!itemId) throw new Error("Subscription has no item to update");
 
-  const updated = await client.subscriptions.update(subscription.stripeSubscriptionId, {
-    items: [{ id: itemId, price: priceId(plan, interval) }],
-    proration_behavior: "create_prorations",
-    payment_behavior: "allow_incomplete",
-    metadata: {
-      workcrew_user_id: userId,
-      workcrew_plan: plan,
-      workcrew_interval: interval
+  const isUpgrade = planPriceUsd(plan, interval) > planPriceUsd(subscription.plan, subscription.interval);
+
+  let updated: Stripe.Subscription;
+  try {
+    updated = await client.subscriptions.update(subscription.stripeSubscriptionId, {
+      items: [{ id: itemId, price: priceId(plan, interval) }],
+      proration_behavior: isUpgrade ? "always_invoice" : "create_prorations",
+      payment_behavior: isUpgrade ? "error_if_incomplete" : "allow_incomplete",
+      metadata: {
+        workcrew_user_id: userId,
+        workcrew_plan: plan,
+        workcrew_interval: interval
+      }
+    });
+  } catch (error) {
+    if (isUpgrade) {
+      // The prorated upgrade charge could not be collected, so the plan was NOT
+      // changed and the higher tier is NOT granted. Surface a clear, safe message
+      // and keep the user on their current plan.
+      throw Object.assign(
+        new Error("We could not complete the payment for this upgrade, so your plan was not changed. Please check your card in Manage billing and try again."),
+        { statusCode: 402, code: "UPGRADE_PAYMENT_FAILED" }
+      );
     }
-  });
+    throw error;
+  }
   await synchronizeSubscription(updated);
 }
 

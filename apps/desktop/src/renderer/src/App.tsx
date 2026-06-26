@@ -899,14 +899,17 @@ export default function App() {
       onEntitlement={setEntitlement}
       onSignOut={async () => { await window.workcrew.auth.signOut(); setPhase("auth"); }}
       onUpgrade={async () => {
+        // Upgrade to Ultra monthly ($200/mo), matching how the plan is presented,
+        // rather than a surprise annual charge.
         if (info.billingMode === "simulated") {
-          setEntitlement(await window.workcrew.api.simulateCheckout("ultra", "year"));
+          setEntitlement(await window.workcrew.api.simulateCheckout("ultra", "month"));
         } else if (entitlement.active) {
-          // Already a paying subscriber: switch the existing plan in place (with
-          // proration) instead of opening a second checkout and double charging.
-          setEntitlement(await window.workcrew.api.changePlan("ultra", "year"));
+          // Already a paying subscriber: switch the existing plan in place. The
+          // backend requires the prorated upgrade charge to clear before granting
+          // Ultra, so this can never hand over the higher plan without payment.
+          setEntitlement(await window.workcrew.api.changePlan("ultra", "month"));
         } else {
-          await window.workcrew.api.checkout("ultra", "year");
+          await window.workcrew.api.checkout("ultra", "month");
         }
       }}
       onAdjustPlan={async (plan, interval) => {
