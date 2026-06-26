@@ -24,6 +24,68 @@ function requireStripe(): Stripe {
   return stripe;
 }
 
+// The upgrade flow sends the customer to a hosted Stripe page that shows the
+// prorated amount and charges it immediately. "Charge now" (always_invoice) versus
+// "bill on the next invoice" is controlled only by a Billing Portal configuration,
+// never per session, so we lazily create one configuration whose subscription
+// update proration is always_invoice and reuse its id. The promise (not just the
+// id) is cached so concurrent first callers share a single create.
+let upgradePortalConfigPromise: Promise<string> | null = null;
+
+// Build the [{ product, prices }] list the portal's subscription-update feature
+// needs, from the four configured price ids. The confirm page validates the target
+// price against this list, so every upgrade target must appear. WorkCrew stores
+// price ids only, so we resolve each price's product through the API.
+async function buildSubscriptionUpdateProducts(client: Stripe): Promise<Array<{ product: string; prices: string[] }>> {
+  const priceIds = [
+    config.stripePrices.pro.month,
+    config.stripePrices.pro.year,
+    config.stripePrices.ultra.month,
+    config.stripePrices.ultra.year
+  ].filter((id): id is string => Boolean(id));
+
+  const byProduct = new Map<string, string[]>();
+  for (const id of priceIds) {
+    const price = await client.prices.retrieve(id);
+    const productId = typeof price.product === "string" ? price.product : price.product.id;
+    const list = byProduct.get(productId) ?? [];
+    list.push(id);
+    byProduct.set(productId, list);
+  }
+  return Array.from(byProduct.entries()).map(([product, prices]) => ({ product, prices }));
+}
+
+// Lazily create and cache the Billing Portal configuration whose subscription
+// update charges the proration IMMEDIATELY (always_invoice). If the create fails
+// (most often because the Customer Portal has never been activated in the Stripe
+// dashboard) we surface a clean 502 and clear the cache so a later request retries
+// once the portal is activated, with no redeploy needed.
+async function getUpgradePortalConfigId(client: Stripe): Promise<string> {
+  if (!upgradePortalConfigPromise) {
+    upgradePortalConfigPromise = (async () => {
+      const products = await buildSubscriptionUpdateProducts(client);
+      const configuration = await client.billingPortal.configurations.create({
+        features: {
+          subscription_update: {
+            enabled: true,
+            default_allowed_updates: ["price"],
+            proration_behavior: "always_invoice",
+            products
+          }
+        }
+      });
+      return configuration.id;
+    })().catch((error) => {
+      upgradePortalConfigPromise = null;
+      throw Object.assign(
+        new Error("Upgrades are temporarily unavailable. Please try again in a moment."),
+        { statusCode: 502, code: "PORTAL_CONFIG_UNAVAILABLE", cause: error }
+      );
+    });
+  }
+  return upgradePortalConfigPromise;
+}
+
 function priceId(plan: PlanId, interval: BillingInterval): string {
   const id = config.stripePrices[plan][interval];
   if (!id) {
@@ -119,17 +181,14 @@ export function isPlanUpgrade(fromPlan: PlanId, fromInterval: BillingInterval, t
 // example Pro to Ultra), instead of opening a second checkout and creating a
 // duplicate subscription.
 //
-// An UPGRADE (a higher-allowance plan) charges the prorated difference for the
-// rest of the current period IMMEDIATELY against the card on file, and the higher
-// tier is granted only if that charge clears. We update the subscription with
-// proration_behavior "always_invoice" (bill the proration now, not on the next
-// renewal) and payment_behavior "pending_if_incomplete" (keep the current plan
-// unless the charge is paid). If the card clears synchronously the new plan is
-// applied at once; if it needs extra bank authentication (3-D Secure) or is
-// declined, Stripe holds the change as a pending update, the customer stays on
-// the current plan, and we return a hosted invoice { url } so they can finish
-// paying in the browser. Either way the grant is applied by the
-// customer.subscription.updated / pending_update_applied webhook, never for free.
+// An UPGRADE (a higher-allowance plan) sends the customer to a hosted Stripe page
+// that shows the prorated difference for the rest of the current period and
+// charges it immediately. The page uses a billing portal configuration whose
+// proration is "always_invoice" (collect now, not on the next renewal). The
+// subscription moves to the higher tier only after that payment clears, and the
+// grant is applied by the customer.subscription.updated / pending_update_applied
+// webhook, so the higher allowance is never handed over for free. This returns a
+// { url } to open in the browser.
 //
 // A DOWNGRADE (the same or lower allowance) is a credit, not a charge, so it is
 // applied in place immediately and the fresh entitlement is returned.
@@ -150,64 +209,36 @@ export async function changePlan(
   const isUpgrade = isPlanUpgrade(subscription.plan, subscription.interval, plan, interval);
 
   if (isUpgrade) {
-    // Bill the prorated difference for the rest of this period NOW and grant the
-    // higher tier only after it is actually paid. always_invoice finalizes and
-    // charges that proration invoice immediately (instead of deferring it to the
-    // next renewal); pending_if_incomplete keeps the subscription on the current
-    // plan unless the charge clears, so an upgrade is never handed over for free.
-    // metadata is not sent here: pending_if_incomplete only accepts
-    // pending-update-safe fields, and the subscription already carries
-    // workcrew_user_id from checkout.
-    let updated: Stripe.Subscription;
+    // Send the customer to a HOSTED Stripe page that shows the prorated amount and
+    // charges it immediately, then upgrade them only once that payment clears.
+    // always_invoice (set on the portal configuration, the only place it can be
+    // set) collects the proration on confirm; the subscription moves to the new
+    // price only after the charge settles, so the higher tier is never granted for
+    // free. The grant is applied by the customer.subscription.updated /
+    // pending_update_applied webhook once Stripe confirms payment.
+    const configuration = await getUpgradePortalConfigId(client);
+    let session: Stripe.BillingPortal.Session;
     try {
-      updated = await client.subscriptions.update(subscription.stripeSubscriptionId, {
-        items: [{ id: itemId, price: priceId(plan, interval) }],
-        proration_behavior: "always_invoice",
-        payment_behavior: "pending_if_incomplete",
-        expand: ["latest_invoice"]
+      session = await client.billingPortal.sessions.create({
+        customer: subscription.stripeCustomerId,
+        configuration,
+        flow_data: {
+          type: "subscription_update_confirm",
+          subscription_update_confirm: {
+            subscription: subscription.stripeSubscriptionId,
+            items: [{ id: itemId, price: priceId(plan, interval), quantity: 1 }]
+          },
+          after_completion: { type: "redirect", redirect: { return_url: config.billingSuccessUrl } }
+        }
       });
     } catch (error) {
-      // With pending_if_incomplete a declined card normally surfaces below as a
-      // pending update, not as a throw, so a throw here is usually a non-card
-      // problem (a misconfigured price, rate limiting, an API error). Map a genuine
-      // card error to a clear 402; everything else to a generic 502. The detail is
-      // logged server side either way.
-      if ((error as { type?: string }).type === "StripeCardError") {
-        throw Object.assign(
-          new Error("We could not charge your card for the upgrade. Please check your payment details and try again."),
-          { statusCode: 402, code: "UPGRADE_PAYMENT_FAILED", cause: error }
-        );
-      }
       throw Object.assign(
         new Error("We could not start the upgrade. Please try again in a moment."),
         { statusCode: 502, code: "UPGRADE_FAILED", cause: error }
       );
     }
-
-    // Grant the higher tier ONLY once the prorated charge has actually been paid.
-    // pending_update is set when the charge needs 3-D Secure or was declined; and
-    // even when it is absent, an asynchronously-settling payment can leave the
-    // invoice unpaid, so we also require the proration invoice itself to read
-    // "paid". This keeps the grant strictly behind cleared money for every payment
-    // method, not just instant cards.
-    const invoice = updated.latest_invoice && typeof updated.latest_invoice === "object" ? updated.latest_invoice : null;
-    if (!updated.pending_update && invoice?.status === "paid") {
-      // The customer.subscription.updated webhook also applies this; the upsert is
-      // idempotent, so granting now just reflects the upgrade without the wait.
-      await synchronizeSubscription(updated);
-      return { changed: true };
-    }
-
-    // Not paid yet (needs authentication, still processing, or declined): keep the
-    // customer on the current plan and send them to the hosted invoice to finish
-    // paying. The higher tier is applied by the pending_update_applied / updated
-    // webhook once the charge clears, so it is never granted for free.
-    const hostedUrl = invoice?.hosted_invoice_url ?? null;
-    if (hostedUrl) return { url: hostedUrl };
-    throw Object.assign(
-      new Error("We could not charge your card for the upgrade. Please check your payment details and try again."),
-      { statusCode: 402, code: "UPGRADE_PAYMENT_FAILED" }
-    );
+    if (!session.url) throw new Error("Stripe did not return an upgrade payment URL");
+    return { url: session.url };
   }
 
   // Downgrade (or same price): apply in place as a proration credit. No payment
