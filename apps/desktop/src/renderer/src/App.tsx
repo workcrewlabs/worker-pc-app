@@ -377,6 +377,27 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
   );
 }
 
+// A small circular gauge of the rolling 5-hour usage window, like the Claude
+// desktop app. It shows how much of the 5-hour burst budget is used and frees up
+// as the window rolls forward.
+function FiveHourRing({ entitlement }: { entitlement: SubscriptionState }) {
+  const limit = entitlement.fiveHourLimitMicrodollars;
+  if (limit <= 0) return null;
+  const pct = Math.min(100, Math.max(0, (entitlement.fiveHourUsedMicrodollars / limit) * 100));
+  const radius = 8;
+  const circumference = 2 * Math.PI * radius;
+  const dash = (pct / 100) * circumference;
+  const title = `5-hour limit: ${Math.round(pct)}% used. Frees up as the 5-hour window rolls forward.`;
+  return (
+    <div className={`five-hour-ring ${pct >= 80 ? "is-high" : ""}`} title={title} aria-label={title} role="img">
+      <svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
+        <circle className="ring-bg" cx="11" cy="11" r={radius} fill="none" strokeWidth="2.5" />
+        <circle className="ring-fg" cx="11" cy="11" r={radius} fill="none" strokeWidth="2.5" strokeLinecap="round" strokeDasharray={`${dash} ${circumference}`} transform="rotate(-90 11 11)" />
+      </svg>
+    </div>
+  );
+}
+
 function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEntitlement }: { info: AppInfo; entitlement: SubscriptionState; onSignOut: () => Promise<void>; onUpgrade: () => Promise<void>; onAdjustPlan: (plan: PlanId, interval: BillingInterval) => Promise<void>; onEntitlement: (state: SubscriptionState) => void }) {
   const [model, setModel] = useState<ModelTier>(DEFAULT_CHAT_MODEL);
   const [upgrading, setUpgrading] = useState(false);
@@ -754,6 +775,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEn
                 {upgrading ? "Upgrading..." : "Upgrade"}
               </button>
             )}
+            <FiveHourRing entitlement={entitlement} />
             <div className="usage-box">
               <div><span>Tokens</span><strong>{formatTokens(Math.max(0, entitlement.budgetMicrodollars - usage))} left</strong></div>
               <div className="usage-track"><span style={{ width: `${percent}%` }} /></div>

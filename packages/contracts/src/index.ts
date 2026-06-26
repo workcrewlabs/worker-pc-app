@@ -40,8 +40,12 @@ export const PLAN_CATALOG = {
     name: "Pro",
     monthlyPriceUsd: 27,
     yearlyPriceUsd: 270,
-    fiveHourMicrodollars: 100_000,
-    dailyMicrodollars: 350_000,
+    // Burst caps sized so a Pro user can send roughly three full high-effort
+    // (Opus) messages in a 5-hour window. These are rate limits only; the monthly
+    // cap below is the real ceiling on cost per user, so raising them does not
+    // raise the worst-case monthly spend.
+    fiveHourMicrodollars: 700_000,
+    dailyMicrodollars: 2_500_000,
     monthlyApiBudgetMicrodollars: 6_000_000,
     devices: 1
   },

@@ -15,9 +15,11 @@ describe("plan catalog", () => {
   });
 
   it("sets the hard API-cost caps per plan", () => {
-    // Pro: $0.10 / 5h, $0.35 / day, $6 / month.
-    expect(PLAN_CATALOG.pro.fiveHourMicrodollars).toBe(100_000);
-    expect(PLAN_CATALOG.pro.dailyMicrodollars).toBe(350_000);
+    // Pro: $0.70 / 5h, $2.50 / day, $6 / month. The 5-hour and daily caps are
+    // burst limits sized so a few high-effort messages fit; the monthly cap is the
+    // real per-user cost ceiling.
+    expect(PLAN_CATALOG.pro.fiveHourMicrodollars).toBe(700_000);
+    expect(PLAN_CATALOG.pro.dailyMicrodollars).toBe(2_500_000);
     expect(PLAN_CATALOG.pro.monthlyApiBudgetMicrodollars).toBe(6_000_000);
     // Ultra: $0.75 / 5h, $3 / day, $60 / month.
     expect(PLAN_CATALOG.ultra.fiveHourMicrodollars).toBe(750_000);
