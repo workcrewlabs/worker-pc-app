@@ -31,3 +31,6 @@ __pycache__/
 *.pyo
 .DS_Store
 Thumbs.db
+# Local tooling binaries and reference material, not part of the product.
+*.exe
+refernce front end screenshots/
