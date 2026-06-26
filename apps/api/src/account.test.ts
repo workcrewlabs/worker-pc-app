@@ -44,6 +44,10 @@ async function seedUser(userId: string): Promise<void> {
     sql: "INSERT INTO attachments(id, user_id, conversation_id, filename, mime_type, size_bytes, kind, media_type, created_at_ms) VALUES (?, ?, ?, 'f', 'text/plain', 1, 'text', 'text/plain', ?)",
     args: [randomUUID(), userId, conversationId, now]
   });
+  await client.execute({
+    sql: "INSERT INTO email_tokens(id, user_id, email, purpose, token_hash, expires_at_ms, created_at_ms) VALUES (?, ?, ?, 'verify', ?, ?, ?)",
+    args: [randomUUID(), userId, `${userId}@example.com`, randomUUID(), now + 1000, now]
+  });
 }
 
 const TABLES: Record<string, string> = {
@@ -54,6 +58,7 @@ const TABLES: Record<string, string> = {
   runs: "SELECT COUNT(*) AS c FROM runs WHERE user_id = ?",
   usage_ledger: "SELECT COUNT(*) AS c FROM usage_ledger WHERE user_id = ?",
   attachments: "SELECT COUNT(*) AS c FROM attachments WHERE user_id = ?",
+  email_tokens: "SELECT COUNT(*) AS c FROM email_tokens WHERE user_id = ?",
   refresh_tokens: "SELECT COUNT(*) AS c FROM refresh_tokens WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?)",
   messages: "SELECT COUNT(*) AS c FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)"
 };
@@ -78,14 +83,14 @@ describe("deleteAccount", () => {
     await seedUser(victim);
     await seedUser(bystander);
 
-    // Both users have data across all nine tables before deletion (one row each).
-    expect(await totalRows(victim)).toBe(9);
-    expect(await totalRows(bystander)).toBe(9);
+    // Both users have data across all ten tables before deletion (one row each).
+    expect(await totalRows(victim)).toBe(10);
+    expect(await totalRows(bystander)).toBe(10);
 
     await deleteAccount(victim);
 
     // The deleted user has nothing left anywhere; the other user is fully intact.
     expect(await totalRows(victim)).toBe(0);
-    expect(await totalRows(bystander)).toBe(9);
+    expect(await totalRows(bystander)).toBe(10);
   });
 });
