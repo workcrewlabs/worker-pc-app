@@ -119,16 +119,20 @@ export function isPlanUpgrade(fromPlan: PlanId, fromInterval: BillingInterval, t
 // example Pro to Ultra), instead of opening a second checkout and creating a
 // duplicate subscription.
 //
-// An UPGRADE (the new plan costs more) must be PAID before the higher tier is
-// granted, so a click can never hand a user a more expensive plan for free. The
-// user is sent to a hosted Stripe page (the customer portal's update-confirm
-// flow) that shows the prorated order details and their card and collects the
-// payment; only when they confirm and the charge clears does Stripe emit
-// customer.subscription.updated, which synchronizeSubscription applies to grant
-// the higher tier. So this returns a { url } to open, and grants nothing itself.
+// An UPGRADE (a higher-allowance plan) charges the prorated difference for the
+// rest of the current period IMMEDIATELY against the card on file, and the higher
+// tier is granted only if that charge clears. We update the subscription with
+// proration_behavior "always_invoice" (bill the proration now, not on the next
+// renewal) and payment_behavior "pending_if_incomplete" (keep the current plan
+// unless the charge is paid). If the card clears synchronously the new plan is
+// applied at once; if it needs extra bank authentication (3-D Secure) or is
+// declined, Stripe holds the change as a pending update, the customer stays on
+// the current plan, and we return a hosted invoice { url } so they can finish
+// paying in the browser. Either way the grant is applied by the
+// customer.subscription.updated / pending_update_applied webhook, never for free.
 //
-// A DOWNGRADE (the new plan costs the same or less) is a credit, not a charge, so
-// it is applied in place immediately and the fresh entitlement is returned.
+// A DOWNGRADE (the same or lower allowance) is a credit, not a charge, so it is
+// applied in place immediately and the fresh entitlement is returned.
 export async function changePlan(
   userId: string,
   plan: PlanId,
@@ -146,34 +150,64 @@ export async function changePlan(
   const isUpgrade = isPlanUpgrade(subscription.plan, subscription.interval, plan, interval);
 
   if (isUpgrade) {
-    // Open a hosted Stripe page that confirms the prorated upgrade and collects
-    // payment first. The plan change and the higher allowance are applied only
-    // after the customer.subscription.updated webhook fires post-payment, so no
-    // upgrade is ever granted before the money is collected.
-    let portal: Stripe.BillingPortal.Session;
+    // Bill the prorated difference for the rest of this period NOW and grant the
+    // higher tier only after it is actually paid. always_invoice finalizes and
+    // charges that proration invoice immediately (instead of deferring it to the
+    // next renewal); pending_if_incomplete keeps the subscription on the current
+    // plan unless the charge clears, so an upgrade is never handed over for free.
+    // metadata is not sent here: pending_if_incomplete only accepts
+    // pending-update-safe fields, and the subscription already carries
+    // workcrew_user_id from checkout.
+    let updated: Stripe.Subscription;
     try {
-      portal = await client.billingPortal.sessions.create({
-        customer: subscription.stripeCustomerId,
-        flow_data: {
-          type: "subscription_update_confirm",
-          subscription_update_confirm: {
-            subscription: subscription.stripeSubscriptionId,
-            items: [{ id: itemId, price: priceId(plan, interval), quantity: 1 }]
-          },
-          after_completion: { type: "redirect", redirect: { return_url: config.billingSuccessUrl } }
-        }
+      updated = await client.subscriptions.update(subscription.stripeSubscriptionId, {
+        items: [{ id: itemId, price: priceId(plan, interval) }],
+        proration_behavior: "always_invoice",
+        payment_behavior: "pending_if_incomplete",
+        expand: ["latest_invoice"]
       });
     } catch (error) {
-      // The most common cause is that the Stripe customer portal has not been
-      // activated yet (one-time dashboard setup). Surface a clear, safe message
-      // and keep the user on their current plan; the detail is logged server side.
+      // With pending_if_incomplete a declined card normally surfaces below as a
+      // pending update, not as a throw, so a throw here is usually a non-card
+      // problem (a misconfigured price, rate limiting, an API error). Map a genuine
+      // card error to a clear 402; everything else to a generic 502. The detail is
+      // logged server side either way.
+      if ((error as { type?: string }).type === "StripeCardError") {
+        throw Object.assign(
+          new Error("We could not charge your card for the upgrade. Please check your payment details and try again."),
+          { statusCode: 402, code: "UPGRADE_PAYMENT_FAILED", cause: error }
+        );
+      }
       throw Object.assign(
-        new Error("We could not start the upgrade payment. Please try again in a moment."),
-        { statusCode: 502, code: "UPGRADE_CHECKOUT_FAILED", cause: error }
+        new Error("We could not start the upgrade. Please try again in a moment."),
+        { statusCode: 502, code: "UPGRADE_FAILED", cause: error }
       );
     }
-    if (!portal.url) throw new Error("Stripe did not return an upgrade payment URL");
-    return { url: portal.url };
+
+    // Grant the higher tier ONLY once the prorated charge has actually been paid.
+    // pending_update is set when the charge needs 3-D Secure or was declined; and
+    // even when it is absent, an asynchronously-settling payment can leave the
+    // invoice unpaid, so we also require the proration invoice itself to read
+    // "paid". This keeps the grant strictly behind cleared money for every payment
+    // method, not just instant cards.
+    const invoice = updated.latest_invoice && typeof updated.latest_invoice === "object" ? updated.latest_invoice : null;
+    if (!updated.pending_update && invoice?.status === "paid") {
+      // The customer.subscription.updated webhook also applies this; the upsert is
+      // idempotent, so granting now just reflects the upgrade without the wait.
+      await synchronizeSubscription(updated);
+      return { changed: true };
+    }
+
+    // Not paid yet (needs authentication, still processing, or declined): keep the
+    // customer on the current plan and send them to the hosted invoice to finish
+    // paying. The higher tier is applied by the pending_update_applied / updated
+    // webhook once the charge clears, so it is never granted for free.
+    const hostedUrl = invoice?.hosted_invoice_url ?? null;
+    if (hostedUrl) return { url: hostedUrl };
+    throw Object.assign(
+      new Error("We could not charge your card for the upgrade. Please check your payment details and try again."),
+      { statusCode: 402, code: "UPGRADE_PAYMENT_FAILED" }
+    );
   }
 
   // Downgrade (or same price): apply in place as a proration credit. No payment
@@ -302,13 +336,18 @@ export async function handleStripeWebhook(rawBody: Buffer, signature: string): P
     case "customer.subscription.deleted":
     case "customer.subscription.paused":
     case "customer.subscription.resumed":
+    // A pending upgrade whose payment cleared after extra authentication, or one
+    // that expired unpaid. synchronizeSubscription re-derives the plan from the
+    // live price, so the grant (applied) or non-grant (expired) is always correct.
+    case "customer.subscription.pending_update_applied":
+    case "customer.subscription.pending_update_expired":
       await synchronizeSubscription(event.data.object);
       break;
     case "checkout.session.completed": {
       const session = event.data.object;
       // A completed first-time subscription checkout. (Plan upgrades for existing
-      // subscribers go through the portal update-confirm flow and arrive as
-      // customer.subscription.updated, handled above.)
+      // subscribers are charged in place and arrive as customer.subscription.updated
+      // or customer.subscription.pending_update_applied, handled above.)
       if (typeof session.subscription === "string") {
         await synchronizeSubscription(await client.subscriptions.retrieve(session.subscription));
       }

@@ -69,7 +69,7 @@ import {
 } from "./db.js";
 
 /** Application version reported on /health for diagnostics. */
-const APP_VERSION = "0.1.5";
+const APP_VERSION = "0.1.6";
 
 /**
  * Maximum number of model planning steps a single run may consume. The desktop
@@ -402,10 +402,12 @@ app.post("/v1/billing/checkout", routeLimit(15), async (request) => {
 });
 
 // Change the plan of an existing active subscription (Pro to Ultra, or to a
-// different interval). An UPGRADE returns a hosted Stripe payment URL the app
-// opens: the higher tier is granted only after that payment clears (via the
-// subscription.updated webhook), never on the click. A DOWNGRADE is applied in
-// place as a credit and the refreshed entitlement is returned immediately.
+// different interval). An UPGRADE charges the prorated difference immediately
+// against the card on file and returns the refreshed entitlement once it clears;
+// if the card needs extra authentication it returns a hosted invoice { url } to
+// finish paying, and the higher tier is granted by the webhook, never for free. A
+// DOWNGRADE is applied in place as a credit and the refreshed entitlement is
+// returned immediately.
 app.post("/v1/billing/change-plan", routeLimit(15), async (request) => {
   const userId = await authenticate(request);
   const body = createCheckoutSchema.parse(request.body);
