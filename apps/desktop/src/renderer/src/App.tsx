@@ -21,7 +21,6 @@ import { InviteDialog } from "./components/InviteDialog";
 import { RecorderDialog } from "./components/RecorderDialog";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { UsageBanner } from "./components/UsageBanner";
-import { AddTokensDialog } from "./components/AddTokensDialog";
 import { usageStatus } from "./lib/usage";
 import { useAutomationRunner } from "./hooks/useAutomationRunner";
 import {
@@ -51,14 +50,14 @@ const EMPTY_ENTITLEMENT: SubscriptionState = {
   fiveHourLimitMicrodollars: 0,
   fiveHourUsedMicrodollars: 0,
   dailyLimitMicrodollars: 0,
-  dailyUsedMicrodollars: 0,
-  purchasedMicrodollars: 0,
-  topupSpentMicrodollars: 0,
-  monthlyTopupLimitMicrodollars: 0,
-  autoReloadEnabled: false,
-  autoReloadPack: "small",
-  hasPaymentMethod: false
+  dailyUsedMicrodollars: 0
 };
+
+// Tell a refreshed entitlement (returned by a downgrade) apart from the
+// { opened: true } an upgrade returns when it opens a hosted payment page.
+function isEntitlement(value: unknown): value is SubscriptionState {
+  return Boolean(value) && typeof value === "object" && "budgetMicrodollars" in (value as Record<string, unknown>);
+}
 
 // Turn any raw error into one plain sentence a non-technical person can act on.
 // Electron wraps anything thrown across the process boundary as
@@ -398,7 +397,7 @@ function FiveHourRing({ entitlement }: { entitlement: SubscriptionState }) {
   );
 }
 
-function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEntitlement, onDeleteAccount }: { info: AppInfo; entitlement: SubscriptionState; onSignOut: () => Promise<void>; onUpgrade: () => Promise<void>; onAdjustPlan: (plan: PlanId, interval: BillingInterval) => Promise<void>; onEntitlement: (state: SubscriptionState) => void; onDeleteAccount: () => Promise<void> }) {
+function Workspace({ info, entitlement, onRefreshEntitlement, onSignOut, onUpgrade, onAdjustPlan, onDeleteAccount }: { info: AppInfo; entitlement: SubscriptionState; onRefreshEntitlement: () => void; onSignOut: () => Promise<void>; onUpgrade: () => Promise<void>; onAdjustPlan: (plan: PlanId, interval: BillingInterval) => Promise<void>; onDeleteAccount: () => Promise<void> }) {
   const [model, setModel] = useState<ModelTier>(DEFAULT_CHAT_MODEL);
   const [upgrading, setUpgrading] = useState(false);
   const [upgradeError, setUpgradeError] = useState("");
@@ -407,7 +406,6 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEn
   const [accountOpen, setAccountOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [recorderOpen, setRecorderOpen] = useState(false);
-  const [tokensOpen, setTokensOpen] = useState(false);
   const [permissions, setPermissions] = useState<PermissionState>(() => loadPermissions());
   const [routines, setRoutines] = useState<Routine[]>(() => loadRoutines());
   const [recents, setRecents] = useState<ConversationSummary[]>([]);
@@ -442,6 +440,24 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEn
   const chat = useChatStream();
   const runner = useAutomationRunner();
   const { conversationId, usedTokens } = chat;
+
+  // When a chat turn or an automation run finishes it has consumed budget, so
+  // re-fetch the entitlement to update the rolling 5-hour and daily figures (and
+  // the 5-hour ring). The monthly "tokens left" already updates live from the
+  // turn's done frame; this keeps the rolling windows honest right away instead
+  // of waiting for the next window focus.
+  const wasStreaming = useRef(false);
+  useEffect(() => {
+    if (wasStreaming.current && !chat.streaming) onRefreshEntitlement();
+    wasStreaming.current = chat.streaming;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.streaming]);
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !runner.running) onRefreshEntitlement();
+    wasRunning.current = runner.running;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runner.running]);
 
   // Scheduler: while the app is open, check every 30 seconds for a routine that
   // is due, and run it through the shared runner when nothing else is running.
@@ -786,7 +802,6 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEn
         {entitlement.active && (
           <UsageBanner
             status={usageState}
-            onAddTokens={() => setTokensOpen(true)}
             onUpgrade={() => void handleUpgrade()}
             upgrading={upgrading}
           />
@@ -837,16 +852,7 @@ function Workspace({ info, entitlement, onSignOut, onUpgrade, onAdjustPlan, onEn
           onClose={() => setAccountOpen(false)}
           onSignOut={onSignOut}
           onAdjustPlan={onAdjustPlan}
-          onAddTokens={() => { setAccountOpen(false); setTokensOpen(true); }}
           onDeleteAccount={onDeleteAccount}
-        />
-      )}
-      {tokensOpen && (
-        <AddTokensDialog
-          entitlement={entitlement}
-          billingMode={info.billingMode}
-          onEntitlement={onEntitlement}
-          onClose={() => setTokensOpen(false)}
         />
       )}
       {inviteOpen && <InviteDialog onClose={() => setInviteOpen(false)} />}
@@ -900,12 +906,22 @@ export default function App() {
 
   useEffect(() => { void refresh(); }, []);
 
-  // After paying in the external browser, the user returns to this window. Re-run
-  // the entitlement check on focus while on the paywall so a completed checkout
-  // moves them into the workspace without a manual restart.
+  // Re-fetch only the entitlement (not the whole phase flow). Used after a chat
+  // turn or automation run finishes, and when the window regains focus, so the
+  // rolling 5-hour and daily figures (and the 5-hour ring) reflect the latest
+  // usage rather than the value from the last full load.
+  function refreshEntitlement() {
+    void window.workcrew.api.entitlement().then(setEntitlement).catch(() => {});
+  }
+
+  // After paying in the external browser, the user returns to this window. On the
+  // paywall, re-run the full check so a completed first checkout moves them into
+  // the workspace. In the workspace, refresh just the entitlement so a completed
+  // plan upgrade (paid in the browser) is reflected without a manual restart.
   useEffect(() => {
     function onFocus() {
       if (phase === "paywall") void refresh();
+      else if (phase === "workspace") refreshEntitlement();
     }
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
@@ -919,7 +935,7 @@ export default function App() {
     <Workspace
       info={info}
       entitlement={entitlement}
-      onEntitlement={setEntitlement}
+      onRefreshEntitlement={refreshEntitlement}
       onSignOut={async () => { await window.workcrew.auth.signOut(); setPhase("auth"); }}
       onDeleteAccount={async () => { await window.workcrew.auth.deleteAccount(); setPhase("auth"); }}
       onUpgrade={async () => {
@@ -928,22 +944,26 @@ export default function App() {
         if (info.billingMode === "simulated") {
           setEntitlement(await window.workcrew.api.simulateCheckout("ultra", "month"));
         } else if (entitlement.active) {
-          // Already a paying subscriber: switch the existing plan in place. The
-          // backend requires the prorated upgrade charge to clear before granting
-          // Ultra, so this can never hand over the higher plan without payment.
-          setEntitlement(await window.workcrew.api.changePlan("ultra", "month"));
+          // Already a paying subscriber: the upgrade opens a hosted Stripe payment
+          // page. The backend grants Ultra only after that payment clears (via the
+          // webhook), so this can never hand over the higher plan for free. The new
+          // plan is picked up when the user returns to the window (focus refresh).
+          const result = await window.workcrew.api.changePlan("ultra", "month");
+          if (isEntitlement(result)) setEntitlement(result);
         } else {
           await window.workcrew.api.checkout("ultra", "month");
         }
       }}
       onAdjustPlan={async (plan, interval) => {
-        // The account dialog only opens for an active subscriber, so this either
-        // switches the live Stripe plan in place (with proration) or, in test
-        // mode, re-activates at the chosen plan. It never cancels.
+        // The account dialog only opens for an active subscriber. In test mode this
+        // re-activates at the chosen plan. In live billing an upgrade opens a hosted
+        // Stripe payment page (entitlement updates on return); a downgrade applies
+        // immediately and returns the refreshed entitlement. It never cancels.
         if (info.billingMode === "simulated") {
           setEntitlement(await window.workcrew.api.simulateCheckout(plan, interval));
         } else {
-          setEntitlement(await window.workcrew.api.changePlan(plan, interval));
+          const result = await window.workcrew.api.changePlan(plan, interval);
+          if (isEntitlement(result)) setEntitlement(result);
         }
       }}
     />

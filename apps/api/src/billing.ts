@@ -2,23 +2,17 @@ import Stripe from "stripe";
 import {
   PLAN_CATALOG,
   REFERRAL_BONUS_MICRODOLLARS,
-  TOKEN_PACKS,
-  tokenPackGrant,
-  tokenPackIdSchema,
   type BillingInterval,
-  type PlanId,
-  type TokenPackId
+  type PlanId
 } from "@workcrew/contracts";
 import { config } from "./config.js";
-import { creditReferralOnPayment, grantTokenCredit, tokenPackCharge } from "./budget.js";
+import { creditReferralOnPayment } from "./budget.js";
 import {
   getSubscription,
   getSubscriptionByStripeId,
   hasStripeEvent,
   recordStripeEvent,
-  setPaymentMethod,
-  upsertSubscription,
-  type SubscriptionRow
+  upsertSubscription
 } from "./db.js";
 
 const stripe = config.stripeSecretKey ? new Stripe(config.stripeSecretKey) : null;
@@ -99,128 +93,103 @@ export async function createCheckout(userId: string, plan: PlanId, interval: Bil
   return session.url;
 }
 
-// The recurring price of a plan/interval in dollars, used to tell an upgrade
-// (must be paid before access is granted) from a downgrade (a credit).
+// The recurring price of a plan/interval in dollars.
 function planPriceUsd(plan: PlanId, interval: BillingInterval): number {
   const item = PLAN_CATALOG[plan];
   return interval === "year" ? item.yearlyPriceUsd : item.monthlyPriceUsd;
 }
 
+// Whether moving from one plan/interval to another is an UPGRADE that must be
+// paid before it is granted, versus a downgrade applied in place. An upgrade is a
+// move to a plan with a HIGHER monthly allowance (more capacity / higher limits).
+// Ranking by allowance, not by recurring price, is essential: Pro yearly ($270)
+// costs more than Ultra monthly ($200), yet Pro-yearly -> Ultra-monthly is a tier
+// upgrade that hands over Ultra's strictly higher limits and so must pay first. An
+// interval change WITHIN the same plan does not change limits, so it falls back to
+// the recurring price (monthly -> yearly costs more now, so it also pays first;
+// yearly -> monthly is a credit applied in place).
+export function isPlanUpgrade(fromPlan: PlanId, fromInterval: BillingInterval, toPlan: PlanId, toInterval: BillingInterval): boolean {
+  const fromCapacity = PLAN_CATALOG[fromPlan].monthlyApiBudgetMicrodollars;
+  const toCapacity = PLAN_CATALOG[toPlan].monthlyApiBudgetMicrodollars;
+  if (toCapacity !== fromCapacity) return toCapacity > fromCapacity;
+  return planPriceUsd(toPlan, toInterval) > planPriceUsd(fromPlan, fromInterval);
+}
+
 // Switch an existing active subscription to a different plan or interval (for
-// example Pro to Ultra) in place, with proration, instead of opening a second
-// checkout and creating a duplicate subscription. The webhook also fires, but we
-// synchronize here too so the caller can return the fresh state immediately.
+// example Pro to Ultra), instead of opening a second checkout and creating a
+// duplicate subscription.
 //
 // An UPGRADE (the new plan costs more) must be PAID before the higher tier is
-// granted, so a click can never hand a user a more expensive plan for free:
-// always_invoice bills the prorated difference immediately and
-// error_if_incomplete makes the change throw (no plan change, no grant) if that
-// charge cannot be collected now. A DOWNGRADE is a credit, applied normally.
-export async function changePlan(userId: string, plan: PlanId, interval: BillingInterval): Promise<void> {
+// granted, so a click can never hand a user a more expensive plan for free. The
+// user is sent to a hosted Stripe page (the customer portal's update-confirm
+// flow) that shows the prorated order details and their card and collects the
+// payment; only when they confirm and the charge clears does Stripe emit
+// customer.subscription.updated, which synchronizeSubscription applies to grant
+// the higher tier. So this returns a { url } to open, and grants nothing itself.
+//
+// A DOWNGRADE (the new plan costs the same or less) is a credit, not a charge, so
+// it is applied in place immediately and the fresh entitlement is returned.
+export async function changePlan(
+  userId: string,
+  plan: PlanId,
+  interval: BillingInterval
+): Promise<{ url: string } | { changed: true }> {
   const client = requireStripe();
   const subscription = await getSubscription(userId);
-  if (!subscription?.stripeSubscriptionId) {
+  if (!subscription?.stripeSubscriptionId || !subscription.stripeCustomerId) {
     throw Object.assign(new Error("No active subscription to change"), { statusCode: 409, code: "NO_SUBSCRIPTION" });
   }
   const stripeSub = await client.subscriptions.retrieve(subscription.stripeSubscriptionId);
   const itemId = stripeSub.items.data[0]?.id;
   if (!itemId) throw new Error("Subscription has no item to update");
 
-  const isUpgrade = planPriceUsd(plan, interval) > planPriceUsd(subscription.plan, subscription.interval);
+  const isUpgrade = isPlanUpgrade(subscription.plan, subscription.interval, plan, interval);
 
-  let updated: Stripe.Subscription;
-  try {
-    updated = await client.subscriptions.update(subscription.stripeSubscriptionId, {
-      items: [{ id: itemId, price: priceId(plan, interval) }],
-      proration_behavior: isUpgrade ? "always_invoice" : "create_prorations",
-      payment_behavior: isUpgrade ? "error_if_incomplete" : "allow_incomplete",
-      metadata: {
-        workcrew_user_id: userId,
-        workcrew_plan: plan,
-        workcrew_interval: interval
-      }
-    });
-  } catch (error) {
-    if (isUpgrade) {
-      // The prorated upgrade charge could not be collected, so the plan was NOT
-      // changed and the higher tier is NOT granted. Surface a clear, safe message
-      // and keep the user on their current plan.
+  if (isUpgrade) {
+    // Open a hosted Stripe page that confirms the prorated upgrade and collects
+    // payment first. The plan change and the higher allowance are applied only
+    // after the customer.subscription.updated webhook fires post-payment, so no
+    // upgrade is ever granted before the money is collected.
+    let portal: Stripe.BillingPortal.Session;
+    try {
+      portal = await client.billingPortal.sessions.create({
+        customer: subscription.stripeCustomerId,
+        flow_data: {
+          type: "subscription_update_confirm",
+          subscription_update_confirm: {
+            subscription: subscription.stripeSubscriptionId,
+            items: [{ id: itemId, price: priceId(plan, interval), quantity: 1 }]
+          },
+          after_completion: { type: "redirect", redirect: { return_url: config.billingSuccessUrl } }
+        }
+      });
+    } catch (error) {
+      // The most common cause is that the Stripe customer portal has not been
+      // activated yet (one-time dashboard setup). Surface a clear, safe message
+      // and keep the user on their current plan; the detail is logged server side.
       throw Object.assign(
-        new Error("We could not complete the payment for this upgrade, so your plan was not changed. Please check your card in Manage billing and try again."),
-        { statusCode: 402, code: "UPGRADE_PAYMENT_FAILED" }
+        new Error("We could not start the upgrade payment. Please try again in a moment."),
+        { statusCode: 502, code: "UPGRADE_CHECKOUT_FAILED", cause: error }
       );
     }
-    throw error;
+    if (!portal.url) throw new Error("Stripe did not return an upgrade payment URL");
+    return { url: portal.url };
   }
-  await synchronizeSubscription(updated);
-}
 
-// Buy a one-time token pack via a hosted Stripe Checkout (mode=payment). The card
-// used is saved for future off-session auto-reload. A configured price is used
-// when present; otherwise an ad-hoc price is built from the pack catalog so the
-// flow works before the owner creates the Stripe prices.
-export async function createTopupCheckout(userId: string, pack: TokenPackId): Promise<string> {
-  const client = requireStripe();
-  const existing = await getSubscription(userId);
-  const customerId = existing?.stripeCustomerId ?? undefined;
-  const item = TOKEN_PACKS[pack];
-  const configuredPrice = config.stripeTopupPrices[pack];
-  const lineItem: Stripe.Checkout.SessionCreateParams.LineItem = configuredPrice
-    ? { price: configuredPrice, quantity: 1 }
-    : {
-        price_data: {
-          currency: "usd",
-          product_data: { name: "WorkCrew tokens" },
-          unit_amount: item.priceUsd * 100
-        },
-        quantity: 1
-      };
-
-  const session = await client.checkout.sessions.create({
-    mode: "payment",
-    customer: customerId,
-    ...(customerId ? { customer_update: { name: "auto" as const, address: "auto" as const } } : { customer_creation: "always" as const }),
-    client_reference_id: userId,
-    line_items: [lineItem],
-    // Save the card so auto-reload can charge it later without the user present.
-    payment_intent_data: { setup_future_usage: "off_session" },
-    billing_address_collection: "auto",
-    metadata: { workcrew_user_id: userId, workcrew_topup_pack: pack },
-    success_url: `${config.billingSuccessUrl}?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: config.billingCancelUrl
+  // Downgrade (or same price): apply in place as a proration credit. No payment
+  // page is needed because the user is not being charged more.
+  const updated = await client.subscriptions.update(subscription.stripeSubscriptionId, {
+    items: [{ id: itemId, price: priceId(plan, interval) }],
+    proration_behavior: "create_prorations",
+    payment_behavior: "allow_incomplete",
+    metadata: {
+      workcrew_user_id: userId,
+      workcrew_plan: plan,
+      workcrew_interval: interval
+    }
   });
-
-  if (!session.url) throw new Error("Stripe did not return a Checkout URL");
-  return session.url;
-}
-
-// Charge the user's saved card for one auto-reload pack, off-session. Returns
-// true only when the charge succeeded; the caller grants the tokens. A decline or
-// an authentication requirement returns false and no tokens are added. The
-// idempotency key makes a retried or concurrent charge for the SAME exhaustion
-// event resolve to a single PaymentIntent at Stripe, so the card is never double
-// charged for one reload.
-export async function chargeAutoReload(subscription: SubscriptionRow, pack: TokenPackId, idempotencyKey?: string): Promise<boolean> {
-  const client = requireStripe();
-  if (!subscription.stripeCustomerId || !subscription.stripePaymentMethodId) return false;
-  const item = TOKEN_PACKS[pack];
-  try {
-    const intent = await client.paymentIntents.create(
-      {
-        amount: item.priceUsd * 100,
-        currency: "usd",
-        customer: subscription.stripeCustomerId,
-        payment_method: subscription.stripePaymentMethodId,
-        off_session: true,
-        confirm: true,
-        metadata: { workcrew_user_id: subscription.userId, workcrew_topup_pack: pack, workcrew_auto_reload: "1" }
-      },
-      idempotencyKey ? { idempotencyKey } : undefined
-    );
-    return intent.status === "succeeded";
-  } catch {
-    return false;
-  }
+  await synchronizeSubscription(updated);
+  return { changed: true };
 }
 
 // Cancel the user's Stripe subscription immediately, used when the account is
@@ -314,38 +283,6 @@ async function synchronizeSubscription(subscription: Stripe.Subscription): Promi
   if (active) await creditReferralOnPayment(userId, REFERRAL_BONUS_MICRODOLLARS);
 }
 
-// Fulfill a completed one-time top-up checkout: grant the purchased tokens and
-// save the card (set as the customer default) so auto-reload can use it later.
-// The grant is made idempotent at the credit write via dedupeId (stored in
-// usage_ledger.dedupe_id, unique-indexed), so two identical webhook deliveries
-// processed concurrently grant the tokens exactly once. The stripe_events guard
-// around the webhook is a second, coarser layer, not the primary protection.
-async function fulfillTopup(client: Stripe, session: Stripe.Checkout.Session, dedupeId: string): Promise<void> {
-  const userId = session.metadata?.workcrew_user_id ?? session.client_reference_id ?? undefined;
-  const parsedPack = tokenPackIdSchema.safeParse(session.metadata?.workcrew_topup_pack);
-  if (!userId || !parsedPack.success) return;
-  const pack = parsedPack.data;
-
-  const customerId = stringId(session.customer);
-  if (customerId && typeof session.payment_intent === "string") {
-    const intent = await client.paymentIntents.retrieve(session.payment_intent);
-    const paymentMethodId = stringId(intent.payment_method as string | { id: string } | null);
-    if (paymentMethodId) {
-      await client.customers.update(customerId, { invoice_settings: { default_payment_method: paymentMethodId } });
-      await setPaymentMethod(userId, paymentMethodId);
-    }
-  }
-
-  await grantTokenCredit({
-    userId,
-    grantedMicrodollars: tokenPackGrant(pack),
-    chargedMicrodollars: tokenPackCharge(pack),
-    source: "token_topup",
-    providerRequestId: typeof session.payment_intent === "string" ? session.payment_intent : undefined,
-    dedupeId
-  });
-}
-
 export async function handleStripeWebhook(rawBody: Buffer, signature: string): Promise<{ type: string; duplicate: boolean }> {
   const client = requireStripe();
   if (!config.stripeWebhookSecret) throw new Error("Stripe webhook secret is not configured");
@@ -369,16 +306,10 @@ export async function handleStripeWebhook(rawBody: Buffer, signature: string): P
       break;
     case "checkout.session.completed": {
       const session = event.data.object;
-      // A one-time token top-up: grant the tokens and remember the card. The
-      // dedupe key prefers the payment intent (stable per charge) and falls back
-      // to the event id; it is enforced at the credit write so two concurrent
-      // identical deliveries cannot double-credit even if both pass the
-      // stripe_events check before either records it.
-      if (session.mode === "payment" && session.metadata?.workcrew_topup_pack) {
-        const paymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : null;
-        const dedupeId = `topup:${paymentIntentId ?? event.id}`;
-        await fulfillTopup(client, session, dedupeId);
-      } else if (typeof session.subscription === "string") {
+      // A completed first-time subscription checkout. (Plan upgrades for existing
+      // subscribers go through the portal update-confirm flow and arrive as
+      // customer.subscription.updated, handled above.)
+      if (typeof session.subscription === "string") {
         await synchronizeSubscription(await client.subscriptions.retrieve(session.subscription));
       }
       break;

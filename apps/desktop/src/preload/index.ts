@@ -2,7 +2,6 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AttachmentRef,
   AutomationAction,
-  AutoReloadSettings,
   BillingInterval,
   ChatDeltaFrame,
   ConversationSummary,
@@ -12,8 +11,7 @@ import type {
   RecordedEvent,
   ReferralInfo,
   RunStepResponse,
-  SubscriptionState,
-  TokenPackId
+  SubscriptionState
 } from "@workcrew/contracts";
 
 import type { UpdateStatus } from "../main/updater";
@@ -86,14 +84,11 @@ const workcrew = {
     referral: (): Promise<ReferralInfo> => ipcRenderer.invoke("api:referral"),
     simulateCheckout: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState> => ipcRenderer.invoke("api:simulate", { plan, interval }),
     checkout: (plan: PlanId, interval: BillingInterval) => ipcRenderer.invoke("api:checkout", { plan, interval }),
-    changePlan: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState> => ipcRenderer.invoke("api:change-plan", { plan, interval }),
+    // Change plan. An upgrade opens a hosted Stripe payment page and resolves to
+    // { opened: true } (the new plan arrives after payment, on the next refresh);
+    // a downgrade applies immediately and resolves to the refreshed entitlement.
+    changePlan: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState | { opened: boolean }> => ipcRenderer.invoke("api:change-plan", { plan, interval }),
     portal: () => ipcRenderer.invoke("api:portal"),
-    // Buy a one-time token pack. In simulated billing this returns the refreshed
-    // entitlement; in live billing it opens hosted Stripe Checkout and returns
-    // { opened: true }. The caller refreshes entitlement when the user returns.
-    topup: (pack: TokenPackId): Promise<SubscriptionState | { opened: boolean }> => ipcRenderer.invoke("api:topup", { pack }),
-    // Save auto-reload preferences and return the refreshed entitlement.
-    autoReload: (settings: AutoReloadSettings): Promise<SubscriptionState> => ipcRenderer.invoke("api:auto-reload", settings),
     createRun: (task: string, model: ModelTier): Promise<{ runId: string }> => ipcRenderer.invoke("api:create-run", { task, model }),
     nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string }): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result })
   },

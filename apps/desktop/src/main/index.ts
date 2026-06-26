@@ -12,8 +12,6 @@ import {
   createCheckoutSchema,
   createRunSchema,
   nextRunStepSchema,
-  topupSchema,
-  autoReloadSettingsSchema,
   type RecordedEvent,
   type ChatDeltaFrame
 } from "@workcrew/contracts";
@@ -335,26 +333,24 @@ function registerIpc(): void {
     await shell.openExternal(result.url);
     return { opened: true };
   });
-  // Change an existing subscription's plan in place (Pro to Ultra) and return the
-  // updated entitlement, instead of opening a second checkout.
-  ipcMain.handle("api:change-plan", (_event, raw) => api.request("/v1/billing/change-plan", { method: "POST", body: createCheckoutSchema.parse(raw) }));
-  ipcMain.handle("api:portal", async () => {
-    const result = await api.request<{ url: string }>("/v1/billing/portal", { method: "POST" });
-    await shell.openExternal(result.url);
-    return { opened: true };
-  });
-  // Buy a one-time token pack. In live billing the backend returns a Checkout URL
-  // to open in the browser; in simulated billing it returns the refreshed
-  // entitlement directly, which is passed straight back to the renderer.
-  ipcMain.handle("api:topup", async (_event, raw) => {
-    const result = await api.request<{ url?: string }>("/v1/billing/topup", { method: "POST", body: topupSchema.parse(raw) });
+  // Change an existing subscription's plan. An upgrade returns a hosted Stripe
+  // payment URL: open it in the browser and report { opened: true } so the
+  // renderer waits for the user to pay (the new plan arrives via the webhook and
+  // is picked up on the next entitlement refresh). A downgrade returns the
+  // refreshed entitlement directly, which is passed straight back.
+  ipcMain.handle("api:change-plan", async (_event, raw) => {
+    const result = await api.request<{ url?: string }>("/v1/billing/change-plan", { method: "POST", body: createCheckoutSchema.parse(raw) });
     if (result && typeof result.url === "string") {
       await shell.openExternal(result.url);
       return { opened: true };
     }
     return result;
   });
-  ipcMain.handle("api:auto-reload", (_event, raw) => api.request("/v1/billing/auto-reload", { method: "POST", body: autoReloadSettingsSchema.parse(raw) }));
+  ipcMain.handle("api:portal", async () => {
+    const result = await api.request<{ url: string }>("/v1/billing/portal", { method: "POST" });
+    await shell.openExternal(result.url);
+    return { opened: true };
+  });
   ipcMain.handle("api:create-run", (_event, raw) => api.request("/v1/runs", { method: "POST", body: createRunSchema.parse(raw) }));
   ipcMain.handle("api:next-run", (_event, runId, raw) => {
     const safeRunId = z.string().uuid().parse(runId);

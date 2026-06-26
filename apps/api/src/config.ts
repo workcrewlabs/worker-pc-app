@@ -32,12 +32,6 @@ const envSchema = z.object({
   STRIPE_PRO_YEARLY_PRICE_ID: z.string().optional(),
   STRIPE_ULTRA_MONTHLY_PRICE_ID: z.string().optional(),
   STRIPE_ULTRA_YEARLY_PRICE_ID: z.string().optional(),
-  // One-time token top-up pack prices (mode=payment). Optional: when a pack price
-  // is not set, buying that pack falls back to an ad-hoc price built from the
-  // pack's catalog amount so the flow still works.
-  STRIPE_TOPUP_SMALL_PRICE_ID: z.string().optional(),
-  STRIPE_TOPUP_MEDIUM_PRICE_ID: z.string().optional(),
-  STRIPE_TOPUP_LARGE_PRICE_ID: z.string().optional(),
   WORKCREW_BILLING_SUCCESS_URL: z.string().optional(),
   WORKCREW_BILLING_CANCEL_URL: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
@@ -224,11 +218,6 @@ export const config = {
   stripePrices: {
     pro: { month: env.STRIPE_PRO_MONTHLY_PRICE_ID, year: env.STRIPE_PRO_YEARLY_PRICE_ID },
     ultra: { month: env.STRIPE_ULTRA_MONTHLY_PRICE_ID, year: env.STRIPE_ULTRA_YEARLY_PRICE_ID }
-  },
-  stripeTopupPrices: {
-    small: env.STRIPE_TOPUP_SMALL_PRICE_ID,
-    medium: env.STRIPE_TOPUP_MEDIUM_PRICE_ID,
-    large: env.STRIPE_TOPUP_LARGE_PRICE_ID
   },
   // After Stripe checkout, send the browser to a normal web page on the backend
   // (not a workcrew:// deep link, which misfires in development and shows an OS

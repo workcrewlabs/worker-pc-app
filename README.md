@@ -6,8 +6,8 @@ The repository currently contains a functional local MVP with mock billing and m
 
 ## Plans
 
-1. Pro costs $27 monthly or $270 yearly. Its Claude allowance is capped at $6.75 in every monthly allowance window.
-2. Ultra costs $200 monthly or $2,000 yearly. Its Claude allowance is capped at $50 in every monthly allowance window.
+1. Pro costs $27 monthly or $270 yearly. The everyday gate is a rolling 5-hour cap (about three to four high-effort messages, frees as the window rolls), with a monthly backstop of $12 of model usage.
+2. Ultra costs $200 monthly or $2,000 yearly. It uses the same rolling 5-hour model with a higher monthly backstop of $60 of model usage.
 3. Annual plans include two months free. Annual payment does not combine the model allowance into one yearly pool.
 4. There is no free plan and no trial.
 

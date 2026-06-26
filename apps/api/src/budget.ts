@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { DAY_MS, FIVE_HOUR_MS, PLAN_CATALOG, TOKEN_PACKS, tokenPackGrant, tokenPackIdSchema, type PlanId, type TokenPackId } from "@workcrew/contracts";
-import { config } from "./config.js";
+import { DAY_MS, FIVE_HOUR_MS, PLAN_CATALOG, type PlanId } from "@workcrew/contracts";
 import {
   addReferralEarned,
   claimReferralCredit,
@@ -13,7 +12,6 @@ import {
 // Dollars are tracked internally as microdollars (millionths of a dollar), and a
 // microdollar is shown to the user as one token. So one dollar charged equals one
 // million tokens of value.
-const MICRODOLLARS_PER_USD = 1_000_000;
 
 export type BudgetWindow = { startMs: number; endMs: number };
 
@@ -160,19 +158,7 @@ export async function reserveBudget(input: {
     return (await client.execute(insert)).rowsAffected;
   }
 
-  let rowsAffected = await runInsert();
-
-  // If it failed because the MONTHLY allowance is used up, auto-reload (if on, under
-  // its cap, and billing succeeds) and retry once. The rolling rate caps are never
-  // lifted this way; they are absolute. At most one auto charge per reservation.
-  if (rowsAffected !== 1) {
-    const monthly = await getBudgetUsage(input.subscription.userId, window);
-    const monthlyUsed = monthly.used + monthly.reserved;
-    if (amount + monthlyUsed > limits.monthly) {
-      const reloaded = await maybeAutoReload(input.subscription, window, nowMs);
-      if (reloaded) rowsAffected = await runInsert();
-    }
-  }
+  const rowsAffected = await runInsert();
 
   if (rowsAffected !== 1) {
     // Report which cap is binding so the user sees a clear, accurate message.
@@ -209,135 +195,6 @@ export async function releaseBudget(reservationId: string): Promise<void> {
     sql: "UPDATE usage_ledger SET status = 'released', settled_at_ms = ? WHERE id = ? AND status = 'reserved'",
     args: [Date.now(), reservationId]
   });
-}
-
-// The money charged for a pack, in microdollars, for receipts and the spend cap.
-export function tokenPackCharge(pack: TokenPackId): number {
-  return TOKEN_PACKS[pack].priceUsd * MICRODOLLARS_PER_USD;
-}
-
-/**
- * Add purchased tokens to the user's CURRENT budget window as a settled credit,
- * exactly like the referral credit: a negative-cost row lowers the window's used
- * total, freeing that many tokens for this period. The money charged is stored in
- * reserved_microdollars on the same settled row purely as a record; the
- * reservation cap reads `actual` on settled rows, so this never affects it.
- */
-export async function grantTokenCredit(input: {
-  userId: string;
-  grantedMicrodollars: number;
-  chargedMicrodollars: number;
-  source: "token_topup" | "auto_reload";
-  providerRequestId?: string;
-  nowMs?: number;
-  // A stable key for this grant (for example a Stripe payment intent or event id,
-  // or an auto-reload exhaustion key). When supplied it is stored in the
-  // dedupe_id column, which carries a unique index (db.ts). A second grant with
-  // the same key is ignored atomically at the write, so a retried or concurrent
-  // top-up or auto-reload credits the user exactly once even if two identical
-  // webhook deliveries are processed at the same moment.
-  dedupeId?: string;
-}): Promise<{ window: BudgetWindow } | null> {
-  const nowMs = input.nowMs ?? Date.now();
-  const subscription = await getSubscription(input.userId);
-  if (!subscription) return null;
-  const window = getBudgetWindow(subscription.budgetAnchorMs, nowMs);
-  // When a dedupe id is given, a duplicate insert is ignored so the credit write
-  // itself is the dedupe point (not a separate event check that can race). The
-  // guard is the unique index on dedupe_id, enforced atomically: INSERT OR IGNORE
-  // on SQLite/libsql, ON CONFLICT (dedupe_id) DO NOTHING on Postgres.
-  const insertVerb = input.dedupeId && client.dialect !== "postgres" ? "INSERT OR IGNORE INTO" : "INSERT INTO";
-  const onConflict = input.dedupeId && client.dialect === "postgres" ? " ON CONFLICT (dedupe_id) DO NOTHING" : "";
-  await client.execute({
-    sql: `${insertVerb} usage_ledger(
-        id, user_id, run_id, period_start_ms, period_end_ms, model,
-        reserved_microdollars, actual_microdollars, status, provider_request_id, created_at_ms, settled_at_ms, dedupe_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'settled', ?, ?, ?, ?)${onConflict}`,
-    args: [
-      randomUUID(),
-      input.userId,
-      input.source,
-      window.startMs,
-      window.endMs,
-      input.source,
-      Math.max(0, Math.round(input.chargedMicrodollars)),
-      -Math.abs(Math.round(input.grantedMicrodollars)),
-      input.providerRequestId ?? null,
-      nowMs,
-      nowMs,
-      input.dedupeId ?? null
-    ]
-  });
-  return { window };
-}
-
-// Top-up totals for the current period, in token (usage) units. `purchased` is
-// every top-up token added this period (manual and automatic); `autoReloaded` is
-// only the automatic ones, which the monthly auto-reload cap is measured against.
-export async function getTopupThisPeriod(userId: string, window: BudgetWindow): Promise<{ purchased: number; autoReloaded: number }> {
-  const result = await client.execute({
-    sql: `SELECT
-        COALESCE(SUM(-actual_microdollars), 0) AS purchased,
-        COALESCE(SUM(CASE WHEN model = 'auto_reload' THEN -actual_microdollars ELSE 0 END), 0) AS auto_reloaded
-      FROM usage_ledger
-      WHERE user_id = ? AND period_start_ms = ? AND period_end_ms = ?
-        AND status = 'settled' AND model IN ('token_topup', 'auto_reload')`,
-    args: [userId, window.startMs, window.endMs]
-  });
-  const row = result.rows[0];
-  return { purchased: Number(row?.purchased ?? 0), autoReloaded: Number(row?.auto_reloaded ?? 0) };
-}
-
-function parsePack(value: string): TokenPackId {
-  const parsed = tokenPackIdSchema.safeParse(value);
-  return parsed.success ? parsed.data : "small";
-}
-
-/**
- * When the plan allowance is exhausted, automatically add one top-up pack if the
- * user has turned auto-reload on and the period is still under its token cap. In
- * simulated billing there is no charge; in live billing an off-session charge is
- * made against the saved card first, and tokens are granted only if it succeeds.
- * Returns true when tokens were granted (the caller then retries the reservation).
- */
-export async function maybeAutoReload(subscription: SubscriptionRow, window: BudgetWindow, nowMs: number): Promise<boolean> {
-  if (!subscription.autoReloadEnabled) return false;
-  const limit = subscription.monthlyTopupLimitMicro;
-  if (limit <= 0) return false;
-
-  const pack = parsePack(subscription.autoReloadPack);
-  const grant = tokenPackGrant(pack);
-  const { autoReloaded } = await getTopupThisPeriod(subscription.userId, window);
-  // Never exceed the period cap on automatic spending.
-  if (autoReloaded + grant > limit) return false;
-
-  // A stable key for THIS exhaustion event: the user, the budget period, and how
-  // much has already been auto-reloaded this period. Two concurrent reservations
-  // that both find the allowance exhausted compute the same key (neither has
-  // granted yet), so the Stripe charge dedupes to one PaymentIntent and the
-  // credit row dedupes to one grant. The next exhaustion has a higher baseline,
-  // hence a new key, so legitimate repeat reloads (up to the cap) still work.
-  const eventKey = `auto-reload:${subscription.userId}:${window.startMs}:${autoReloaded}:${pack}`;
-
-  const charged = tokenPackCharge(pack);
-  if (config.billingMode === "stripe") {
-    // A saved card is required to charge off-session. Without one, auto-reload
-    // quietly does nothing (the app prompts the user to add a payment method).
-    if (!subscription.stripePaymentMethodId || !subscription.stripeCustomerId) return false;
-    const { chargeAutoReload } = await import("./billing.js");
-    const ok = await chargeAutoReload(subscription, pack, eventKey);
-    if (!ok) return false;
-  }
-
-  await grantTokenCredit({
-    userId: subscription.userId,
-    grantedMicrodollars: grant,
-    chargedMicrodollars: charged,
-    source: "auto_reload",
-    nowMs,
-    dedupeId: eventKey
-  });
-  return true;
 }
 
 /**

@@ -40,13 +40,16 @@ export const PLAN_CATALOG = {
     name: "Pro",
     monthlyPriceUsd: 27,
     yearlyPriceUsd: 270,
-    // Burst caps sized so a Pro user can send roughly three full high-effort
-    // (Opus) messages in a 5-hour window. These are rate limits only; the monthly
-    // cap below is the real ceiling on cost per user, so raising them does not
-    // raise the worst-case monthly spend.
+    // Rolling 5-hour refresh model (like Claude): the 5-hour cap is the everyday
+    // gate (roughly three to four full high-effort Opus messages per window, which
+    // frees up as the window rolls forward, so users come back through the day).
+    // The monthly cap is a rarely-hit safety net that bounds worst-case API spend
+    // per user, not an everyday wall: at the $27 price a user who somehow hits the
+    // full $12 still leaves about a 56% margin. Raising the 5-hour cap does not
+    // raise worst-case monthly spend, which the monthly cap alone bounds.
     fiveHourMicrodollars: 700_000,
     dailyMicrodollars: 2_500_000,
-    monthlyApiBudgetMicrodollars: 6_000_000,
+    monthlyApiBudgetMicrodollars: 12_000_000,
     devices: 1
   },
   ultra: {
@@ -71,34 +74,6 @@ export const PLAN_CATALOG = {
 // The rolling-window durations the caps are measured over.
 export const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
 export const DAY_MS = 24 * 60 * 60 * 1000;
-
-// One-time token top-up packs. When the monthly allowance runs low the user can
-// add more tokens to keep working in the current period. Larger packs include a
-// bonus (the "save more" framing) delivered as extra tokens, never as a money
-// discount, so the whole feature can stay in tokens and never name a provider.
-//   tokensMicrodollars  base tokens (internal usage units, shown 1:1 as tokens)
-//   bonusPercent        extra tokens granted on top of the base, for larger packs
-//   priceUsd            representative price; the live charge is set in Stripe
-// grantedTokens(pack) = tokensMicrodollars * (1 + bonusPercent / 100)
-export const tokenPackIdSchema = z.enum(["small", "medium", "large"]);
-export type TokenPackId = z.infer<typeof tokenPackIdSchema>;
-
-export const TOKEN_PACKS = {
-  small: { id: "small", tokensMicrodollars: 5_000_000, bonusPercent: 0, priceUsd: 19 },
-  medium: { id: "medium", tokensMicrodollars: 15_000_000, bonusPercent: 10, priceUsd: 49 },
-  large: { id: "large", tokensMicrodollars: 40_000_000, bonusPercent: 20, priceUsd: 119 }
-} as const satisfies Record<TokenPackId, {
-  id: TokenPackId;
-  tokensMicrodollars: number;
-  bonusPercent: number;
-  priceUsd: number;
-}>;
-
-// Total tokens granted by a pack, including its bonus, in internal usage units.
-export function tokenPackGrant(pack: TokenPackId): number {
-  const item = TOKEN_PACKS[pack];
-  return Math.round(item.tokensMicrodollars * (1 + item.bonusPercent / 100));
-}
 
 export const modelTierSchema = z.enum(["auto", "haiku", "sonnet", "opus"]);
 export type ModelTier = z.infer<typeof modelTierSchema>;
@@ -238,22 +213,6 @@ export const createCheckoutSchema = z.object({
   interval: billingIntervalSchema
 }).strict();
 
-// Buy a one-time token pack.
-export const topupSchema = z.object({
-  pack: tokenPackIdSchema
-}).strict();
-export type TopupRequest = z.infer<typeof topupSchema>;
-
-// Auto-reload: when the remaining tokens run low, automatically add a pack, up to
-// a monthly spend cap (in internal usage units). monthlyLimitMicrodollars of 0
-// means no automatic spending is allowed (the safe default).
-export const autoReloadSettingsSchema = z.object({
-  enabled: z.boolean(),
-  pack: tokenPackIdSchema,
-  monthlyLimitMicrodollars: z.number().int().min(0).max(1_000_000_000)
-}).strict();
-export type AutoReloadSettings = z.infer<typeof autoReloadSettingsSchema>;
-
 export const createRunSchema = z.object({
   task: z.string().trim().min(3).max(20_000),
   model: modelTierSchema.default("auto")
@@ -281,23 +240,12 @@ export type SubscriptionState = {
   usedMicrodollars: number;
   reservedMicrodollars: number;
   // The shorter rolling hard caps and how much real usage has gone against each
-  // in its window (credits are excluded so a top-up cannot lift a rate limit).
+  // in its window (credits are excluded so a credit cannot lift a rate limit).
   // The monthly cap and usage are budgetMicrodollars / usedMicrodollars above.
   fiveHourLimitMicrodollars: number;
   fiveHourUsedMicrodollars: number;
   dailyLimitMicrodollars: number;
   dailyUsedMicrodollars: number;
-  // Token top-up and auto-reload state. purchasedMicrodollars is the extra tokens
-  // bought this period (added on top of the plan allowance). topupSpentMicrodollars
-  // is what has been spent on top-ups this period, measured against the
-  // monthlyTopupLimitMicrodollars cap. hasPaymentMethod is true once a card is on
-  // file (required before auto-reload can charge in live billing).
-  purchasedMicrodollars: number;
-  topupSpentMicrodollars: number;
-  monthlyTopupLimitMicrodollars: number;
-  autoReloadEnabled: boolean;
-  autoReloadPack: TokenPackId;
-  hasPaymentMethod: boolean;
 };
 
 export type RunStepResponse = {

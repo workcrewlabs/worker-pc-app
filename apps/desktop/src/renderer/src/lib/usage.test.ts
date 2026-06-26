@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TOKEN_PACKS, tokenPackGrant, type SubscriptionState } from "@workcrew/contracts";
+import { type SubscriptionState } from "@workcrew/contracts";
 import { usageStatus } from "./usage";
 
 function entitlement(over: Partial<SubscriptionState>): SubscriptionState {
@@ -18,12 +18,6 @@ function entitlement(over: Partial<SubscriptionState>): SubscriptionState {
     fiveHourUsedMicrodollars: 0,
     dailyLimitMicrodollars: 1_000_000,
     dailyUsedMicrodollars: 0,
-    purchasedMicrodollars: 0,
-    topupSpentMicrodollars: 0,
-    monthlyTopupLimitMicrodollars: 0,
-    autoReloadEnabled: false,
-    autoReloadPack: "small",
-    hasPaymentMethod: false,
     ...over
   };
 }
@@ -86,16 +80,5 @@ describe("usageStatus", () => {
     const status = usageStatus(entitlement({ budgetMicrodollars: 0, usedMicrodollars: 0 }));
     expect(status.level).toBe("ok");
     expect(status.percent).toBe(0);
-  });
-});
-
-describe("token packs", () => {
-  it("grants the base amount with no bonus for the small pack", () => {
-    expect(tokenPackGrant("small")).toBe(TOKEN_PACKS.small.tokensMicrodollars);
-  });
-
-  it("adds the bonus for larger packs", () => {
-    expect(tokenPackGrant("medium")).toBe(Math.round(15_000_000 * 1.1));
-    expect(tokenPackGrant("large")).toBe(Math.round(40_000_000 * 1.2));
   });
 });

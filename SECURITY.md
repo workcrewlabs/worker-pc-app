@@ -41,15 +41,15 @@ Browser snapshots and native window inspection results should remain ephemeral u
 
 Roles and what each may do. The backend is the only database client, so every row in this table is enforced by server-side checks (authentication plus ownership-scoped queries), not by client trust.
 
-| Capability | Unauthenticated visitor | Authenticated user | Admin | Stripe webhook | Background worker (scheduler/auto-reload) | Desktop app client |
+| Capability | Unauthenticated visitor | Authenticated user | Admin | Stripe webhook | Background worker (scheduler) | Desktop app client |
 | --- | --- | --- | --- | --- | --- | --- |
 | Load public pages (`/`, `/health`, `/reset`, `/billing/success`, `/billing/cancel`) | Yes | Yes | n/a | n/a | n/a | Yes |
 | Sign up, sign in, refresh, sign out, password reset, email verify | Yes (IP rate limited) | Yes | n/a | No | No | Yes |
 | Read or modify ANY record (conversation, run, attachment, subscription, usage) | No | Only their own (queries scoped by the verified `user_id`) | No special path exists | No | Only the owning user's, server-initiated | Only the signed-in user's |
 | Start a run, advance a run step, send a chat turn, upload an attachment, summarize a recording | No | Yes, if subscription is active and within budget caps | n/a | No | The owning user's scheduled run only | Yes, as the signed-in user |
 | Spend model tokens / trigger paid AI work | No | Yes, bounded by the 5-hour, daily, and monthly caps | n/a | No | Bounded by the same caps | Yes, bounded by the same caps |
-| Create checkout, change plan, open billing portal, buy a top-up, set auto-reload | No | Yes, for their own account only | n/a | No | No | Yes, for the signed-in account |
-| Grant credits / mark a subscription active | No | No (cannot self-grant) | No client path | Yes, only after Stripe signature verification, idempotent per `dedupe_id` | Auto-reload only, idempotent per event key, capped per period | No |
+| Create checkout, change plan (upgrade pays first via a hosted Stripe page), open billing portal | No | Yes, for their own account only | n/a | No | No | Yes, for the signed-in account |
+| Grant credits / mark a subscription active | No | No (cannot self-grant) | No client path | Yes, only after Stripe signature verification; event-guarded and one-shot per referred user | No | No |
 | Choose price IDs / amounts | No | No (server reads them from config/catalog) | n/a | No (server-set metadata only) | No | No |
 | Read server secrets (Stripe secret, webhook secret, `DATABASE_URL`, service role, Anthropic key) | No | No | No | No | No | No (backend only; never shipped to the client) |
 
@@ -61,7 +61,6 @@ Notes:
 ## Accepted tradeoffs (reviewed, not defects)
 
 1. Stateless access tokens (local and Supabase) have a one-hour TTL and are not checked against the session table on every request, so sign-out and session revocation invalidate future refreshes immediately but an already-issued access token remains valid until it expires. Bounded by the short TTL. Mitigate by shortening the TTL or carrying a session/token version if immediate revocation becomes required.
-2. The simulated-billing manual top-up path grants credits without an idempotency key, but simulated billing is refused at boot in production, so this path is unreachable in production.
 
 ## Vulnerability response
 

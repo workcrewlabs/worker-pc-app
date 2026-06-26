@@ -124,7 +124,7 @@ describe("budget ledger invariants", () => {
     const anchor = subscription.budgetAnchorMs;
     // Fill the whole monthly cap as old usage, outside the rolling windows, so only
     // the monthly cap is binding.
-    await seedSettled(subscription.userId, 6_000_000, anchor, anchor);
+    await seedSettled(subscription.userId, 12_000_000, anchor, anchor);
     await expect(
       reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs: anchor + 48 * HOUR })
     ).rejects.toMatchObject({ code: "BUDGET_EXHAUSTED" });

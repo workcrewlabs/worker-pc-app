@@ -2,16 +2,14 @@ import { formatTokens } from "../lib/storage";
 import type { UsageStatus } from "../lib/usage";
 
 // A slim banner above the chat that appears as the token allowance runs low
-// (amber) and once it is used up (red). It offers adding tokens and upgrading.
+// (amber) and once it is used up (red). It offers upgrading to a higher plan.
 // Hidden entirely while there is comfortable headroom.
 export function UsageBanner({
   status,
-  onAddTokens,
   onUpgrade,
   upgrading
 }: {
   status: UsageStatus;
-  onAddTokens: () => void;
   onUpgrade: () => void;
   upgrading: boolean;
 }) {
@@ -35,7 +33,6 @@ export function UsageBanner({
       <span className="usage-banner-dot" aria-hidden="true" />
       <span className="usage-banner-text">{message}</span>
       <div className="usage-banner-actions">
-        <button type="button" className="usage-banner-add" onClick={onAddTokens}>Add tokens</button>
         <button type="button" className="usage-banner-upgrade" onClick={onUpgrade} disabled={upgrading}>
           {upgrading ? "Upgrading..." : "Upgrade"}
         </button>
