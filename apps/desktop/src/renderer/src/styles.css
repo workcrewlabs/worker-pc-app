@@ -144,10 +144,6 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .sidebar nav { display: grid; gap: 4px; }
 /* The Routines row pairs the nav item with a small circle-plus that saves the
    current chat as a routine. It appears only once a chat or automation exists. */
-.sidebar nav .nav-row { display: flex; align-items: center; gap: 4px; }
-.sidebar nav .nav-row > button:first-child { flex: 1 1 auto; width: auto; }
-.sidebar nav .routine-add { flex: none; width: 30px; height: 30px; display: inline-grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; color: var(--muted); background: transparent; }
-.sidebar nav .routine-add:hover { color: var(--text); border-color: var(--accent); background: var(--panel-2); }
 .sidebar nav button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid transparent; border-radius: 9px; cursor: pointer; text-align: left; color: var(--muted); background: transparent; font-size: var(--fs-ui); }
 .sidebar nav button span { width: 20px; text-align: center; font-size: var(--fs-small); color: var(--muted); }
 .sidebar nav button .nav-icon { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
@@ -396,7 +392,12 @@ select option:checked { background-color: var(--panel-2); }
 .routine-actions { display: flex; align-items: center; gap: 6px; flex: none; }
 .icon-button { width: 32px; height: 32px; display: inline-grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; color: var(--muted); background: transparent; }
 .icon-button:hover { color: var(--text); border-color: var(--muted); }
-.icon-button.danger:hover { color: #e0a7ad; border-color: #a34049; }
+/* The trash icon button is a quiet outlined square that only reddens on hover.
+   This base rule outranks the generic filled `button.danger` (used by the
+   delete-account button), which would otherwise add a red fill and lopsided
+   padding that knock the icon off-center. */
+.icon-button.danger { width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); }
+.icon-button.danger:hover { color: #e0a7ad; border-color: #a34049; background: transparent; }
 .toggle { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
 .toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .toggle-track { position: relative; display: inline-block; width: 38px; height: 22px; border-radius: 999px; background: var(--line); transition: background .15s; }

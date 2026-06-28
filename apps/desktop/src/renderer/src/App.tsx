@@ -599,8 +599,6 @@ function Workspace({ info, entitlement, onRefreshEntitlement, onSignOut, onUpgra
     if (task.length < 3) return;
     saveAsRoutine(task);
   }
-  const canSaveRoutine =
-    chat.turns.length > 0 || runner.steps.length > 0 || Boolean(runner.summary) || automationTask.trim().length >= 3;
 
   // Load a saved conversation into the transcript.
   async function openConversation(id: string) {
@@ -711,29 +709,13 @@ function Workspace({ info, entitlement, onRefreshEntitlement, onSignOut, onUpgra
           </span> New chat
         </button>
         <nav aria-label="Workspace sections">
-          <div className="nav-row">
-            <button
-              className={view === "routines" ? "nav-active" : ""}
-              aria-current={view === "routines" ? "page" : undefined}
-              onClick={() => { setRoutineSeed(""); setView("routines"); }}
-            >
-              <span className="nav-icon"><BoltIcon /></span> Routines
-            </button>
-            {canSaveRoutine && (
-              <button
-                type="button"
-                className="routine-add"
-                onClick={saveCurrentAsRoutine}
-                aria-label="Save this chat as a routine"
-                title="Save this chat as a routine"
-              >
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </button>
-            )}
-          </div>
+          <button
+            className={view === "routines" ? "nav-active" : ""}
+            aria-current={view === "routines" ? "page" : undefined}
+            onClick={() => { setRoutineSeed(""); setView("routines"); }}
+          >
+            <span className="nav-icon"><BoltIcon /></span> Routines
+          </button>
           <button
             className={view === "permissions" ? "nav-active" : ""}
             aria-current={view === "permissions" ? "page" : undefined}
