@@ -9,6 +9,7 @@ import {
   type Routine,
   type RoutineCadence
 } from "../lib/storage";
+import { track } from "../lib/analytics";
 import { Dropdown } from "./Dropdown";
 import { PanelShell } from "./PanelShell";
 
@@ -123,6 +124,8 @@ export function RoutinesPanel({
       onChange(updateRoutine(editingId, { name: name.trim(), task: task.trim(), cadence, hour, minute, weekday }));
     } else {
       onChange(addRoutine({ name: name.trim(), task: task.trim(), cadence, hour, minute, weekday, enabled: true }));
+      // Schedule shape only; never the routine name or task text.
+      track("routine_created", { cadence });
     }
     resetForm();
   }
@@ -213,7 +216,7 @@ export function RoutinesPanel({
                   />
                   <span className="toggle-track"><span className="toggle-thumb" /></span>
                 </label>
-                <button className="icon-button danger" onClick={() => onChange(removeRoutine(routine.id))} aria-label={`Remove ${routine.name}`} title="Remove">
+                <button className="icon-button danger" onClick={() => { track("routine_deleted"); onChange(removeRoutine(routine.id)); }} aria-label={`Remove ${routine.name}`} title="Remove">
                   <TrashIcon />
                 </button>
               </div>

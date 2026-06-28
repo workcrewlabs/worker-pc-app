@@ -15,6 +15,8 @@ import type {
 } from "@workcrew/contracts";
 
 import type { UpdateStatus } from "../main/updater";
+import type { SaveFileRequest, SaveFileResult } from "../shared/export-formats";
+import type { AnalyticsEvent, AnalyticsProps } from "../shared/analytics-events";
 
 // A file the user picked locally, before it is uploaded.
 type PickedFile = { path: string; name: string; size: number };
@@ -59,7 +61,18 @@ const workcrew = {
   },
   settings: {
     getBackendUrl: (): Promise<string> => ipcRenderer.invoke("settings:get-backend-url"),
-    setBackendUrl: (url: string): Promise<string> => ipcRenderer.invoke("settings:set-backend-url", url)
+    setBackendUrl: (url: string): Promise<string> => ipcRenderer.invoke("settings:set-backend-url", url),
+    // Anonymous product analytics opt-out. Reading and writing the user's choice.
+    getAnalyticsOptOut: (): Promise<boolean> => ipcRenderer.invoke("settings:get-analytics-opt-out"),
+    setAnalyticsOptOut: (value: boolean): Promise<boolean> => ipcRenderer.invoke("settings:set-analytics-opt-out", value)
+  },
+  // Safe product analytics. The renderer only names an allow-listed event and a
+  // few safe properties; the main process attaches identity and does the sending.
+  analytics: {
+    capture: (event: AnalyticsEvent, props?: AnalyticsProps): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke("analytics:capture", { event, props }),
+    // Link the anonymous id to the internal user id after a successful login.
+    identify: (): Promise<{ ok: boolean }> => ipcRenderer.invoke("analytics:identify")
   },
   updates: {
     check: (manual?: boolean): Promise<{ supported: boolean }> => ipcRenderer.invoke("updates:check", manual === true),
@@ -149,7 +162,14 @@ const workcrew = {
     // Resolve the absolute path of a file dropped onto the window, so it can be
     // uploaded through the same path-based pipeline as the file picker. Guarded
     // so an unavailable webUtils never breaks the bridge; the caller falls back.
-    pathForFile: (file: File): string => (webUtils ? webUtils.getPathForFile(file) : "")
+    pathForFile: (file: File): string => (webUtils ? webUtils.getPathForFile(file) : ""),
+    // Save a file WorkCrew generated (a spreadsheet, document, or text file the
+    // chat produced) to disk. The main process shows a native Save dialog, so
+    // the user always picks the location and confirms before anything is written.
+    // The contract matches the files:save handler exactly: the format is from the
+    // export allowlist, and the result is a save-with-path or a cancellation.
+    save: (payload: SaveFileRequest): Promise<SaveFileResult> =>
+      ipcRenderer.invoke("files:save", payload)
   },
   attachments: {
     // Upload picked files and return a reference for each successfully stored

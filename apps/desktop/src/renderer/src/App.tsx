@@ -10,6 +10,7 @@ import {
   type SubscriptionState
 } from "@workcrew/contracts";
 import { formatTokens } from "./lib/storage";
+import { identifyUser, track } from "./lib/analytics";
 import { DEFAULT_CHAT_MODEL, turnsFromMessages } from "./lib/chat";
 import { useChatStream } from "./hooks/useChatStream";
 import { ChatView } from "./components/ChatView";
@@ -106,6 +107,29 @@ function looksLikeAutomation(text: string): boolean {
 function isQuestionLike(text: string): boolean {
   const t = text.trim().toLowerCase();
   return /^(how|what|whats|what's|why|when|who|where|which|is |are |do |does |can i|can you|can u|could you|would you|explain|tell me|write|draft|compose|summari|translate|define|describe|give me|list|brainstorm|suggest|recommend|help me|teach me|show me how)\b/.test(t);
+}
+
+// Decide whether the user is asking WorkCrew to MAKE a file and hand it back to
+// download (the Claude cowork style: "make me an excel file", "create a CSV",
+// "give me a Word doc", "build a report"). This is always a chat request: the
+// model generates the file's content and the chat shows a Download button. It
+// must never seize the computer, even while a chat is in automation mode, so a
+// file ask is checked before any automation routing. Asking to control an app
+// ("open Excel and...", "in Excel", "on my computer") is the opposite and is
+// left to the automation engine.
+function looksLikeFileRequest(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (t.length < 5) return false;
+  // Controlling an app or the machine is automation, not a file hand-off.
+  if (/\b(open|launch|in|inside|using|control|automate)\s+(my\s+|the\s+)?(excel|word|powerpoint|sheets?|docs?)\b/.test(t)) return false;
+  if (/\b(in (my|the) browser|on (my|the) (computer|pc|laptop|desktop|machine|screen))\b/.test(t)) return false;
+  // A "produce and give me" verb paired with a file or document noun.
+  const wants = /\b(make|create|build|generate|produce|prepare|put together|export|draft|write|give me|send me|i (?:need|want)|can you (?:make|create|build|generate|write|prepare))\b/;
+  // Specific document nouns only. Bare "file" and "table" are deliberately left
+  // out: paired with "i need"/"rename"/"sort" they would steal real automation
+  // requests like "rename this file" or "sort this table" into the chat path.
+  const fileNoun = /\b(excel|spreadsheet|spread sheet|workbook|csv|xlsx|word (?:doc\w*|file)|docx|document|report|text file|\.txt|markdown|\.md|json file|html file)\b/;
+  return wants.test(t) && fileNoun.test(t);
 }
 
 function errorMessage(error: unknown): string {
@@ -207,6 +231,8 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
     event.preventDefault();
     setBusy(true);
     setNotice("");
+    // The kind of auth attempt only; never the email or password.
+    if (mode !== "reset") track("login_started", { mode });
     try {
       if (mode === "reset") {
         await window.workcrew.auth.reset(email);
@@ -579,8 +605,6 @@ function Workspace({ info, entitlement, onRefreshEntitlement, onSignOut, onUpgra
     if (task.length < 3) return;
     saveAsRoutine(task);
   }
-  const canSaveRoutine =
-    chat.turns.length > 0 || runner.steps.length > 0 || Boolean(runner.summary) || automationTask.trim().length >= 3;
 
   // Load a saved conversation into the transcript.
   async function openConversation(id: string) {
@@ -602,7 +626,12 @@ function Workspace({ info, entitlement, onRefreshEntitlement, onSignOut, onUpgra
   }
 
   function send(text: string, attachments: AttachmentRef[], localPaths: string[] = []) {
-    if (!runner.running) {
+    // A request to be handed a file ("make me an excel file", "give me a CSV")
+    // is always a chat request: WorkCrew generates the file and shows a Download
+    // button. It must never seize the computer, so it is checked first and wins
+    // over automation, even while this chat is in automation mode.
+    const fileRequest = looksLikeFileRequest(text);
+    if (!runner.running && !fileRequest) {
       // Files attached with a request to act on them (for example "crop this
       // image" or "clean up this spreadsheet") run as an automation that works on
       // the real files on the computer, by passing their local paths to the model
@@ -686,29 +715,13 @@ function Workspace({ info, entitlement, onRefreshEntitlement, onSignOut, onUpgra
           </span> New chat
         </button>
         <nav aria-label="Workspace sections">
-          <div className="nav-row">
-            <button
-              className={view === "routines" ? "nav-active" : ""}
-              aria-current={view === "routines" ? "page" : undefined}
-              onClick={() => { setRoutineSeed(""); setView("routines"); }}
-            >
-              <span className="nav-icon"><BoltIcon /></span> Routines
-            </button>
-            {canSaveRoutine && (
-              <button
-                type="button"
-                className="routine-add"
-                onClick={saveCurrentAsRoutine}
-                aria-label="Save this chat as a routine"
-                title="Save this chat as a routine"
-              >
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </button>
-            )}
-          </div>
+          <button
+            className={view === "routines" ? "nav-active" : ""}
+            aria-current={view === "routines" ? "page" : undefined}
+            onClick={() => { setRoutineSeed(""); setView("routines"); }}
+          >
+            <span className="nav-icon"><BoltIcon /></span> Routines
+          </button>
           <button
             className={view === "permissions" ? "nav-active" : ""}
             aria-current={view === "permissions" ? "page" : undefined}
@@ -883,6 +896,10 @@ export default function App() {
       try {
         const state = await window.workcrew.api.entitlement();
         setEntitlement(state);
+        // The session is now proven valid (entitlement loaded). Identify once
+        // here, the single post-validation point, so a stale stored session is
+        // never identified and a fresh login does not double-fire identify.
+        identifyUser();
         setPhase(state.active ? "workspace" : "paywall");
       } catch (entitlementError) {
         // A stored session can be invalid for the current backend, for example
@@ -905,6 +922,20 @@ export default function App() {
   }
 
   useEffect(() => { void refresh(); }, []);
+
+  // Fire app_opened once, and record uncaught renderer errors as a coarse, safe
+  // category (never the message, which could contain user input or paths).
+  useEffect(() => {
+    track("app_opened");
+    const onError = (event: ErrorEvent): void => track("app_error", { source: "desktop", category: event.error?.name ?? "error" });
+    const onRejection = (): void => track("app_error", { source: "desktop", category: "unhandledrejection" });
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onRejection);
+    };
+  }, []);
 
   // Re-fetch only the entitlement (not the whole phase flow). Used after a chat
   // turn or automation run finishes, and when the window regains focus, so the

@@ -57,7 +57,24 @@ const envSchema = z.object({
   WORKCREW_TRUSTED_PROXY_HOPS: z.coerce.number().int().min(1).max(10).default(1),
   // Where the landing page "Download for Windows" button points. Set this to the
   // installer link once a release is published.
-  WORKCREW_DOWNLOAD_URL: z.string().optional()
+  // Treat an empty value as unset so a blank Render env var does not fail boot;
+  // a non-empty value must still be a real URL.
+  WORKCREW_DOWNLOAD_URL: z.preprocess(
+    (value) => (typeof value === "string" && value.length > 0 ? value : undefined),
+    z.string().url().optional()
+  ),
+  // Product analytics (PostHog cloud), backend side. POSTHOG_KEY is the public
+  // project key (safe to expose); there is no analytics secret. Analytics is a
+  // no-op unless a key is set, and WORKCREW_ANALYTICS_DISABLED=true turns it off
+  // entirely regardless. Only safe event names and low-cardinality properties are
+  // ever sent; never prompt text, file contents, tokens, or email.
+  POSTHOG_KEY: z.string().optional(),
+  // Empty/unset falls back to the default; a non-empty value must be a real URL.
+  POSTHOG_HOST: z.preprocess(
+    (value) => (typeof value === "string" && value.length > 0 ? value : undefined),
+    z.string().url().default("https://us.i.posthog.com")
+  ),
+  WORKCREW_ANALYTICS_DISABLED: booleanText
 });
 
 const env = envSchema.parse(process.env);
@@ -236,7 +253,13 @@ export const config = {
   requireEmailVerification: env.WORKCREW_REQUIRE_EMAIL_VERIFICATION,
   billingGracePastDue: env.WORKCREW_BILLING_GRACE_PAST_DUE,
   trustedProxyHops: env.WORKCREW_TRUSTED_PROXY_HOPS,
-  downloadUrl: env.WORKCREW_DOWNLOAD_URL ?? ""
+  downloadUrl: env.WORKCREW_DOWNLOAD_URL ?? "",
+  analytics: {
+    key: env.POSTHOG_KEY,
+    host: env.POSTHOG_HOST.replace(/\/$/, ""),
+    // Off by default; on only when a key is present and not explicitly disabled.
+    enabled: Boolean(env.POSTHOG_KEY) && !env.WORKCREW_ANALYTICS_DISABLED
+  }
 } as const;
 
 export const DEV_USER_ID = "00000000-0000-4000-8000-000000000001";

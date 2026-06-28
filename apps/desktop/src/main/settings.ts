@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
@@ -9,6 +10,11 @@ import { app } from "electron";
 
 type DesktopSettings = {
   backendUrl?: string;
+  // A random per-install id used as the anonymous analytics distinct id before
+  // login. Not tied to the machine, the OS user, or any personal data.
+  analyticsDeviceId?: string;
+  // When true, the user has opted out of anonymous product analytics.
+  analyticsOptOut?: boolean;
 };
 
 // The production cloud backend. Packaged installs talk to this by default.
@@ -102,4 +108,32 @@ export function setBackendUrl(raw: string): string {
 /** Whether the user has saved a custom backend URL (vs. the env or default). */
 export function hasCustomBackendUrl(): boolean {
   return typeof load().backendUrl === "string" && load().backendUrl !== "";
+}
+
+function persist(next: DesktopSettings): void {
+  writeFileSync(settingsPath(), JSON.stringify(next, null, 2), { encoding: "utf8", mode: 0o600 });
+  cache = next;
+}
+
+/**
+ * The anonymous analytics device id, created and persisted on first use. This is
+ * a plain random id, not derived from any hardware, account, or personal data.
+ */
+export function getAnalyticsDeviceId(): string {
+  const current = load();
+  if (current.analyticsDeviceId && current.analyticsDeviceId.length > 0) return current.analyticsDeviceId;
+  const id = randomUUID();
+  persist({ ...current, analyticsDeviceId: id });
+  return id;
+}
+
+/** Whether the user has opted out of anonymous product analytics. */
+export function getAnalyticsOptOut(): boolean {
+  return load().analyticsOptOut === true;
+}
+
+/** Persist the analytics opt-out choice, returning the stored value. */
+export function setAnalyticsOptOut(value: boolean): boolean {
+  persist({ ...load(), analyticsOptOut: value === true });
+  return value === true;
 }

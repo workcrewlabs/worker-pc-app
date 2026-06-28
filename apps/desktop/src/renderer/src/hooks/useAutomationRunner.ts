@@ -3,6 +3,7 @@ import type { AutomationAction, ModelTier } from "@workcrew/contracts";
 import { actionDetail, actionLabel } from "../lib/automation";
 import { redactResult, requiresApproval } from "../security";
 import { addHistory } from "../lib/storage";
+import { track } from "../lib/analytics";
 import { browserRefLabel, buildRecipe, getRecipe, isReplayEnabled, normalizeTaskKey, parseWindowsSnapshot, saveRecipe, type Recipe } from "../lib/recipes";
 
 // The shared automation engine. It runs one plan-act loop at a time: create a
@@ -206,6 +207,8 @@ export function useAutomationRunner(): AutomationRunner {
     // before any await so a second caller in the same tick cannot slip past it.
     if (trimmed.length < 3 || runningRef.current) return;
     runningRef.current = true;
+    // Event name only; never the task text or any on-screen content.
+    track("automation_started");
     // Wrap the whole run in try/finally so the in-flight guard is cleared on
     // EVERY exit path, including an unexpected throw from the replay section
     // below (which runs before the main loop's own try). Missing this would
@@ -232,6 +235,7 @@ export function useAutomationRunner(): AutomationRunner {
         setStatus("complete");
         saveRecipe({ ...recipe, runCount: recipe.runCount + 1, updatedAtMs: Date.now() });
         addHistory({ task: trimmed, timestamp: Date.now(), outcome: "complete", activityCount: recipe.steps.length });
+        track("automation_completed", { via: "replay" });
         return;
       }
       if (outcome === "stopped") {
@@ -328,6 +332,9 @@ export function useAutomationRunner(): AutomationRunner {
           outcome: current === "complete" ? "complete" : current === "stopped" ? "stopped" : "failed",
           activityCount: 0
         });
+        // Safe outcome only. A user-stopped run is neither completed nor failed.
+        if (current === "complete") track("automation_completed", { via: "model" });
+        else if (current === "failed") track("automation_failed", { category: "run_failed" });
         // Only a clean, fully-deterministic completed run becomes a recipe. A run
         // with any failed or declined step is never cached: dropping such a step
         // could replay a path that silently skips a write yet reports success.

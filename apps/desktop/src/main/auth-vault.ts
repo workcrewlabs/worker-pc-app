@@ -52,6 +52,13 @@ export class AuthVault {
     return { authenticated: Boolean(this.session), email: this.session?.email };
   }
 
+  // The internal user id of the current session. Used only as a privacy-safe
+  // analytics identity (never the email) and never sent to the renderer. Null
+  // when signed out.
+  getUserId(): string | null {
+    return this.session?.userId ?? null;
+  }
+
   // Return a usable access token for the API client, refreshing first if the
   // stored token is within one minute of expiry. Returns null when there is no
   // session at all (the renderer should then show the auth screen).

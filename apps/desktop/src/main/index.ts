@@ -19,11 +19,14 @@ import { z } from "zod";
 import { ApiClient } from "./api-client.js";
 import { AuthVault } from "./auth-vault.js";
 import { BrowserCli } from "./browser-cli.js";
-import { getBackendUrl, setBackendUrl } from "./settings.js";
+import { getAnalyticsOptOut, getBackendUrl, setAnalyticsOptOut, setBackendUrl } from "./settings.js";
+import { capture as analyticsCapture, deviceId as analyticsDeviceId, identify as analyticsIdentify } from "./analytics.js";
+import { ANALYTICS_EVENTS } from "../shared/analytics-events.js";
 import { transcribeSamples } from "./transcription.js";
 import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
 import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
 import { extractOfficeText } from "./office.js";
+import { EXPORT_EXTENSIONS, generateExport, sanitizeExportName, type ExportExtension } from "./file-export.js";
 import { runShellCommand } from "./shell-cli.js";
 import { WindowsAgent } from "./windows-agent.js";
 
@@ -50,6 +53,28 @@ console.info("[WorkCrew] main process loaded");
 // it leaves the desktop.
 const chatSendIpcSchema = chatSendSchema.extend({
   requestId: z.string().min(1).max(200)
+}).strict();
+
+// The only property keys the renderer may attach to an event. Allow-listing the
+// KEYS (not just the value types) means a compromised renderer cannot smuggle
+// prompt text, filenames, or local paths under some arbitrary key, even though
+// the event name is already allow-listed.
+const ANALYTICS_PROP_KEYS = new Set(["mode", "via", "category", "ext", "cadence", "source"]);
+
+// A renderer analytics call: the event must be a known safe event, and properties
+// are a small, capped bag of allow-listed keys mapping to low-cardinality
+// scalars. Strict so nothing unexpected reaches the capture call.
+const analyticsCaptureSchema = z.object({
+  event: z.enum(ANALYTICS_EVENTS),
+  props: z.record(z.string().max(64), z.union([z.string().max(120), z.number(), z.boolean(), z.null()]))
+    .refine(
+      (obj) => {
+        const keys = Object.keys(obj);
+        return keys.length <= 8 && keys.every((key) => ANALYTICS_PROP_KEYS.has(key));
+      },
+      { message: "unexpected analytics property" }
+    )
+    .optional()
 }).strict();
 
 // Deliver a single frame for a request id to the renderer. The webContents may
@@ -183,6 +208,16 @@ function guessMimeType(filename: string): string {
 // uploaded, so the binary never leaves the machine (like Claude Code's skills).
 const OFFICE_EXTENSIONS = new Set(["docx", "xlsx", "pptx"]);
 
+// A file the chat asked WorkCrew to generate for download. The extension is
+// constrained to the formats the exporter understands, and the content is bounded
+// so a runaway payload cannot exhaust memory. The renderer never names a path;
+// the user picks it in the Save dialog.
+const saveFileSchema = z.object({
+  name: z.string().min(1).max(200),
+  ext: z.enum(EXPORT_EXTENSIONS),
+  content: z.string().max(2_000_000)
+}).strict();
+
 function createWindow(): void {
   console.info("[WorkCrew] creating main window");
   mainWindow = new BrowserWindow({
@@ -296,6 +331,24 @@ function registerIpc(): void {
   // set validates and persists a new one (taking effect on the next request).
   ipcMain.handle("settings:get-backend-url", () => getBackendUrl());
   ipcMain.handle("settings:set-backend-url", (_event, raw) => setBackendUrl(z.string().min(1).max(2_048).parse(raw)));
+  ipcMain.handle("settings:get-analytics-opt-out", () => getAnalyticsOptOut());
+  ipcMain.handle("settings:set-analytics-opt-out", (_event, raw) => setAnalyticsOptOut(z.boolean().parse(raw)));
+
+  // Product analytics. The renderer asks the main process to capture a safe,
+  // allow-listed event; main attaches the distinct id (the internal user id after
+  // login, otherwise the anonymous device id) and sends it. identify links the
+  // two after a successful login. Both are no-ops when analytics is off.
+  ipcMain.handle("analytics:capture", (_event, raw) => {
+    const { event, props } = analyticsCaptureSchema.parse(raw);
+    const distinctId = auth.getUserId() ?? analyticsDeviceId();
+    analyticsCapture(distinctId, event, props ?? {});
+    return { ok: true };
+  });
+  ipcMain.handle("analytics:identify", () => {
+    const userId = auth.getUserId();
+    if (userId) analyticsIdentify(userId);
+    return { ok: true };
+  });
 
   // Auto-update: check on demand and install a downloaded update. Both are safe
   // no-ops in an unpackaged (development) build.
@@ -374,6 +427,27 @@ function registerIpc(): void {
       const stat = await fs.stat(filePath).catch(() => null);
       return { path: filePath, name: filePath.split(/[\\/]/).pop() ?? filePath, size: stat?.size ?? 0 };
     }));
+  });
+
+  // Save a file the chat generated (a spreadsheet, document, or text file) to
+  // disk. This is a plain "Save As": the user always confirms the location in the
+  // native dialog, the format is allow-listed, and the bytes are the model's own
+  // chat output. It is not part of the automation surface and runs no code; it
+  // only writes the file the user explicitly asked WorkCrew to make.
+  ipcMain.handle("files:save", async (_event, raw) => {
+    if (!mainWindow) return { canceled: true };
+    const { name, ext, content } = saveFileSchema.parse(raw);
+    const safeName = sanitizeExportName(name, ext as ExportExtension);
+    const buffer = await generateExport(ext as ExportExtension, content);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "Save file",
+      defaultPath: join(app.getPath("downloads"), safeName),
+      filters: [{ name: ext.toUpperCase(), extensions: [ext] }, { name: "All files", extensions: ["*"] }]
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    const fs = await import("node:fs/promises");
+    await fs.writeFile(result.filePath, buffer);
+    return { saved: true, path: result.filePath };
   });
 
   // Read each picked file from disk, guard its size, and post its bytes to the

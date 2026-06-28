@@ -31,3 +31,9 @@ __pycache__/
 *.pyo
 .DS_Store
 Thumbs.db
+# Local tooling binaries and reference material, not part of the product.
+*.exe
+# The folder in this repo's history is misspelled; ignore that real name and the
+# corrected spelling so neither can ever be committed.
+refernce front end screenshots/
+reference front end screenshots/

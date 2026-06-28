@@ -50,6 +50,7 @@ import { creditReferralOnPayment, getBudgetUsage, getBudgetWindow, planBudget, p
 import { DAY_MS, FIVE_HOUR_MS } from "@workcrew/contracts";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
+import { captureAnonymous, captureEvent, safeErrorCategory } from "./analytics.js";
 import {
   client,
   countReferrals,
@@ -254,7 +255,15 @@ app.post("/v1/auth/sign-up", authLimit(8), async (request) => {
 
 app.post("/v1/auth/sign-in", authLimit(10), async (request) => {
   const body = signInInputSchema.parse(request.body);
-  return { session: await localAuthProvider.signIn(body.email, body.password) };
+  try {
+    const session = await localAuthProvider.signIn(body.email, body.password);
+    captureEvent(session.userId, "login_succeeded", {});
+    return { session };
+  } catch (error) {
+    // No identity yet on a failed login; record only a coarse, safe reason.
+    captureAnonymous("login_failed", { reason: safeErrorCategory(error) });
+    throw error;
+  }
 });
 
 app.post("/v1/auth/refresh", authLimit(30), async (request) => {
@@ -343,7 +352,12 @@ go.onclick=async function(){
 </script>`);
 });
 
-app.get("/v1/entitlement", async (request) => subscriptionState(await authenticate(request)));
+app.get("/v1/entitlement", async (request) => {
+  const userId = await authenticate(request);
+  const state = await subscriptionState(userId);
+  captureEvent(userId, "subscription_status_checked", { plan: state.plan ?? "none", active: state.active });
+  return state;
+});
 
 // A signed-in user's referral standing: their code, a shareable link, how many
 // people they have invited, how many have paid, and the bonus earned so far.
@@ -679,6 +693,9 @@ app.post("/v1/chat", routeLimit(40), async (request, reply) => {
   const subscription = requireActive(await getSubscription(userId));
   const body = chatSendSchema.parse(request.body);
 
+  // Count the turn only; never the message text or attachment contents.
+  captureEvent(userId, "chat_message_sent", { model: body.model, has_attachments: body.attachments.length > 0 });
+
   // Set the SSE headers and take over the raw response. Each frame is written as
   // a single `data: <json>` line followed by a blank line, which is the shared
   // wire contract the desktop is built against.
@@ -781,7 +798,11 @@ const AUTH_FAILURE_CODES = new Set(["AUTH_REQUIRED", "AUTH_INVALID", "INVALID_CR
 app.setErrorHandler((error, request, reply) => {
   const statusCode = error instanceof ZodError ? 400 : Number((error as { statusCode?: number }).statusCode ?? 500);
   const code = error instanceof ZodError ? "INVALID_REQUEST" : String((error as { code?: string }).code ?? "INTERNAL_ERROR");
-  if (statusCode >= 500) request.log.error({ err: error }, "Request failed");
+  if (statusCode >= 500) {
+    request.log.error({ err: error }, "Request failed");
+    // Safe category only; never the error message (it may carry identifiers).
+    captureAnonymous("app_error", { source: "backend", category: safeErrorCategory(error), status: statusCode });
+  }
   else if (statusCode === 429) request.log.warn({ event: "rate_limited", path: request.url, ip: request.ip }, "Rate limit exceeded");
   else if (AUTH_FAILURE_CODES.has(code)) request.log.warn({ event: "auth_failure", code, path: request.url, ip: request.ip }, "Authentication failed");
   else request.log.info({ code, path: request.url }, "Request rejected");
