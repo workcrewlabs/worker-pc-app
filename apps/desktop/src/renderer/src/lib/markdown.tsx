@@ -1,9 +1,67 @@
-import { createElement, type ReactNode } from "react";
+import { createElement, useState, type ReactNode } from "react";
 
 // A small, safe Markdown renderer for assistant messages. It renders to React
 // elements (never raw HTML), so there is no injection risk. It covers what the
 // model commonly produces: headings, bold, italic, inline code, fenced code
 // blocks, bullet and numbered lists, links, and paragraphs with line breaks.
+// A fenced block tagged "file:EXT name=..." is shown as a download card instead
+// of raw code, so the chat can hand the user a real file (the cowork style).
+
+// File formats WorkCrew can package for download (must match the main process
+// exporter). Anything else falls back to a plain code block.
+const FILE_EXTENSIONS = new Set(["xlsx", "docx", "csv", "txt", "md", "json", "html"]);
+
+// A friendly size for the generated content (its byte length), shown on the card.
+function readableSize(text: string): string {
+  const bytes = new TextEncoder().encode(text).length;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// A download card for a file the assistant generated. The button asks the main
+// process to save the file through a native Save dialog; the user picks where.
+function FileBlock({ name, ext, content }: { name: string; ext: string; content: string }): ReactNode {
+  const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  async function onSave(): Promise<void> {
+    if (state === "saving") return;
+    setState("saving");
+    try {
+      const result = await window.workcrew.files.save({ name, ext, content });
+      // A cancelled dialog is not an error: quietly return to the ready state.
+      setState(result.saved ? "saved" : "idle");
+    } catch {
+      setState("error");
+    }
+  }
+
+  const label =
+    state === "saving" ? "Saving..." : state === "saved" ? "Saved" : state === "error" ? "Try again" : "Download";
+  return (
+    <div className="file-card">
+      <div className="file-card-info">
+        <span className="file-card-name" title={name}>{name}</span>
+        <span className="file-card-meta">{ext.toUpperCase()} file, {readableSize(content)}</span>
+      </div>
+      <button type="button" className="file-card-button" onClick={() => void onSave()} disabled={state === "saving"}>
+        {label}
+      </button>
+    </div>
+  );
+}
+
+// Parse a fence info string like `file:xlsx name=2026-budget.xlsx` into its parts,
+// or return null when the block is an ordinary code block.
+function parseFileFence(info: string): { ext: string; name: string } | null {
+  const match = /^file:([a-zA-Z0-9]+)(?:\s+name=(.+))?$/.exec(info.trim());
+  if (!match) return null;
+  const ext = (match[1] ?? "").toLowerCase();
+  if (!FILE_EXTENSIONS.has(ext)) return null;
+  const rawName = (match[2] ?? "").trim().replace(/^["']|["']$/g, "");
+  const name = rawName.length > 0 ? rawName : `workcrew-file.${ext}`;
+  return { ext, name };
+}
 
 const INLINE = /(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(`([^`]+)`)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
 
@@ -42,6 +100,7 @@ export function Markdown({ text }: { text: string }): ReactNode {
     const line = lines[i] ?? "";
 
     if (line.trim().startsWith("```")) {
+      const info = line.trim().slice(3).trim();
       const code: string[] = [];
       i += 1;
       while (i < lines.length && !(lines[i] ?? "").trim().startsWith("```")) {
@@ -49,7 +108,12 @@ export function Markdown({ text }: { text: string }): ReactNode {
         i += 1;
       }
       i += 1;
-      blocks.push(<pre key={`k${key++}`} className="md-pre"><code>{code.join("\n")}</code></pre>);
+      const file = parseFileFence(info);
+      if (file) {
+        blocks.push(<FileBlock key={`k${key++}`} name={file.name} ext={file.ext} content={code.join("\n")} />);
+      } else {
+        blocks.push(<pre key={`k${key++}`} className="md-pre"><code>{code.join("\n")}</code></pre>);
+      }
       continue;
     }
 

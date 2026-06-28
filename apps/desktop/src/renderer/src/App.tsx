@@ -108,6 +108,26 @@ function isQuestionLike(text: string): boolean {
   return /^(how|what|whats|what's|why|when|who|where|which|is |are |do |does |can i|can you|can u|could you|would you|explain|tell me|write|draft|compose|summari|translate|define|describe|give me|list|brainstorm|suggest|recommend|help me|teach me|show me how)\b/.test(t);
 }
 
+// Decide whether the user is asking WorkCrew to MAKE a file and hand it back to
+// download (the Claude cowork style: "make me an excel file", "create a CSV",
+// "give me a Word doc", "build a report"). This is always a chat request: the
+// model generates the file's content and the chat shows a Download button. It
+// must never seize the computer, even while a chat is in automation mode, so a
+// file ask is checked before any automation routing. Asking to control an app
+// ("open Excel and...", "in Excel", "on my computer") is the opposite and is
+// left to the automation engine.
+function looksLikeFileRequest(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (t.length < 5) return false;
+  // Controlling an app or the machine is automation, not a file hand-off.
+  if (/\b(open|launch|in|inside|using|control|automate)\s+(my\s+|the\s+)?(excel|word|powerpoint|sheets?|docs?)\b/.test(t)) return false;
+  if (/\b(in (my|the) browser|on (my|the) (computer|pc|laptop|desktop|machine|screen))\b/.test(t)) return false;
+  // A "produce and give me" verb paired with a file or document noun.
+  const wants = /\b(make|create|build|generate|produce|prepare|put together|export|draft|write|give me|send me|i (?:need|want)|can you (?:make|create|build|generate|write|prepare))\b/;
+  const fileNoun = /\b(excel|spreadsheet|spread sheet|workbook|csv|xlsx|word (?:doc\w*|file)|docx|document|report|text file|\.txt|markdown|\.md|json file|html file|table|file)\b/;
+  return wants.test(t) && fileNoun.test(t);
+}
+
 function errorMessage(error: unknown): string {
   let message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   message = message
@@ -602,7 +622,12 @@ function Workspace({ info, entitlement, onRefreshEntitlement, onSignOut, onUpgra
   }
 
   function send(text: string, attachments: AttachmentRef[], localPaths: string[] = []) {
-    if (!runner.running) {
+    // A request to be handed a file ("make me an excel file", "give me a CSV")
+    // is always a chat request: WorkCrew generates the file and shows a Download
+    // button. It must never seize the computer, so it is checked first and wins
+    // over automation, even while this chat is in automation mode.
+    const fileRequest = looksLikeFileRequest(text);
+    if (!runner.running && !fileRequest) {
       // Files attached with a request to act on them (for example "crop this
       // image" or "clean up this spreadsheet") run as an automation that works on
       // the real files on the computer, by passing their local paths to the model

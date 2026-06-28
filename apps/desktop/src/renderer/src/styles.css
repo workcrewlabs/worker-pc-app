@@ -260,6 +260,14 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .md .md-pre { margin: 2px 0; padding: 12px 14px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); overflow-x: auto; }
 .md .md-pre code { font: 0.86em/1.5 Consolas, monospace; color: var(--text); white-space: pre; }
 .md a { color: var(--accent-soft); text-decoration: underline; }
+/* Download card for a file the assistant generated (the cowork artifact). */
+.md .file-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 8px 0; padding: 12px 14px; border-radius: 12px; background: var(--panel-2); border: 1px solid var(--line); }
+.md .file-card-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.md .file-card-name { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md .file-card-meta { font-size: 0.82em; color: var(--muted); }
+.md .file-card-button { flex: none; padding: 7px 16px; border-radius: 8px; border: 1px solid transparent; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
+.md .file-card-button:hover { filter: brightness(1.05); }
+.md .file-card-button:disabled { opacity: 0.6; cursor: default; }
 /* Routines: the schedule picker row (cadence, day, time). */
 .routine-schedule { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 /* Size each dropdown to its contents so the cadence and the hour : minute sit on

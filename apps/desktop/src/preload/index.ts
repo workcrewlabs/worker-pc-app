@@ -149,7 +149,12 @@ const workcrew = {
     // Resolve the absolute path of a file dropped onto the window, so it can be
     // uploaded through the same path-based pipeline as the file picker. Guarded
     // so an unavailable webUtils never breaks the bridge; the caller falls back.
-    pathForFile: (file: File): string => (webUtils ? webUtils.getPathForFile(file) : "")
+    pathForFile: (file: File): string => (webUtils ? webUtils.getPathForFile(file) : ""),
+    // Save a file WorkCrew generated (a spreadsheet, document, or text file the
+    // chat produced) to disk. The main process shows a native Save dialog, so
+    // the user always picks the location and confirms before anything is written.
+    save: (payload: { name: string; ext: string; content: string }): Promise<{ saved: boolean; path?: string; canceled?: boolean }> =>
+      ipcRenderer.invoke("files:save", payload)
   },
   attachments: {
     // Upload picked files and return a reference for each successfully stored

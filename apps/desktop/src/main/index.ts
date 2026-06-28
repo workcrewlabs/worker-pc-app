@@ -24,6 +24,7 @@ import { transcribeSamples } from "./transcription.js";
 import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
 import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
 import { extractOfficeText } from "./office.js";
+import { EXPORT_EXTENSIONS, generateExport, sanitizeExportName, type ExportExtension } from "./file-export.js";
 import { runShellCommand } from "./shell-cli.js";
 import { WindowsAgent } from "./windows-agent.js";
 
@@ -182,6 +183,16 @@ function guessMimeType(filename: string): string {
 // Word/Excel/PowerPoint files are read locally and only their extracted text is
 // uploaded, so the binary never leaves the machine (like Claude Code's skills).
 const OFFICE_EXTENSIONS = new Set(["docx", "xlsx", "pptx"]);
+
+// A file the chat asked WorkCrew to generate for download. The extension is
+// constrained to the formats the exporter understands, and the content is bounded
+// so a runaway payload cannot exhaust memory. The renderer never names a path;
+// the user picks it in the Save dialog.
+const saveFileSchema = z.object({
+  name: z.string().min(1).max(200),
+  ext: z.enum(EXPORT_EXTENSIONS),
+  content: z.string().max(2_000_000)
+}).strict();
 
 function createWindow(): void {
   console.info("[WorkCrew] creating main window");
@@ -374,6 +385,27 @@ function registerIpc(): void {
       const stat = await fs.stat(filePath).catch(() => null);
       return { path: filePath, name: filePath.split(/[\\/]/).pop() ?? filePath, size: stat?.size ?? 0 };
     }));
+  });
+
+  // Save a file the chat generated (a spreadsheet, document, or text file) to
+  // disk. This is a plain "Save As": the user always confirms the location in the
+  // native dialog, the format is allow-listed, and the bytes are the model's own
+  // chat output. It is not part of the automation surface and runs no code; it
+  // only writes the file the user explicitly asked WorkCrew to make.
+  ipcMain.handle("files:save", async (_event, raw) => {
+    if (!mainWindow) return { canceled: true };
+    const { name, ext, content } = saveFileSchema.parse(raw);
+    const safeName = sanitizeExportName(name, ext as ExportExtension);
+    const buffer = await generateExport(ext as ExportExtension, content);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "Save file",
+      defaultPath: join(app.getPath("downloads"), safeName),
+      filters: [{ name: ext.toUpperCase(), extensions: [ext] }, { name: "All files", extensions: ["*"] }]
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    const fs = await import("node:fs/promises");
+    await fs.writeFile(result.filePath, buffer);
+    return { saved: true, path: result.filePath };
   });
 
   // Read each picked file from disk, guard its size, and post its bytes to the
