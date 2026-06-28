@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SUPPORT_EMAIL } from "@workcrew/contracts";
 import { PanelShell } from "./PanelShell";
 
@@ -39,11 +39,19 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
   const [billingError, setBillingError] = useState("");
   const [optOut, setOptOut] = useState(false);
   const [analyticsNotice, setAnalyticsNotice] = useState("");
+  // Once the user changes the toggle, ignore a late-arriving initial read so it
+  // cannot overwrite the newer choice with the stale stored value.
+  const optOutTouchedRef = useRef(false);
 
   useEffect(() => window.workcrew.updates.onStatus((status) => setUpdate(status)), []);
-  useEffect(() => { void window.workcrew.settings.getAnalyticsOptOut().then(setOptOut).catch(() => {}); }, []);
+  useEffect(() => {
+    void window.workcrew.settings.getAnalyticsOptOut()
+      .then((value) => { if (!optOutTouchedRef.current) setOptOut(value); })
+      .catch(() => {});
+  }, []);
 
   async function toggleAnalytics(share: boolean) {
+    optOutTouchedRef.current = true;
     const previous = optOut;
     setOptOut(!share);
     setAnalyticsNotice("");
@@ -120,7 +128,7 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
           </span>
           <span className="always-toggle-label">Share anonymous usage analytics</span>
         </label>
-        {analyticsNotice && <p className="notice">{analyticsNotice}</p>}
+        {analyticsNotice && <p className="notice" role="alert">{analyticsNotice}</p>}
       </div>
 
       <div className="save-form update-section">
