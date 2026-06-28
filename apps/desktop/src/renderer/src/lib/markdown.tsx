@@ -51,16 +51,45 @@ function FileBlock({ name, ext, content }: { name: string; ext: string; content:
   );
 }
 
-// Parse a fence info string like `file:xlsx name=2026-budget.xlsx` into its parts,
-// or return null when the block is an ordinary code block.
-function parseFileFence(info: string): { ext: string; name: string } | null {
-  const match = /^file:([a-zA-Z0-9]+)(?:\s+name=(.+))?$/.exec(info.trim());
-  if (!match) return null;
-  const ext = (match[1] ?? "").toLowerCase();
-  if (!FILE_EXTENSIONS.has(ext)) return null;
-  const rawName = (match[2] ?? "").trim().replace(/^["']|["']$/g, "");
-  const name = rawName.length > 0 ? rawName : `workcrew-file.${ext}`;
-  return { ext, name };
+// Plain fence languages we can hand back as a real file, mapped to the download
+// extension. So a model that writes ```csv (instead of the explicit file: form)
+// still gets a Download card. Kept to clearly file-like formats so ordinary code
+// blocks (python, bash, ...) stay as code.
+const FENCE_LANG_TO_EXT: Record<string, string> = {
+  csv: "csv", json: "json", html: "html", htm: "html", md: "md", markdown: "md"
+};
+
+// An untagged fenced block that is unmistakably comma-separated rows: at least
+// two non-empty lines that all carry the same number of commas (>= 1), and no
+// very long prose-like line. Catches a model that dumps a CSV without tagging it.
+function looksLikeCsv(content: string): boolean {
+  const lines = content.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  if (lines.length < 2) return false;
+  const commas = lines.map((line) => (line.match(/,/g) ?? []).length);
+  if ((commas[0] ?? 0) < 1) return false;
+  if (!commas.every((count) => count === commas[0])) return false;
+  if (lines.some((line) => line.length > 240)) return false;
+  return true;
+}
+
+// Decide whether a fenced block should render as a downloadable file card.
+// Three ways in: the explicit `file:EXT name=...` form (best, carries a real
+// filename and can target xlsx/docx), a plain file-format language (```csv), or
+// an untagged block whose content is clearly CSV. Returns null for ordinary code.
+function parseFileFence(info: string, content: string): { ext: string; name: string } | null {
+  const trimmed = info.trim();
+  const explicit = /^file:([a-zA-Z0-9]+)(?:\s+name=(.+))?$/.exec(trimmed);
+  if (explicit) {
+    const ext = (explicit[1] ?? "").toLowerCase();
+    if (!FILE_EXTENSIONS.has(ext)) return null;
+    const rawName = (explicit[2] ?? "").trim().replace(/^["']|["']$/g, "");
+    return { ext, name: rawName.length > 0 ? rawName : `workcrew-file.${ext}` };
+  }
+  const lang = trimmed.split(/\s+/)[0]?.toLowerCase() ?? "";
+  const mapped = FENCE_LANG_TO_EXT[lang];
+  if (mapped) return { ext: mapped, name: `workcrew-export.${mapped}` };
+  if (trimmed.length === 0 && looksLikeCsv(content)) return { ext: "csv", name: "workcrew-export.csv" };
+  return null;
 }
 
 const INLINE = /(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(`([^`]+)`)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
@@ -108,7 +137,7 @@ export function Markdown({ text }: { text: string }): ReactNode {
         i += 1;
       }
       i += 1;
-      const file = parseFileFence(info);
+      const file = parseFileFence(info, code.join("\n"));
       if (file) {
         blocks.push(<FileBlock key={`k${key++}`} name={file.name} ext={file.ext} content={code.join("\n")} />);
       } else {
