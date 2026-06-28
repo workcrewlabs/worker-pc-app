@@ -7,20 +7,38 @@ import JSZip from "jszip";
 // are just ZIP archives of XML, so xlsx and docx are built here with JSZip (no
 // new dependency) rather than driving Excel or Word on the user's machine.
 
-// The file types WorkCrew can hand back. Everything else is rejected so the save
-// path can never be coerced into writing an unexpected format. xlsx/docx are
-// generated from text; the rest are written as-is with the right extension.
-export const EXPORT_EXTENSIONS = ["xlsx", "docx", "csv", "txt", "md", "json", "html"] as const;
-export type ExportExtension = (typeof EXPORT_EXTENSIONS)[number];
+// The downloadable formats and the save contract live in one shared module so
+// the exporter, the IPC bridge, and the renderer cannot drift. Re-exported here
+// so existing imports from this module keep working. xlsx/docx are generated from
+// text; the rest are written as-is with the right extension.
+export { EXPORT_EXTENSIONS, isExportExtension, type ExportExtension } from "../shared/export-formats.js";
+import type { ExportExtension } from "../shared/export-formats.js";
 
-export function isExportExtension(value: string): value is ExportExtension {
-  return (EXPORT_EXTENSIONS as readonly string[]).includes(value);
+// Drop characters XML 1.0 forbids (most control codes, lone surrogates). Without
+// this, a copied log line or binary fragment in a cell or paragraph would produce
+// a malformed part that Excel or Word refuses to open. Tab, newline, and carriage
+// return are kept because they are the only legal control characters.
+function stripInvalidXmlChars(text: string): string {
+  return Array.from(text)
+    .filter((char) => {
+      const code = char.codePointAt(0) ?? 0;
+      return (
+        code === 0x9 ||
+        code === 0xa ||
+        code === 0xd ||
+        (code >= 0x20 && code <= 0xd7ff) ||
+        (code >= 0xe000 && code <= 0xfffd) ||
+        (code >= 0x10000 && code <= 0x10ffff)
+      );
+    })
+    .join("");
 }
 
 // Escape the five XML-significant characters so arbitrary cell or paragraph text
-// can never break out of the document and inject markup.
+// can never break out of the document and inject markup, after dropping any
+// characters XML does not permit at all.
 function escapeXml(text: string): string {
-  return text
+  return stripInvalidXmlChars(text)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -237,6 +255,9 @@ export function sanitizeExportName(name: string, ext: ExportExtension): string {
   // Drop a trailing extension (any) so we can append the canonical one.
   const withoutExt = base.replace(/\.[A-Za-z0-9]{1,8}$/, "");
   const cleaned = withoutExt.replace(/[^A-Za-z0-9 _.-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
-  const safe = cleaned.length > 0 ? cleaned : "workcrew-file";
+  const candidate = cleaned.length > 0 ? cleaned : "workcrew-file";
+  // Windows reserved device names (CON, PRN, NUL, COM1-9, LPT1-9) are not valid
+  // file basenames; prefix them so the Save dialog defaults to a writable name.
+  const safe = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(candidate) ? `workcrew-file-${candidate}` : candidate;
   return `${safe}.${ext}`;
 }

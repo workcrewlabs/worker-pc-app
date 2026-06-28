@@ -15,6 +15,7 @@ import type {
 } from "@workcrew/contracts";
 
 import type { UpdateStatus } from "../main/updater";
+import type { SaveFileRequest, SaveFileResult } from "../shared/export-formats";
 
 // A file the user picked locally, before it is uploaded.
 type PickedFile = { path: string; name: string; size: number };
@@ -153,7 +154,9 @@ const workcrew = {
     // Save a file WorkCrew generated (a spreadsheet, document, or text file the
     // chat produced) to disk. The main process shows a native Save dialog, so
     // the user always picks the location and confirms before anything is written.
-    save: (payload: { name: string; ext: string; content: string }): Promise<{ saved: boolean; path?: string; canceled?: boolean }> =>
+    // The contract matches the files:save handler exactly: the format is from the
+    // export allowlist, and the result is a save-with-path or a cancellation.
+    save: (payload: SaveFileRequest): Promise<SaveFileResult> =>
       ipcRenderer.invoke("files:save", payload)
   },
   attachments: {

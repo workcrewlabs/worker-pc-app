@@ -1,4 +1,5 @@
 import { createElement, useState, type ReactNode } from "react";
+import { isExportExtension, type ExportExtension } from "../../../shared/export-formats";
 
 // A small, safe Markdown renderer for assistant messages. It renders to React
 // elements (never raw HTML), so there is no injection risk. It covers what the
@@ -6,10 +7,6 @@ import { createElement, useState, type ReactNode } from "react";
 // blocks, bullet and numbered lists, links, and paragraphs with line breaks.
 // A fenced block tagged "file:EXT name=..." is shown as a download card instead
 // of raw code, so the chat can hand the user a real file (the cowork style).
-
-// File formats WorkCrew can package for download (must match the main process
-// exporter). Anything else falls back to a plain code block.
-const FILE_EXTENSIONS = new Set(["xlsx", "docx", "csv", "txt", "md", "json", "html"]);
 
 // A friendly size for the generated content (its byte length), shown on the card.
 function readableSize(text: string): string {
@@ -21,7 +18,7 @@ function readableSize(text: string): string {
 
 // A download card for a file the assistant generated. The button asks the main
 // process to save the file through a native Save dialog; the user picks where.
-function FileBlock({ name, ext, content }: { name: string; ext: string; content: string }): ReactNode {
+function FileBlock({ name, ext, content }: { name: string; ext: ExportExtension; content: string }): ReactNode {
   const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
   async function onSave(): Promise<void> {
@@ -30,7 +27,7 @@ function FileBlock({ name, ext, content }: { name: string; ext: string; content:
     try {
       const result = await window.workcrew.files.save({ name, ext, content });
       // A cancelled dialog is not an error: quietly return to the ready state.
-      setState(result.saved ? "saved" : "idle");
+      setState("saved" in result ? "saved" : "idle");
     } catch {
       setState("error");
     }
@@ -55,7 +52,7 @@ function FileBlock({ name, ext, content }: { name: string; ext: string; content:
 // extension. So a model that writes ```csv (instead of the explicit file: form)
 // still gets a Download card. Kept to clearly file-like formats so ordinary code
 // blocks (python, bash, ...) stay as code.
-const FENCE_LANG_TO_EXT: Record<string, string> = {
+const FENCE_LANG_TO_EXT: Record<string, ExportExtension> = {
   csv: "csv", json: "json", html: "html", htm: "html", md: "md", markdown: "md"
 };
 
@@ -76,12 +73,12 @@ function looksLikeCsv(content: string): boolean {
 // Three ways in: the explicit `file:EXT name=...` form (best, carries a real
 // filename and can target xlsx/docx), a plain file-format language (```csv), or
 // an untagged block whose content is clearly CSV. Returns null for ordinary code.
-function parseFileFence(info: string, content: string): { ext: string; name: string } | null {
+function parseFileFence(info: string, content: string): { ext: ExportExtension; name: string } | null {
   const trimmed = info.trim();
   const explicit = /^file:([a-zA-Z0-9]+)(?:\s+name=(.+))?$/.exec(trimmed);
   if (explicit) {
     const ext = (explicit[1] ?? "").toLowerCase();
-    if (!FILE_EXTENSIONS.has(ext)) return null;
+    if (!isExportExtension(ext)) return null;
     const rawName = (explicit[2] ?? "").trim().replace(/^["']|["']$/g, "");
     return { ext, name: rawName.length > 0 ? rawName : `workcrew-file.${ext}` };
   }

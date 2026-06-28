@@ -124,7 +124,10 @@ function looksLikeFileRequest(text: string): boolean {
   if (/\b(in (my|the) browser|on (my|the) (computer|pc|laptop|desktop|machine|screen))\b/.test(t)) return false;
   // A "produce and give me" verb paired with a file or document noun.
   const wants = /\b(make|create|build|generate|produce|prepare|put together|export|draft|write|give me|send me|i (?:need|want)|can you (?:make|create|build|generate|write|prepare))\b/;
-  const fileNoun = /\b(excel|spreadsheet|spread sheet|workbook|csv|xlsx|word (?:doc\w*|file)|docx|document|report|text file|\.txt|markdown|\.md|json file|html file|table|file)\b/;
+  // Specific document nouns only. Bare "file" and "table" are deliberately left
+  // out: paired with "i need"/"rename"/"sort" they would steal real automation
+  // requests like "rename this file" or "sort this table" into the chat path.
+  const fileNoun = /\b(excel|spreadsheet|spread sheet|workbook|csv|xlsx|word (?:doc\w*|file)|docx|document|report|text file|\.txt|markdown|\.md|json file|html file)\b/;
   return wants.test(t) && fileNoun.test(t);
 }
 
