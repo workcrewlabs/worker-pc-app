@@ -154,6 +154,7 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       referred_by_code TEXT,
       referred_credited INTEGER NOT NULL DEFAULT 0,
       referral_bonus_microdollars BIGINT NOT NULL DEFAULT 0,
+      name TEXT,
       created_at_ms BIGINT NOT NULL
     )`,
     // A login session. Refresh tokens hang off a session so that a single reuse
@@ -256,6 +257,7 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   await addColumnIfMissing(db, "users", "referred_by_code", "TEXT");
   await addColumnIfMissing(db, "users", "referred_credited", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "users", "referral_bonus_microdollars", "BIGINT NOT NULL DEFAULT 0");
+  await addColumnIfMissing(db, "users", "name", "TEXT");
   // Token top-up and auto-reload columns on existing subscription rows.
   await addColumnIfMissing(db, "subscriptions", "auto_reload_enabled", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "subscriptions", "auto_reload_pack", "TEXT NOT NULL DEFAULT 'small'");
@@ -527,6 +529,8 @@ export type UserRow = {
   referredCredited: boolean;
   /** Bonus this user has earned as a referrer, added to their monthly budget. */
   referralBonusMicrodollars: number;
+  /** Display name, collected at sign-up or set later in account settings. */
+  name: string | null;
   createdAtMs: number;
 };
 
@@ -559,6 +563,7 @@ function mapUser(row: Record<string, unknown>): UserRow {
     referredByCode: row.referred_by_code == null ? null : String(row.referred_by_code),
     referredCredited: asNumber(row.referred_credited) === 1,
     referralBonusMicrodollars: asNumber(row.referral_bonus_microdollars),
+    name: row.name == null ? null : String(row.name),
     createdAtMs: asNumber(row.created_at_ms)
   };
 }
@@ -596,15 +601,17 @@ export async function createUser(input: {
   passwordHash: string;
   passwordSalt: string;
   emailVerified?: boolean;
+  /** Optional display name collected at sign-up. */
+  name?: string | null;
   /** The referral code that brought this user in (already validated by caller). */
   referredByCode?: string | null;
 }): Promise<void> {
   await client.execute({
     sql: `INSERT INTO users(
         id, email, email_verified, password_hash, password_salt,
-        referral_code, referred_by_code, referred_credited, referral_bonus_microdollars, created_at_ms
+        referral_code, referred_by_code, referred_credited, referral_bonus_microdollars, name, created_at_ms
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
     args: [
       input.id,
       input.email,
@@ -613,8 +620,17 @@ export async function createUser(input: {
       input.passwordSalt,
       newReferralCode(),
       input.referredByCode ?? null,
+      input.name ?? null,
       Date.now()
     ]
+  });
+}
+
+/** Set or clear a user's display name (sign-up or later in account settings). */
+export async function setUserName(userId: string, name: string | null): Promise<void> {
+  await client.execute({
+    sql: "UPDATE users SET name = ? WHERE id = ?",
+    args: [name, userId]
   });
 }
 
