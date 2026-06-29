@@ -361,8 +361,16 @@ function registerIpc(): void {
     return auth.getSession();
   });
   ipcMain.handle("auth:sign-up", async (_event, raw) => {
-    const value = credentialsSchema.extend({ referralCode: z.string().max(40).optional() }).parse(raw);
-    return auth.signUp(value.email, value.password, value.referralCode);
+    const value = credentialsSchema.extend({ name: z.string().max(120).optional(), referralCode: z.string().max(40).optional() }).parse(raw);
+    return auth.signUp(value.email, value.password, value.name, value.referralCode);
+  });
+  // Set the signed-in user's display name via the authenticated API, then mirror
+  // it onto the stored session so the account area updates without a re-login.
+  ipcMain.handle("auth:set-name", async (_event, raw) => {
+    const { name } = z.object({ name: z.string().max(120) }).strict().parse(raw);
+    const result = await api.request("/v1/profile", { method: "POST", body: { name } }) as { name: string | null };
+    await auth.updateStoredName(result.name);
+    return result;
   });
   ipcMain.handle("auth:reset", async (_event, email) => auth.sendPasswordReset(z.string().email().max(320).parse(email)));
   ipcMain.handle("auth:sign-out", async () => auth.signOut());

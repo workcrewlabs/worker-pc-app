@@ -30,6 +30,13 @@ export type SubscriptionRow = {
   autoReloadPack: string;
   monthlyTopupLimitMicro: number;
   stripePaymentMethodId: string | null;
+  /** A scheduled downgrade that has not taken effect yet: the lower plan/interval
+   * the subscription moves to at the end of the current paid period, and when (ms).
+   * Null when nothing is scheduled. Set by changePlan, cleared on upgrade or once
+   * the schedule advances. Like auto-reload, the webhook upsert never writes these. */
+  pendingPlan: PlanId | null;
+  pendingInterval: BillingInterval | null;
+  pendingEffectiveMs: number | null;
   /** Referral bonus earned by this user (added to their monthly budget). Joined
    * from the users table on read; optional because it is not part of the
    * writable subscription row (upsert ignores it). */
@@ -96,6 +103,9 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       auto_reload_pack TEXT NOT NULL DEFAULT 'small',
       monthly_topup_limit_micro BIGINT NOT NULL DEFAULT 0,
       stripe_payment_method_id TEXT,
+      pending_plan TEXT CHECK (pending_plan IN ('pro', 'ultra')),
+      pending_interval TEXT CHECK (pending_interval IN ('month', 'year')),
+      pending_effective_ms BIGINT,
       updated_at_ms BIGINT NOT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS usage_ledger (
@@ -154,6 +164,7 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       referred_by_code TEXT,
       referred_credited INTEGER NOT NULL DEFAULT 0,
       referral_bonus_microdollars BIGINT NOT NULL DEFAULT 0,
+      name TEXT,
       created_at_ms BIGINT NOT NULL
     )`,
     // A login session. Refresh tokens hang off a session so that a single reuse
@@ -256,11 +267,16 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   await addColumnIfMissing(db, "users", "referred_by_code", "TEXT");
   await addColumnIfMissing(db, "users", "referred_credited", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "users", "referral_bonus_microdollars", "BIGINT NOT NULL DEFAULT 0");
+  await addColumnIfMissing(db, "users", "name", "TEXT");
   // Token top-up and auto-reload columns on existing subscription rows.
   await addColumnIfMissing(db, "subscriptions", "auto_reload_enabled", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "subscriptions", "auto_reload_pack", "TEXT NOT NULL DEFAULT 'small'");
   await addColumnIfMissing(db, "subscriptions", "monthly_topup_limit_micro", "BIGINT NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "subscriptions", "stripe_payment_method_id", "TEXT");
+  // A scheduled (not-yet-effective) downgrade on existing subscription rows.
+  await addColumnIfMissing(db, "subscriptions", "pending_plan", "TEXT CHECK (pending_plan IN ('pro', 'ultra'))");
+  await addColumnIfMissing(db, "subscriptions", "pending_interval", "TEXT CHECK (pending_interval IN ('month', 'year'))");
+  await addColumnIfMissing(db, "subscriptions", "pending_effective_ms", "BIGINT");
   // Per-credit dedupe key on existing ledgers, so Stripe top-up fulfilment and
   // auto-reload can be made idempotent at the credit write itself.
   await addColumnIfMissing(db, "usage_ledger", "dedupe_id", "TEXT");
@@ -322,6 +338,9 @@ function mapSubscription(row: Record<string, unknown>): SubscriptionRow {
     autoReloadPack: row.auto_reload_pack ? String(row.auto_reload_pack) : "small",
     monthlyTopupLimitMicro: asNumber(row.monthly_topup_limit_micro),
     stripePaymentMethodId: row.stripe_payment_method_id ? String(row.stripe_payment_method_id) : null,
+    pendingPlan: row.pending_plan ? (String(row.pending_plan) as PlanId) : null,
+    pendingInterval: row.pending_interval ? (String(row.pending_interval) as BillingInterval) : null,
+    pendingEffectiveMs: row.pending_effective_ms == null ? null : asNumber(row.pending_effective_ms),
     referralBonusMicrodollars: asNumber(row.referral_bonus_microdollars)
   };
 }
@@ -354,7 +373,8 @@ export async function getSubscriptionByStripeId(subscriptionId: string): Promise
 // configuration. Those columns are managed by setAutoReloadConfig/setPaymentMethod.
 type SubscriptionUpsert = Omit<
   SubscriptionRow,
-  "autoReloadEnabled" | "autoReloadPack" | "monthlyTopupLimitMicro" | "stripePaymentMethodId" | "referralBonusMicrodollars"
+  "autoReloadEnabled" | "autoReloadPack" | "monthlyTopupLimitMicro" | "stripePaymentMethodId"
+    | "pendingPlan" | "pendingInterval" | "pendingEffectiveMs" | "referralBonusMicrodollars"
 >;
 
 export async function upsertSubscription(input: SubscriptionUpsert): Promise<void> {
@@ -385,6 +405,34 @@ export async function upsertSubscription(input: SubscriptionUpsert): Promise<voi
       input.currentPeriodEndMs,
       Date.now()
     ]
+  });
+}
+
+// Record a scheduled downgrade that takes effect at the end of the current paid
+// period. The current (higher) plan and limit are untouched; only this marker is
+// set, so the UI can show "switches to <plan> on <date>" while access stays high.
+export async function setPendingDowngrade(
+  userId: string,
+  plan: PlanId,
+  interval: BillingInterval,
+  effectiveMs: number
+): Promise<void> {
+  await client.execute({
+    sql: `UPDATE subscriptions
+      SET pending_plan = ?, pending_interval = ?, pending_effective_ms = ?, updated_at_ms = ?
+      WHERE user_id = ?`,
+    args: [plan, interval, effectiveMs, Date.now(), userId]
+  });
+}
+
+// Clear any scheduled downgrade, used when it is canceled (the user re-selects or
+// upgrades) or once it has taken effect and the live plan already reflects it.
+export async function clearPendingDowngrade(userId: string): Promise<void> {
+  await client.execute({
+    sql: `UPDATE subscriptions
+      SET pending_plan = NULL, pending_interval = NULL, pending_effective_ms = NULL, updated_at_ms = ?
+      WHERE user_id = ?`,
+    args: [Date.now(), userId]
   });
 }
 
@@ -527,6 +575,8 @@ export type UserRow = {
   referredCredited: boolean;
   /** Bonus this user has earned as a referrer, added to their monthly budget. */
   referralBonusMicrodollars: number;
+  /** Display name, collected at sign-up or set later in account settings. */
+  name: string | null;
   createdAtMs: number;
 };
 
@@ -559,6 +609,7 @@ function mapUser(row: Record<string, unknown>): UserRow {
     referredByCode: row.referred_by_code == null ? null : String(row.referred_by_code),
     referredCredited: asNumber(row.referred_credited) === 1,
     referralBonusMicrodollars: asNumber(row.referral_bonus_microdollars),
+    name: row.name == null ? null : String(row.name),
     createdAtMs: asNumber(row.created_at_ms)
   };
 }
@@ -596,15 +647,17 @@ export async function createUser(input: {
   passwordHash: string;
   passwordSalt: string;
   emailVerified?: boolean;
+  /** Optional display name collected at sign-up. */
+  name?: string | null;
   /** The referral code that brought this user in (already validated by caller). */
   referredByCode?: string | null;
 }): Promise<void> {
   await client.execute({
     sql: `INSERT INTO users(
         id, email, email_verified, password_hash, password_salt,
-        referral_code, referred_by_code, referred_credited, referral_bonus_microdollars, created_at_ms
+        referral_code, referred_by_code, referred_credited, referral_bonus_microdollars, name, created_at_ms
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
     args: [
       input.id,
       input.email,
@@ -613,8 +666,17 @@ export async function createUser(input: {
       input.passwordSalt,
       newReferralCode(),
       input.referredByCode ?? null,
+      input.name ?? null,
       Date.now()
     ]
+  });
+}
+
+/** Set or clear a user's display name (sign-up or later in account settings). */
+export async function setUserName(userId: string, name: string | null): Promise<void> {
+  await client.execute({
+    sql: "UPDATE users SET name = ? WHERE id = ?",
+    args: [name, userId]
   });
 }
 

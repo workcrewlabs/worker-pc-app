@@ -12,6 +12,8 @@ function formatDate(value: string | null): string {
 export function AccountDialog({
   entitlement,
   usedMicrodollars,
+  userName,
+  onSaveName,
   onClose,
   onSignOut,
   onAdjustPlan,
@@ -19,6 +21,8 @@ export function AccountDialog({
 }: {
   entitlement: SubscriptionState;
   usedMicrodollars: number;
+  userName: string | null;
+  onSaveName: (name: string) => Promise<void>;
   onClose: () => void;
   onSignOut: () => Promise<void>;
   onAdjustPlan: (plan: PlanId, interval: BillingInterval) => Promise<void>;
@@ -28,6 +32,9 @@ export function AccountDialog({
   const [busy, setBusy] = useState<"adjust" | "signout" | "delete" | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState("");
+  const [nameDraft, setNameDraft] = useState(userName ?? "");
+  const [savingName, setSavingName] = useState(false);
+  const [nameSaved, setNameSaved] = useState(false);
   // Adjust plan is an in-place upgrade or downgrade only; cancellation lives in
   // Settings under Help, not on this screen.
   const [adjusting, setAdjusting] = useState(false);
@@ -42,11 +49,34 @@ export function AccountDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // Keep the editable name field in sync with the canonical saved value, so after
+  // a save (which trims) or any backend normalization the input reflects what was
+  // actually stored rather than stale draft text.
+  useEffect(() => {
+    setNameDraft(userName ?? "");
+  }, [userName]);
+
   const planName = entitlement.plan ? PLAN_CATALOG[entitlement.plan].name : "No active plan";
   const budget = entitlement.budgetMicrodollars;
   const used = Math.min(usedMicrodollars, budget);
   const remaining = Math.max(0, budget - used);
   const percent = budget > 0 ? Math.min(100, (used / budget) * 100) : 0;
+
+  async function saveName() {
+    const normalized = nameDraft.trim();
+    setSavingName(true);
+    setError("");
+    setNameSaved(false);
+    try {
+      await onSaveName(normalized);
+      setNameDraft(normalized);
+      setNameSaved(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save your name.");
+    } finally {
+      setSavingName(false);
+    }
+  }
 
   async function switchPlan(plan: PlanId) {
     setBusy("adjust");
@@ -56,6 +86,21 @@ export function AccountDialog({
       setAdjusting(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not change the plan.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Cancel a scheduled downgrade by re-selecting the current plan and interval,
+  // which releases the Stripe schedule so renewals continue on the current plan.
+  async function cancelDowngrade() {
+    if (!entitlement.plan || !entitlement.interval) return;
+    setBusy("adjust");
+    setError("");
+    try {
+      await onAdjustPlan(entitlement.plan, entitlement.interval);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not cancel the scheduled change.");
     } finally {
       setBusy(null);
     }
@@ -99,6 +144,28 @@ export function AccountDialog({
           <button ref={closeRef} className="panel-close" onClick={onClose} aria-label="Close account">Close</button>
         </div>
 
+        <div className="account-name">
+          <label className="field-label" htmlFor="account-name-input">Your name</label>
+          <div className="account-name-row">
+            <input
+              id="account-name-input"
+              type="text"
+              value={nameDraft}
+              maxLength={120}
+              placeholder="What should we call you?"
+              onChange={(event) => { setNameDraft(event.target.value); setNameSaved(false); }}
+            />
+            <button
+              type="button"
+              className="secondary"
+              onClick={saveName}
+              disabled={savingName || nameDraft.trim() === (userName ?? "").trim()}
+            >
+              {savingName ? "Saving..." : nameSaved ? "Saved" : "Save"}
+            </button>
+          </div>
+        </div>
+
         <div className="account-plan">
           <div>
             <span className="field-label">Current plan</span>
@@ -119,6 +186,20 @@ export function AccountDialog({
           </div>
         </div>
 
+        {entitlement.pendingPlan && entitlement.plan && entitlement.pendingEffective && (
+          <div className="account-pending" role="status">
+            <strong>Scheduled plan change</strong>
+            <p>
+              You will switch to {PLAN_CATALOG[entitlement.pendingPlan].name} on {formatDate(entitlement.pendingEffective)}.
+              You keep your current {PLAN_CATALOG[entitlement.plan].name} limit of {formatTokens(budget)} tokens until then,
+              after which it becomes the {PLAN_CATALOG[entitlement.pendingPlan].name} limit. Nothing changes before that date.
+            </p>
+            <button type="button" className="secondary" onClick={cancelDowngrade} disabled={busy !== null}>
+              {busy === "adjust" ? "Updating..." : `Keep ${PLAN_CATALOG[entitlement.plan].name}`}
+            </button>
+          </div>
+        )}
+
         {error && <p className="error-banner inline">{error}</p>}
 
         {adjusting ? (
@@ -131,6 +212,7 @@ export function AccountDialog({
               const catalog = PLAN_CATALOG[plan];
               const price = interval === "year" ? catalog.yearlyPriceUsd : catalog.monthlyPriceUsd;
               const isCurrent = entitlement.plan === plan && entitlement.interval === interval;
+              const isPending = entitlement.pendingPlan === plan && entitlement.pendingInterval === interval;
               return (
                 <div key={plan} className="plan-option">
                   <div className="plan-option-info">
@@ -139,11 +221,11 @@ export function AccountDialog({
                   </div>
                   <button
                     type="button"
-                    className={isCurrent ? "secondary" : "primary"}
+                    className={isCurrent || isPending ? "secondary" : "primary"}
                     onClick={() => switchPlan(plan)}
-                    disabled={isCurrent || busy !== null}
+                    disabled={isCurrent || isPending || busy !== null}
                   >
-                    {isCurrent ? "Current" : busy === "adjust" ? "Switching..." : "Switch"}
+                    {isCurrent ? "Current" : isPending ? "Scheduled" : busy === "adjust" ? "Switching..." : "Switch"}
                   </button>
                 </div>
               );

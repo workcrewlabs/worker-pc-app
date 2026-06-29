@@ -65,6 +65,7 @@ import {
   getUserById,
   initializeDatabase,
   listConversations,
+  setUserName,
   updateRun,
   type SubscriptionRow
 } from "./db.js";
@@ -162,7 +163,10 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
       fiveHourLimitMicrodollars: 0,
       fiveHourUsedMicrodollars: 0,
       dailyLimitMicrodollars: 0,
-      dailyUsedMicrodollars: 0
+      dailyUsedMicrodollars: 0,
+      pendingPlan: null,
+      pendingInterval: null,
+      pendingEffective: null
     };
   }
   const nowMs = Date.now();
@@ -187,7 +191,10 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
     fiveHourLimitMicrodollars: limits.fiveHour,
     fiveHourUsedMicrodollars: fiveHourUsed,
     dailyLimitMicrodollars: limits.daily,
-    dailyUsedMicrodollars: dailyUsed
+    dailyUsedMicrodollars: dailyUsed,
+    pendingPlan: subscription.pendingPlan,
+    pendingInterval: subscription.pendingInterval,
+    pendingEffective: subscription.pendingEffectiveMs ? new Date(subscription.pendingEffectiveMs).toISOString() : null
   };
 }
 
@@ -248,9 +255,22 @@ app.get("/billing/cancel", async (_request, reply) => {
 const routeLimit = (max: number) => ({ config: { rateLimit: { max, timeWindow: "1 minute" } } });
 const authLimit = routeLimit;
 
+// Request body for updating the signed-in user's display name. Empty clears it.
+const updateProfileSchema = z.object({ name: z.string().trim().max(120) }).strict();
+
 app.post("/v1/auth/sign-up", authLimit(8), async (request) => {
   const body = signUpInputSchema.parse(request.body);
-  return localAuthProvider.signUp(body.email, body.password, body.referralCode);
+  return localAuthProvider.signUp(body.email, body.password, body.referralCode, body.name);
+});
+
+// Update the signed-in user's display name (shown in the app's account area).
+// Existing users who signed up before names were collected use this to set one.
+app.post("/v1/profile", routeLimit(20), async (request) => {
+  const userId = await authenticate(request);
+  const body = updateProfileSchema.parse(request.body);
+  const name = body.name.trim().length > 0 ? body.name.trim() : null;
+  await setUserName(userId, name);
+  return { name };
 });
 
 app.post("/v1/auth/sign-in", authLimit(10), async (request) => {

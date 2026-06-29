@@ -18,6 +18,9 @@ function entitlement(over: Partial<SubscriptionState>): SubscriptionState {
     fiveHourUsedMicrodollars: 0,
     dailyLimitMicrodollars: 1_000_000,
     dailyUsedMicrodollars: 0,
+    pendingPlan: null,
+    pendingInterval: null,
+    pendingEffective: null,
     ...over
   };
 }

@@ -52,12 +52,13 @@ export type Session = {
   expiresAtMs: number;
   userId: string;
   email: string;
+  name: string | null;
 };
 
 // The provider contract. A SupabaseAuthProvider can implement the same shape
 // later so the rest of the server does not care which identity backend is live.
 export interface AuthProvider {
-  signUp(email: string, password: string, referralCode?: string): Promise<{ session: Session | null; needsVerification: boolean }>;
+  signUp(email: string, password: string, referralCode?: string, name?: string): Promise<{ session: Session | null; needsVerification: boolean }>;
   signIn(email: string, password: string): Promise<Session>;
   refresh(refreshToken: string): Promise<Session>;
   signOut(refreshToken: string): Promise<void>;
@@ -71,6 +72,8 @@ export interface AuthProvider {
 export const signUpInputSchema = z.object({
   email: z.string().trim().email().max(320),
   password: z.string().min(10).max(1_024),
+  // Optional display name, shown in the app's account area.
+  name: z.string().trim().max(120).optional(),
   // Optional referral code from an invite link. Validated against existing codes
   // at sign-up; an unknown or self code is ignored, never an error.
   referralCode: z.string().trim().max(40).optional()
@@ -200,13 +203,15 @@ async function issueSession(user: UserRow): Promise<Session> {
     refreshToken: refresh.token,
     expiresAtMs: accessExpiresAtMs,
     userId: user.id,
-    email: user.email
+    email: user.email,
+    name: user.name
   };
 }
 
 export class LocalAuthProvider implements AuthProvider {
-  async signUp(email: string, password: string, referralCode?: string): Promise<{ session: Session | null; needsVerification: boolean }> {
+  async signUp(email: string, password: string, referralCode?: string, name?: string): Promise<{ session: Session | null; needsVerification: boolean }> {
     const normalized = normalizeEmail(email);
+    const cleanName = name && name.trim() ? name.trim() : null;
     const salt = randomBytes(SCRYPT_SALT_BYTES).toString("hex");
     const passwordHash = await hashPassword(password, salt);
     const userId = randomUUID();
@@ -223,7 +228,7 @@ export class LocalAuthProvider implements AuthProvider {
     try {
       // When verification is required the account starts unverified and cannot
       // sign in until the emailed link is opened. Otherwise it is usable at once.
-      await createUser({ id: userId, email: normalized, passwordHash, passwordSalt: salt, emailVerified: !requireVerification, referredByCode });
+      await createUser({ id: userId, email: normalized, passwordHash, passwordSalt: salt, emailVerified: !requireVerification, name: cleanName, referredByCode });
     } catch (error) {
       const message = error instanceof Error ? error.message.toLowerCase() : "";
       // The UNIQUE constraint on email surfaces as a constraint error. Translate
@@ -244,6 +249,7 @@ export class LocalAuthProvider implements AuthProvider {
       referredByCode,
       referredCredited: false,
       referralBonusMicrodollars: 0,
+      name: cleanName,
       createdAtMs: Date.now()
     };
 
@@ -339,7 +345,8 @@ export class LocalAuthProvider implements AuthProvider {
       refreshToken: next.token,
       expiresAtMs: accessExpiresAtMs,
       userId: session.userId,
-      email: user.email
+      email: user.email,
+      name: user.name
     };
   }
 

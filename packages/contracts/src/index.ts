@@ -246,6 +246,13 @@ export type SubscriptionState = {
   fiveHourUsedMicrodollars: number;
   dailyLimitMicrodollars: number;
   dailyUsedMicrodollars: number;
+  // A scheduled downgrade that has not taken effect yet: the lower plan the
+  // subscription moves to at the end of the current paid period, and when. Null
+  // when nothing is scheduled. The current (higher) plan and its limit stay until
+  // pendingEffective passes, so the UI can reassure the user their tokens hold.
+  pendingPlan: PlanId | null;
+  pendingInterval: BillingInterval | null;
+  pendingEffective: string | null;
 };
 
 export type RunStepResponse = {

@@ -141,6 +141,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .sidebar-brand-row .brand { padding: 0; }
 /* App version badge next to the logo, so an installed update is visible at a glance. */
 .app-version { margin-left: auto; padding: 2px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); background: var(--panel-2); font-size: 11px; font-weight: 650; letter-spacing: .2px; }
+.early-access-pill { padding: 2px 8px; border-radius: 99px; color: #e6deff; background: linear-gradient(180deg, rgba(141, 108, 255, .28), rgba(141, 108, 255, .16)); border: 1px solid rgba(141, 108, 255, .55); font-size: 10px; font-weight: 750; letter-spacing: .4px; text-transform: uppercase; white-space: nowrap; }
 .sidebar nav { display: grid; gap: 4px; }
 /* The Routines row pairs the nav item with a small circle-plus that saves the
    current chat as a routine. It appears only once a chat or automation exists. */
@@ -596,6 +597,10 @@ select option:checked { background-color: var(--panel-2); }
 .account-modal { width: min(420px, 100%); }
 .account-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
 .account-head h2 { margin: 0; }
+.account-name { margin-bottom: 14px; }
+.account-name-row { display: flex; gap: 8px; margin-top: 6px; }
+.account-name-row input { flex: 1 1 auto; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); color: var(--text); font-size: var(--fs-ui); }
+.account-name-row button { flex: none; }
 .account-plan { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid #232930; border-radius: 12px; background: #0d1014; }
 .account-plan strong { display: block; margin-top: 5px; font-size: 18px; }
 .account-usage { margin-top: 14px; padding: 16px; border: 1px solid #232930; border-radius: 12px; background: #0d1014; }
@@ -604,6 +609,10 @@ select option:checked { background-color: var(--panel-2); }
 .account-usage-foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 10px; color: #79828f; font-size: 11px; }
 .account-buttons { display: grid; gap: 10px; margin-top: 20px; }
 .account-usage-extra { margin: 12px 0 0; color: var(--accent-soft); font-size: 11px; line-height: 1.45; }
+.account-pending { margin-top: 14px; padding: 14px 16px; border: 1px solid #3a3358; border-radius: 12px; background: #16131f; }
+.account-pending strong { display: block; color: #d9d2ff; font-size: 13px; margin-bottom: 6px; }
+.account-pending p { margin: 0 0 12px; color: #b6b0c6; font-size: 12px; line-height: 1.5; }
+.account-pending .secondary { padding: 8px 14px; font-size: 12px; }
 .account-tokens-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
 .account-tokens-row .secondary { padding: 8px 14px; font-size: 12px; }
 .account-autoreload { color: #4caf7d; font-size: 11px; font-weight: 600; }

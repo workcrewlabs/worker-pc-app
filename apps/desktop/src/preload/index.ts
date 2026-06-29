@@ -85,9 +85,10 @@ const workcrew = {
     }
   },
   auth: {
-    session: (): Promise<{ authenticated: boolean; email?: string }> => ipcRenderer.invoke("auth:session"),
+    session: (): Promise<{ authenticated: boolean; email?: string; name?: string | null }> => ipcRenderer.invoke("auth:session"),
     signIn: (email: string, password: string) => ipcRenderer.invoke("auth:sign-in", { email, password }),
-    signUp: (email: string, password: string, referralCode?: string) => ipcRenderer.invoke("auth:sign-up", { email, password, referralCode }),
+    signUp: (email: string, password: string, name?: string, referralCode?: string) => ipcRenderer.invoke("auth:sign-up", { email, password, name, referralCode }),
+    setName: (name: string): Promise<{ name: string | null }> => ipcRenderer.invoke("auth:set-name", { name }),
     reset: (email: string) => ipcRenderer.invoke("auth:reset", email),
     signOut: () => ipcRenderer.invoke("auth:sign-out"),
     deleteAccount: (): Promise<{ ok: boolean }> => ipcRenderer.invoke("auth:delete-account")

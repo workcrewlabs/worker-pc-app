@@ -57,7 +57,10 @@ describe("budget ledger invariants", () => {
       autoReloadEnabled: false,
       autoReloadPack: "small",
       monthlyTopupLimitMicro: 0,
-      stripePaymentMethodId: null
+      stripePaymentMethodId: null,
+      pendingPlan: null,
+      pendingInterval: null,
+      pendingEffectiveMs: null
     };
   }
 

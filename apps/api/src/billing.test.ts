@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isEntitledStatus, isPlanUpgrade } from "./billing.js";
+import { downgradeSchedulePhases, isEntitledStatus, isPlanUpgrade } from "./billing.js";
 
 // Pre-launch strict mode: entitlement comes only from a live subscription or a
 // live trial. past_due (Stripe's payment-retry window) is NOT entitled unless the
@@ -53,5 +53,28 @@ describe("isPlanUpgrade", () => {
   it("treats an unchanged plan and interval as not an upgrade (no free grant)", () => {
     expect(isPlanUpgrade("pro", "month", "pro", "month")).toBe(false);
     expect(isPlanUpgrade("ultra", "year", "ultra", "year")).toBe(false);
+  });
+});
+
+// A downgrade must not drop the limit mid-period: the current (paid) price runs to
+// the end of the period, then the new lower price starts.
+describe("downgradeSchedulePhases", () => {
+  it("keeps the current price until period end, then starts the new price", () => {
+    const phases = downgradeSchedulePhases(
+      "price_ultra_month",
+      "price_pro_month",
+      { start: 1_000, end: 2_000 },
+      { userId: "user_1", plan: "pro", interval: "month" }
+    );
+    expect(phases).toHaveLength(2);
+    const [first, second] = phases;
+    // Phase 1: still on the higher (paid) plan until the period ends.
+    expect(first?.items?.[0]?.price).toBe("price_ultra_month");
+    expect(first?.start_date).toBe(1_000);
+    expect(first?.end_date).toBe(2_000);
+    // Phase 2: the new lower plan, starting right after, with the user mapping.
+    expect(second?.items?.[0]?.price).toBe("price_pro_month");
+    expect(second?.metadata?.workcrew_user_id).toBe("user_1");
+    expect(second?.metadata?.workcrew_plan).toBe("pro");
   });
 });

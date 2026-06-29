@@ -10,6 +10,7 @@ export type StoredSession = {
   expiresAtMs: number;
   userId: string;
   email: string;
+  name: string | null;
 };
 
 type AuthResponse = {
@@ -48,8 +49,14 @@ export class AuthVault {
   // belongs to. It never receives the tokens. A stored session that is expired
   // but still has a refresh token counts as authenticated, because the next API
   // call will refresh it transparently.
-  getSession(): { authenticated: boolean; email?: string } {
-    return { authenticated: Boolean(this.session), email: this.session?.email };
+  getSession(): { authenticated: boolean; email?: string; name?: string | null } {
+    return { authenticated: Boolean(this.session), email: this.session?.email, name: this.session?.name ?? null };
+  }
+
+  // Update just the display name on the stored session after the backend profile
+  // update succeeds, so the renderer reflects the new name without a re-login.
+  async updateStoredName(name: string | null): Promise<void> {
+    if (this.session) await this.store({ ...this.session, name });
   }
 
   // The internal user id of the current session. Used only as a privacy-safe
@@ -100,8 +107,8 @@ export class AuthVault {
     await this.store(payload.session);
   }
 
-  async signUp(email: string, password: string, referralCode?: string): Promise<{ needsVerification: boolean }> {
-    const payload = await this.request("/v1/auth/sign-up", { email, password, referralCode });
+  async signUp(email: string, password: string, name?: string, referralCode?: string): Promise<{ needsVerification: boolean }> {
+    const payload = await this.request("/v1/auth/sign-up", { email, password, name, referralCode });
     // When verification is required the backend returns no session. Otherwise it
     // returns a session and the user proceeds straight to the paywall.
     if (payload.session) await this.store(payload.session);
