@@ -141,6 +141,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .sidebar-brand-row .brand { padding: 0; }
 /* App version badge next to the logo, so an installed update is visible at a glance. */
 .app-version { margin-left: auto; padding: 2px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); background: var(--panel-2); font-size: 11px; font-weight: 650; letter-spacing: .2px; }
+.early-access-pill { padding: 2px 8px; border-radius: 99px; color: #e6deff; background: linear-gradient(180deg, rgba(141, 108, 255, .28), rgba(141, 108, 255, .16)); border: 1px solid rgba(141, 108, 255, .55); font-size: 10px; font-weight: 750; letter-spacing: .4px; text-transform: uppercase; white-space: nowrap; }
 .sidebar nav { display: grid; gap: 4px; }
 /* The Routines row pairs the nav item with a small circle-plus that saves the
    current chat as a routine. It appears only once a chat or automation exists. */
