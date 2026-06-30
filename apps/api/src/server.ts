@@ -26,6 +26,7 @@ import { authenticate, resolveUserId } from "./auth.js";
 import {
   localAuthProvider,
   refreshInputSchema,
+  resendVerificationInputSchema,
   resetConfirmInputSchema,
   resetInputSchema,
   signInInputSchema,
@@ -301,6 +302,15 @@ app.post("/v1/auth/reset", authLimit(6), async (request) => {
   // Always returns ok so the response never reveals whether the email exists.
   const body = resetInputSchema.parse(request.body);
   await localAuthProvider.reset(body.email);
+  return { ok: true };
+});
+
+// Re-send the email-verification link (used when the first link expired). Always
+// returns ok so the response never reveals whether the email exists or is already
+// verified. Rate limited like the other email-sending auth routes.
+app.post("/v1/auth/resend-verification", authLimit(6), async (request) => {
+  const body = resendVerificationInputSchema.parse(request.body);
+  await localAuthProvider.resendVerification(body.email);
   return { ok: true };
 });
 

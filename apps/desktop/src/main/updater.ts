@@ -11,8 +11,49 @@ export type UpdateStatus =
   | { state: "none" }
   | { state: "downloading"; percent: number }
   | { state: "ready"; version?: string }
+  // The update has been out longer than the grace window, so it is now
+  // mandatory: the renderer shows a blocking gate until it is installed.
+  // `downloaded` flips to true once the installer is ready to apply.
+  | { state: "required"; version?: string; deadline?: string; downloaded: boolean; percent?: number }
   | { state: "unsupported" }
   | { state: "error"; message: string };
+
+// An update older than this becomes mandatory. Until the grace window passes the
+// update is simply offered (the quiet "Restart to update" pill); after it, the
+// app blocks use until the user installs it.
+const FORCE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+
+// Tracks whether the update the app is currently aware of has crossed its grace
+// window. `forceActive` is set from the release date in `update-available`, so
+// every later event (download progress, downloaded) reports as "required".
+let forceActive = false;
+let forceDeadline: number | null = null;
+let forceVersion: string | undefined;
+
+// Read the release date off the available-update info and decide whether the
+// 3-day grace window has already passed. A missing or unparseable release date
+// is treated as not-yet-mandatory, so a malformed feed can never lock anyone out.
+function evaluateForce(info: { version?: string; releaseDate?: string } | undefined): void {
+  forceVersion = info?.version;
+  const released = info?.releaseDate ? Date.parse(info.releaseDate) : NaN;
+  if (!Number.isFinite(released)) {
+    forceActive = false;
+    forceDeadline = null;
+    return;
+  }
+  forceDeadline = released + FORCE_AFTER_MS;
+  forceActive = Date.now() >= forceDeadline;
+}
+
+function forceStatus(downloaded: boolean, percent?: number): UpdateStatus {
+  return {
+    state: "required",
+    version: forceVersion,
+    deadline: forceDeadline !== null ? new Date(forceDeadline).toISOString() : undefined,
+    downloaded,
+    percent
+  };
+}
 
 function broadcast(status: UpdateStatus): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -47,10 +88,25 @@ async function getUpdater(): Promise<AutoUpdaterLike | null> {
   // download the full, signature- and sha512-verified installer.
   updater.disableDifferentialDownload = true;
   updater.on("checking-for-update", () => broadcast({ state: "checking" }));
-  updater.on("update-available", (info: { version?: string }) => broadcast({ state: "available", version: info?.version }));
+  updater.on("update-available", (info: { version?: string; releaseDate?: string }) => {
+    evaluateForce(info);
+    if (forceActive) broadcast(forceStatus(false, 0));
+    else broadcast({ state: "available", version: info?.version });
+  });
   updater.on("update-not-available", () => broadcast({ state: "none" }));
-  updater.on("download-progress", (progress: { percent?: number }) => broadcast({ state: "downloading", percent: Math.round(progress?.percent ?? 0) }));
-  updater.on("update-downloaded", (info: { version?: string }) => broadcast({ state: "ready", version: info?.version }));
+  updater.on("download-progress", (progress: { percent?: number }) => {
+    const percent = Math.round(progress?.percent ?? 0);
+    if (forceActive) broadcast(forceStatus(false, percent));
+    else broadcast({ state: "downloading", percent });
+  });
+  updater.on("update-downloaded", (info: { version?: string }) => {
+    if (forceActive) {
+      forceVersion = info?.version ?? forceVersion;
+      broadcast(forceStatus(true));
+    } else {
+      broadcast({ state: "ready", version: info?.version });
+    }
+  });
   updater.on("error", (error: { message?: string }) => broadcast({ state: "error", message: error?.message ?? "The update could not be completed." }));
   return updater;
 }
@@ -75,6 +131,24 @@ function simulateDevUpdate(): void {
   steps.forEach((status, index) => setTimeout(() => broadcast(status), 600 * (index + 1)));
 }
 
+// Development preview of the mandatory-update gate: pretends a version that has
+// been out past its grace window is available, so the full blocking screen can be
+// seen and tried without a packaged build or a real release. Only ever runs in an
+// unpackaged build with WORKCREW_SIMULATE_FORCE_UPDATE=1.
+function simulateDevForceUpdate(): void {
+  devSimulatedReady = true;
+  forceVersion = "0.1.10";
+  // Pretend the release became mandatory yesterday (released four days ago).
+  forceDeadline = Date.now() - 24 * 60 * 60 * 1000;
+  forceActive = true;
+  // Go straight to the gate (no "checking" flicker), then run a short fake
+  // download so the "Update now" button appears.
+  broadcast(forceStatus(false, 0));
+  setTimeout(() => broadcast(forceStatus(false, 45)), 600);
+  setTimeout(() => broadcast(forceStatus(false, 100)), 1_200);
+  setTimeout(() => broadcast(forceStatus(true)), 1_700);
+}
+
 /**
  * Check for an update now. Returns whether updates are supported in this build.
  * `manual` is true when the user clicked Check for updates (vs the quiet startup
@@ -84,6 +158,14 @@ function simulateDevUpdate(): void {
 export async function checkForUpdates(manual = false): Promise<{ supported: boolean }> {
   const instance = await getUpdater();
   if (!instance) {
+    // Force-gate preview: in development with the flag set, every check (re)plays
+    // the mandatory-update gate, so it shows no matter which screen triggered the
+    // check and is never replaced by an "unsupported" status. Runs for both the
+    // quiet startup check and a manual one.
+    if (!app.isPackaged && process.env.WORKCREW_SIMULATE_FORCE_UPDATE === "1") {
+      simulateDevForceUpdate();
+      return { supported: true };
+    }
     // A development run has no real update feed. Only play the simulated flow
     // when explicitly asked for (WORKCREW_SIMULATE_UPDATE=1), so the normal app
     // never shows a fake "update found" animation. Without it, a manual check in
@@ -125,7 +207,15 @@ export async function installUpdate(): Promise<void> {
 
 /** Quietly check shortly after launch in packaged builds. */
 export function startupUpdateCheck(): void {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged) {
+    // In development, optionally play the mandatory-update gate so it can be seen
+    // live. The delay lets the renderer mount and subscribe first, so the gate is
+    // the last status it receives. Never runs without the explicit env flag.
+    if (process.env.WORKCREW_SIMULATE_FORCE_UPDATE === "1") {
+      setTimeout(() => simulateDevForceUpdate(), 2_000);
+    }
+    return;
+  }
   setTimeout(() => {
     void checkForUpdates();
   }, 4_000);

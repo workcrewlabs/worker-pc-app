@@ -90,6 +90,7 @@ const workcrew = {
     signUp: (email: string, password: string, name?: string, referralCode?: string) => ipcRenderer.invoke("auth:sign-up", { email, password, name, referralCode }),
     setName: (name: string): Promise<{ name: string | null }> => ipcRenderer.invoke("auth:set-name", { name }),
     reset: (email: string) => ipcRenderer.invoke("auth:reset", email),
+    resendVerification: (email: string) => ipcRenderer.invoke("auth:resend-verification", email),
     signOut: () => ipcRenderer.invoke("auth:sign-out"),
     deleteAccount: (): Promise<{ ok: boolean }> => ipcRenderer.invoke("auth:delete-account")
   },

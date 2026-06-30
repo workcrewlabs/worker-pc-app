@@ -220,8 +220,11 @@ const saveFileSchema = z.object({
 
 function createWindow(): void {
   console.info("[WorkCrew] creating main window");
+  // A development (unpackaged) run is labelled "Dev WorkCrew" so it is obvious at
+  // a glance which window is the local build versus the installed public app.
+  const windowTitle = app.isPackaged ? APP_NAME : `Dev ${APP_NAME}`;
   mainWindow = new BrowserWindow({
-    title: APP_NAME,
+    title: windowTitle,
     icon: join(__dirname, "../../resources/icon.ico"),
     width: 1_440,
     height: 920,
@@ -239,7 +242,15 @@ function createWindow(): void {
       spellcheck: true
     }
   });
-  mainWindow.setTitle(APP_NAME);
+  mainWindow.setTitle(windowTitle);
+  // Keep the dev label sticky: the renderer never sets a document title, but guard
+  // against it so a "Dev" build can't silently relabel itself as the public app.
+  mainWindow.on("page-title-updated", (event) => {
+    if (!app.isPackaged) {
+      event.preventDefault();
+      mainWindow?.setTitle(windowTitle);
+    }
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
@@ -373,6 +384,7 @@ function registerIpc(): void {
     return result;
   });
   ipcMain.handle("auth:reset", async (_event, email) => auth.sendPasswordReset(z.string().email().max(320).parse(email)));
+  ipcMain.handle("auth:resend-verification", async (_event, email) => auth.resendVerification(z.string().email().max(320).parse(email)));
   ipcMain.handle("auth:sign-out", async () => auth.signOut());
   // Permanently delete the account on the backend, then clear the local encrypted
   // session so the app returns to the sign-in screen. The backend cancels billing
@@ -693,7 +705,10 @@ function registerIpc(): void {
   });
 }
 
-const hasLock = app.requestSingleInstanceLock();
+// In development, do not contend for the single-instance lock: a dev build should
+// be able to run alongside the installed public app rather than be blocked by it
+// (they keep separate data). Packaged builds still enforce a single instance.
+const hasLock = app.isPackaged ? app.requestSingleInstanceLock() : true;
 console.info(`[WorkCrew] single instance lock: ${hasLock}`);
 if (!hasLock) app.quit();
 else {
@@ -706,7 +721,9 @@ else {
 
   void app.whenReady().then(async () => {
     console.info("[WorkCrew] Electron ready");
-    app.setAppUserModelId("com.workcrew.desktop");
+    // A distinct AppUserModelId for the dev build keeps its taskbar grouping and
+    // notifications separate from the installed public app.
+    app.setAppUserModelId(app.isPackaged ? "com.workcrew.desktop" : "com.workcrew.desktop.dev");
     if (process.defaultApp && process.argv[1]) app.setAsDefaultProtocolClient("workcrew", process.execPath, [process.argv[1]]);
     else app.setAsDefaultProtocolClient("workcrew");
     // Deny every web permission except the microphone, which the voice-input
