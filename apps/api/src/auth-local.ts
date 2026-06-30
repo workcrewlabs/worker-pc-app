@@ -63,6 +63,7 @@ export interface AuthProvider {
   refresh(refreshToken: string): Promise<Session>;
   signOut(refreshToken: string): Promise<void>;
   reset(email: string): Promise<void>;
+  resendVerification(email: string): Promise<void>;
   verifyEmail(token: string): Promise<{ email: string }>;
   confirmReset(token: string, newPassword: string): Promise<void>;
 }
@@ -93,6 +94,10 @@ export const signOutInputSchema = z.object({
 }).strict();
 
 export const resetInputSchema = z.object({
+  email: z.string().trim().email().max(320)
+}).strict();
+
+export const resendVerificationInputSchema = z.object({
   email: z.string().trim().email().max(320)
 }).strict();
 
@@ -374,6 +379,33 @@ export class LocalAuthProvider implements AuthProvider {
       console.info(`[WorkCrew] password reset email handed to the "${emailProvider().name}" provider for ${masked}.`);
     } catch (error) {
       console.error("[WorkCrew] reset email FAILED to send", error instanceof Error ? error.message : error);
+    }
+  }
+
+  // Re-send the email-verification link for an account that has signed up but not
+  // yet verified (for example when the first link expired). Mirrors reset():
+  // always resolves so the response never reveals whether the email exists, and
+  // only sends when there is an unverified account. A verified or unknown address
+  // is a silent no-op. issueEmailToken retires the previous link, so the newest
+  // one is the only valid token.
+  async resendVerification(email: string): Promise<void> {
+    const normalized = normalizeEmail(email);
+    const masked = normalized.replace(/^(.).*(@.*)$/, "$1***$2");
+    const user = await getUserByEmail(normalized);
+    if (!user) {
+      console.info(`[WorkCrew] verification resend requested but NO ACCOUNT exists for ${masked} on this backend; nothing sent.`);
+      return;
+    }
+    if (user.emailVerified) {
+      console.info(`[WorkCrew] verification resend requested for ${masked} but the email is already verified; nothing sent.`);
+      return;
+    }
+    const token = await issueEmailToken(user, "verify", VERIFY_TOKEN_TTL_MS);
+    try {
+      await sendEmail(verifyEmailMessage(user.email, verifyLink(token)));
+      console.info(`[WorkCrew] verification email re-sent via the "${emailProvider().name}" provider for ${masked}.`);
+    } catch (error) {
+      console.error("[WorkCrew] verification resend email FAILED to send", error instanceof Error ? error.message : error);
     }
   }
 

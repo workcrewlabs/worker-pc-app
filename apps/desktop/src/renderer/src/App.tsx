@@ -258,6 +258,23 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
     }
   }
 
+  // Re-send the verification email when the first link expired. Reuses the
+  // "Check your inbox" confirmation screen on success, with the email already in
+  // state from the sign-in attempt.
+  async function resendVerification() {
+    if (!email) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await window.workcrew.auth.resendVerification(email);
+      setSent("verify");
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (sent) {
     const isVerify = sent === "verify";
     return (
@@ -331,6 +348,11 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
           <button className="primary full" disabled={busy}>{busy ? "Please wait" : mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}</button>
         </form>
         {notice && <p className="notice notice-error" role="alert">{notice}</p>}
+        {mode === "signin" && /verify your email/i.test(notice) && (
+          <button type="button" className="auth-resend" onClick={resendVerification} disabled={busy || !email}>
+            {busy ? "Sending new link" : "Send a new verification link"}
+          </button>
+        )}
         <div className="auth-links">
           <button onClick={() => setMode(mode === "signup" ? "signin" : "signup")}>{mode === "signup" ? "Already have an account" : "Create an account"}</button>
           <button onClick={() => setMode(mode === "reset" ? "signin" : "reset")}>{mode === "reset" ? "Back to sign in" : "Forgot password"}</button>
@@ -430,6 +452,45 @@ function FiveHourRing({ entitlement }: { entitlement: SubscriptionState }) {
   );
 }
 
+// A full-screen, non-dismissable gate shown once an update has been out past its
+// mandatory deadline. The user cannot return to the app without installing it;
+// the only other option is to close the app (which installs the update on quit).
+function UpdateGate({ update, appName }: { update: { version?: string; percent?: number; downloaded?: boolean }; appName: string }) {
+  const ready = update.downloaded === true;
+  const percent = Math.max(0, Math.min(100, Math.round(update.percent ?? 0)));
+  return (
+    <div className="update-gate" role="alertdialog" aria-modal="true" aria-labelledby="update-gate-title" aria-describedby="update-gate-body">
+      <div className="update-gate-card">
+        <span className="update-gate-glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <polyline points="21 4 21 9.5 15.5 9.5" />
+          </svg>
+        </span>
+        <h1 id="update-gate-title">Update required</h1>
+        <p id="update-gate-body">
+          A newer version of {appName}{update.version ? ` (${update.version})` : ""} is ready. To keep {appName} secure
+          and running smoothly, please install this update to continue.
+        </p>
+        {ready ? (
+          <button className="update-gate-primary" onClick={() => void window.workcrew.updates.install()} autoFocus>
+            Update now
+          </button>
+        ) : (
+          <div className="update-gate-progress" aria-live="polite">
+            <div className="update-gate-track"><div className="update-gate-fill" style={{ width: `${percent}%` }} /></div>
+            <span className="update-gate-progress-label">Preparing update… {percent}%</span>
+          </div>
+        )}
+        <button className="update-gate-secondary" onClick={() => window.close()}>
+          Close {appName}
+        </button>
+        <p className="update-gate-foot">It installs in a few seconds and reopens {appName} automatically.</p>
+      </div>
+    </div>
+  );
+}
+
 function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlement, onSignOut, onUpgrade, onAdjustPlan, onDeleteAccount }: { info: AppInfo; entitlement: SubscriptionState; userName: string | null; onSetName: (name: string) => Promise<void>; onRefreshEntitlement: () => void; onSignOut: () => Promise<void>; onUpgrade: () => Promise<void>; onAdjustPlan: (plan: PlanId, interval: BillingInterval) => Promise<void>; onDeleteAccount: () => Promise<void> }) {
   const [model, setModel] = useState<ModelTier>(DEFAULT_CHAT_MODEL);
   const [upgrading, setUpgrading] = useState(false);
@@ -459,8 +520,9 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   // A task being turned into a routine via "Save as a routine", carried into the
   // Routines form.
   const [routineSeed, setRoutineSeed] = useState("");
-  // Auto-update status, surfaced as a sidebar button when an update is ready.
-  const [update, setUpdate] = useState<{ state: string; version?: string; percent?: number } | null>(null);
+  // Auto-update status, surfaced as a sidebar button when an update is ready, or
+  // as a full-screen blocking gate once a release is past its mandatory deadline.
+  const [update, setUpdate] = useState<{ state: string; version?: string; percent?: number; deadline?: string; downloaded?: boolean } | null>(null);
   // "Always allow": when on, automations run without asking for each write action.
   const [alwaysAllow, setAlwaysAllowState] = useState<boolean>(() => {
     try { return localStorage.getItem("workcrew.alwaysAllow") === "1"; } catch { return false; }
@@ -711,8 +773,10 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
       <aside className="sidebar">
         <div className="sidebar-brand-row">
           <Brand compact />
-          <span className="app-version" title="App version">v{info.version}</span>
-          <span className="early-access-pill" title="Early access build">Early access</span>
+          <span className="version-stack">
+            <span className="app-version" title="App version">v{info.version}</span>
+            <span className="early-access-pill" title="Early access build">Early access</span>
+          </span>
         </div>
         <button className="new-chat" onClick={startNewChat} aria-label="New chat">
           <span className="new-chat-plus" aria-hidden="true">
@@ -895,6 +959,25 @@ export default function App() {
   const [entitlement, setEntitlement] = useState<SubscriptionState>(EMPTY_ENTITLEMENT);
   const [fatal, setFatal] = useState("");
   const [userName, setUserName] = useState<string | null>(null);
+  // Mandatory-update status watched at the root so the blocking gate can sit above
+  // every screen (loading, sign-in, paywall, and the app). The Workspace keeps its
+  // own copy of this feed for the quiet "Restart to update" sidebar pill; here we
+  // only act on the "required" state, which a release reaches past its deadline.
+  const [update, setUpdate] = useState<{ state: string; version?: string; percent?: number; downloaded?: boolean } | null>(null);
+  useEffect(() => {
+    const off = window.workcrew.updates.onStatus((status) => {
+      setUpdate((prev) => {
+        // A mandatory update latches: once the gate is up, a later non-required
+        // status (a routine "checking"/"none"/"unsupported") must never dismiss
+        // it. Only a newer "required" update (download progress, downloaded)
+        // replaces it.
+        if (prev?.state === "required" && status.state !== "required") return prev;
+        return status;
+      });
+    });
+    void window.workcrew.updates.check();
+    return off;
+  }, []);
 
   async function refresh() {
     try {
@@ -977,10 +1060,18 @@ export default function App() {
   }, [phase]);
 
   const loadingMessage = useMemo(() => fatal || "Starting WorkCrew securely...", [fatal]);
-  if (phase === "loading" || !info) return <main className="loading-shell"><Brand /><div className="loading-line" /><p>{loadingMessage}</p>{fatal && <button className="secondary" onClick={() => { setFatal(""); void refresh(); }}>Try again</button>}</main>;
-  if (phase === "auth") return <AuthScreen onReady={refresh} />;
-  if (phase === "paywall") return <Paywall info={info} onActivated={(state) => { setEntitlement(state); setPhase("workspace"); }} />;
-  return (
+  // The mandatory-update gate is rendered above whichever screen is active, so a
+  // required update blocks the loading, sign-in, and paywall screens too, not just
+  // the signed-in app.
+  const gate = update?.state === "required" ? <UpdateGate update={update} appName={info?.name ?? "WorkCrew"} /> : null;
+  const screen =
+    phase === "loading" || !info
+      ? <main className="loading-shell"><Brand /><div className="loading-line" /><p>{loadingMessage}</p>{fatal && <button className="secondary" onClick={() => { setFatal(""); void refresh(); }}>Try again</button>}</main>
+      : phase === "auth"
+      ? <AuthScreen onReady={refresh} />
+      : phase === "paywall"
+      ? <Paywall info={info} onActivated={(state) => { setEntitlement(state); setPhase("workspace"); }} />
+      : (
     <Workspace
       info={info}
       entitlement={entitlement}
@@ -1019,4 +1110,5 @@ export default function App() {
       }}
     />
   );
+  return <>{gate}{screen}</>;
 }

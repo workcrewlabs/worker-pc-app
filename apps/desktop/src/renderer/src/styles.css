@@ -96,6 +96,11 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .notice { padding: 11px; border: 1px solid #3b444f; border-radius: 8px; color: #cdd2da; background: #181d23; font-size: 13px; }
 /* Auth errors read as a soft red alert, never raw developer text. */
 .notice-error { margin-top: 16px; border-color: rgba(248,113,113,.4); color: #fca5a5; background: rgba(248,113,113,.08); }
+/* Offered right under the "verify your email" notice so an expired link is a
+   one-click recovery, not a dead end. */
+.auth-resend { margin-top: 10px; width: 100%; padding: 11px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; color: var(--text); background: var(--panel-2); font-size: 13px; font-weight: 600; transition: border-color .16s ease, color .16s ease; }
+.auth-resend:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-soft); }
+.auth-resend:disabled { opacity: .6; cursor: default; }
 
 /* "Check your inbox" confirmation shown after sign-up or a reset request. The
    brand is a full-width centered row, and the green check sits on its own
@@ -139,9 +144,13 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .sidebar { display: flex; flex-direction: column; padding: 21px 16px 16px; border-right: 1px solid var(--line); background: var(--panel); }
 .sidebar-brand-row { display: flex; align-items: center; gap: 8px; padding: 0 8px 22px; }
 .sidebar-brand-row .brand { padding: 0; }
-/* App version badge next to the logo, so an installed update is visible at a glance. */
-.app-version { margin-left: auto; padding: 2px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); background: var(--panel-2); font-size: 11px; font-weight: 650; letter-spacing: .2px; }
-.early-access-pill { padding: 2px 8px; border-radius: 99px; color: #e6deff; background: linear-gradient(180deg, rgba(141, 108, 255, .28), rgba(141, 108, 255, .16)); border: 1px solid rgba(141, 108, 255, .55); font-size: 10px; font-weight: 750; letter-spacing: .4px; text-transform: uppercase; white-space: nowrap; }
+/* Version and status sit at the right of the brand row as a tidy centered stack:
+   the version pill on top, a quiet "Early access" tag centered beneath it. */
+.version-stack { margin-left: auto; display: inline-flex; flex-direction: column; align-items: center; gap: 4px; }
+.app-version { padding: 2px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); background: var(--panel-2); font-size: 11px; font-weight: 650; letter-spacing: .2px; }
+/* Understated "Early access" tag: light gray, small, no loud fill, so it reads as
+   a quiet status line under the version rather than a competing badge. */
+.early-access-pill { color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: .7px; text-transform: uppercase; white-space: nowrap; }
 .sidebar nav { display: grid; gap: 4px; }
 /* The Routines row pairs the nav item with a small circle-plus that saves the
    current chat as a routine. It appears only once a chat or automation exists. */
@@ -686,4 +695,30 @@ button.danger:disabled { opacity: .6; cursor: default; }
   .sidebar-security div, .account-button > span:not(.avatar) { display: none; }
   .price-grid { grid-template-columns: 1fr; }
   .panel { width: 100%; }
+}
+
+/* Mandatory-update gate: a full-window blocker shown once a release is past its
+   deadline. It sits above every panel and modal; the app stays unusable until the
+   update is installed (or the app is closed, which installs it on quit). */
+.update-gate { position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center; padding: 24px; background: rgba(10,9,8,.82); backdrop-filter: blur(6px); animation: overlay-in .2s ease; }
+.update-gate-card { width: min(380px, 100%); padding: 30px 30px 22px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 13px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel-2); box-shadow: 0 30px 80px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.03); animation: modal-in .22s ease; }
+.update-gate-glyph { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 14px; color: var(--accent-soft); background: var(--accent-glow); border: 1px solid rgba(139,92,246,.35); }
+.update-gate-card h1 { margin: 2px 0 0; font-size: 19px; font-weight: 720; letter-spacing: -.2px; color: var(--text); }
+#update-gate-body { margin: 0; max-width: 33ch; color: var(--muted); font-size: 13.5px; line-height: 1.55; }
+.update-gate-primary { width: 100%; margin-top: 5px; padding: 11px 16px; border: 0; border-radius: 11px; cursor: pointer; color: var(--accent-ink); background: var(--accent); font-size: 14px; font-weight: 680; transition: background .16s ease, transform .12s ease; }
+.update-gate-primary:hover { background: var(--lime-dark); }
+.update-gate-primary:active { transform: translateY(1px); }
+.update-gate-primary:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+.update-gate-progress { width: 100%; margin-top: 5px; display: flex; flex-direction: column; align-items: center; gap: 9px; }
+.update-gate-track { width: 100%; height: 7px; border-radius: 99px; background: var(--panel); overflow: hidden; }
+.update-gate-fill { height: 100%; border-radius: 99px; background: var(--accent); transition: width .3s ease; }
+.update-gate-progress-label { color: var(--muted); font-size: 12px; }
+.update-gate-secondary { padding: 6px 10px; border: 0; border-radius: 8px; cursor: pointer; color: var(--muted); background: transparent; font-size: 12.5px; font-weight: 560; transition: color .16s ease; }
+.update-gate-secondary:hover { color: var(--text); }
+.update-gate-secondary:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+.update-gate-foot { margin: 1px 0 0; color: #6f7682; font-size: 11px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .update-gate, .update-gate-card { animation: none; }
+  .update-gate-fill { transition: none; }
 }

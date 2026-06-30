@@ -119,6 +119,13 @@ export class AuthVault {
     await this.request("/v1/auth/reset", { email });
   }
 
+  // Ask the backend to re-send the email-verification link (for when the original
+  // link expired). The backend always responds ok, so this never reveals whether
+  // the address has an account.
+  async resendVerification(email: string): Promise<void> {
+    await this.request("/v1/auth/resend-verification", { email });
+  }
+
   // POST the stored refresh token, persist the new session, and return the new
   // access token. The API client calls this on a 401 to retry once.
   async refresh(): Promise<string> {
