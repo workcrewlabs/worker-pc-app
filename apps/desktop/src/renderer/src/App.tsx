@@ -712,6 +712,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
         <div className="sidebar-brand-row">
           <Brand compact />
           <span className="app-version" title="App version">v{info.version}</span>
+          <span className="early-access-pill" title="Early access build">Early access</span>
         </div>
         <button className="new-chat" onClick={startNewChat} aria-label="New chat">
           <span className="new-chat-plus" aria-hidden="true">

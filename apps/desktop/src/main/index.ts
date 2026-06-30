@@ -220,8 +220,11 @@ const saveFileSchema = z.object({
 
 function createWindow(): void {
   console.info("[WorkCrew] creating main window");
+  // Name the development window "Dev WorkCrew" so it is easy to tell apart from
+  // the installed production app on the same machine. Packaged builds keep APP_NAME.
+  const windowTitle = app.isPackaged ? APP_NAME : `Dev ${APP_NAME}`;
   mainWindow = new BrowserWindow({
-    title: APP_NAME,
+    title: windowTitle,
     icon: join(__dirname, "../../resources/icon.ico"),
     width: 1_440,
     height: 920,
@@ -239,7 +242,14 @@ function createWindow(): void {
       spellcheck: true
     }
   });
-  mainWindow.setTitle(APP_NAME);
+  mainWindow.setTitle(windowTitle);
+  // Keep the dev title even if the renderer updates the document <title>.
+  if (!app.isPackaged) {
+    mainWindow.on("page-title-updated", (event) => {
+      event.preventDefault();
+      mainWindow?.setTitle(windowTitle);
+    });
+  }
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
@@ -706,7 +716,7 @@ else {
 
   void app.whenReady().then(async () => {
     console.info("[WorkCrew] Electron ready");
-    app.setAppUserModelId("com.workcrew.desktop");
+    app.setAppUserModelId(app.isPackaged ? "com.workcrew.desktop" : "com.workcrew.desktop.dev");
     if (process.defaultApp && process.argv[1]) app.setAsDefaultProtocolClient("workcrew", process.execPath, [process.argv[1]]);
     else app.setAsDefaultProtocolClient("workcrew");
     // Deny every web permission except the microphone, which the voice-input
