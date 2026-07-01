@@ -77,11 +77,11 @@ describe("budget ledger invariants", () => {
     });
   }
 
-  it("never lets concurrent reservations exceed the 5-hour cap", async () => {
+  it("never lets concurrent reservations exceed the daily cap", async () => {
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
-    // Pro's 5-hour cap is 700_000. Each asks for a tenth, so at most 10 succeed.
-    const cap = 700_000;
+    // Pro's daily cap is 400_000. Each asks for a tenth, so at most 10 succeed.
+    const cap = 400_000;
     const perReservation = cap / 10;
     const attempts = 25;
 
@@ -93,32 +93,31 @@ describe("budget ledger invariants", () => {
 
     const accepted = results.filter((result) => result.status === "fulfilled").length;
     expect(accepted).toBeLessThanOrEqual(10);
-    const used = await rollingUsage(subscription.userId, nowMs - 5 * HOUR);
+    const used = await rollingUsage(subscription.userId, nowMs - 24 * HOUR);
     expect(used).toBeLessThanOrEqual(cap);
     expect(used).toBe(accepted * perReservation);
   });
 
-  it("blocks at the 5-hour cap", async () => {
+  it("blocks at the daily cap", async () => {
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
-    // Use the whole 5-hour cap, then a further reservation is rejected.
-    await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 700_000, nowMs });
+    // Use the whole daily cap, then a further reservation is rejected.
+    await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 400_000, nowMs });
     await expect(
       reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs })
-    ).rejects.toMatchObject({ code: "RATE_LIMIT_5H" });
+    ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
   });
 
-  it("blocks at the daily cap across separate 5-hour windows", async () => {
+  it("accumulates toward the daily cap across the 24-hour window", async () => {
     const subscription = makeSubscription();
     const t = subscription.budgetAnchorMs;
-    // Pro daily cap is 2_500_000; spread 700k across three separate 5-hour windows.
+    // Pro daily cap is 400_000; spread 130k across separate hours of the same day.
     for (const offset of [0, 6, 12]) {
-      await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 700_000, nowMs: t + offset * HOUR });
+      await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + offset * HOUR });
     }
-    // A fourth 700k (2.8M total in the day) exceeds the daily cap, even though its
-    // own 5-hour window is clear.
+    // A fourth 130k (520k total in the rolling day) exceeds the daily cap.
     await expect(
-      reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 700_000, nowMs: t + 18 * HOUR })
+      reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + 18 * HOUR })
     ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
   });
 
@@ -136,14 +135,14 @@ describe("budget ledger invariants", () => {
   it("gives the bigger plan bigger caps", async () => {
     const ultra = { ...makeSubscription(), plan: "ultra" as const };
     const nowMs = ultra.budgetAnchorMs;
-    // 600k fits under Ultra's 750k 5-hour cap.
-    const ok = await reserveBudget({ subscription: ultra, runId: randomUUID(), model: "sonnet", amountMicrodollars: 600_000, nowMs });
+    // 1.5M fits comfortably under Ultra's 2M daily cap...
+    const ok = await reserveBudget({ subscription: ultra, runId: randomUUID(), model: "sonnet", amountMicrodollars: 1_500_000, nowMs });
     expect(ok.reservationId).toBeTruthy();
-    // 800k is over a Pro user's 700k 5-hour cap.
+    // ...but the same 1.5M is far over a Pro user's 400k daily cap.
     const pro = makeSubscription();
     await expect(
-      reserveBudget({ subscription: pro, runId: randomUUID(), model: "sonnet", amountMicrodollars: 800_000, nowMs: pro.budgetAnchorMs })
-    ).rejects.toMatchObject({ code: "RATE_LIMIT_5H" });
+      reserveBudget({ subscription: pro, runId: randomUUID(), model: "sonnet", amountMicrodollars: 1_500_000, nowMs: pro.budgetAnchorMs })
+    ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
   });
 
   it("releases the difference when actual usage settles below the reservation", async () => {
@@ -177,8 +176,8 @@ describe("budget ledger invariants", () => {
     expect(await rollingUsage(subscription.userId, nowMs - HOUR)).toBe(reserved);
 
     // A failed turn releases the reservation: it must cost zero and must not
-    // count against the monthly, 5-hour, or daily caps, so the user is never
-    // billed or rate-limited for work they did not receive.
+    // count against the monthly or daily caps, so the user is never billed or
+    // rate-limited for work they did not receive.
     await releaseBudget(reservation.reservationId);
 
     const after = await getBudgetUsage(subscription.userId, window);
@@ -186,8 +185,8 @@ describe("budget ledger invariants", () => {
     expect(after.used).toBe(0);
     expect(await rollingUsage(subscription.userId, nowMs - HOUR)).toBe(0);
 
-    // The freed headroom is usable: a fresh reservation for the full cap succeeds.
-    const next = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 700_000, nowMs });
+    // The freed headroom is usable: a fresh reservation for the full daily cap succeeds.
+    const next = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 400_000, nowMs });
     expect(next.reservationId).toBeTruthy();
   });
 });

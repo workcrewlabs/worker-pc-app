@@ -15,15 +15,13 @@ export function UsageBanner({
 }) {
   if (status.level === "ok") return null;
   const empty = status.level === "empty";
-  // Name the window that is binding so the message is accurate (a short rate cap
-  // vs the day vs the whole period).
-  const period = status.window === "5h" ? "for now" : status.window === "day" ? "for today" : "for this period";
+  // Name the window that is binding so the message is accurate (the day vs the
+  // whole period).
+  const period = status.window === "day" ? "for today" : "for this period";
   const emptyMessage =
-    status.window === "5h"
-      ? "You have hit your usage limit for now. It will free up within a few hours."
-      : status.window === "day"
-        ? "You have hit your usage limit for today. It frees up tomorrow."
-        : "You have used all your tokens for this period.";
+    status.window === "day"
+      ? "You have hit your usage limit for today. It frees up tomorrow."
+      : "You have used all your tokens for this period.";
   const message = empty
     ? emptyMessage
     : `You are running low ${period} (${formatTokens(status.remaining)} tokens left).`;

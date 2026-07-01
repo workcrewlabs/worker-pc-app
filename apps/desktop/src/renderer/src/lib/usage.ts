@@ -1,12 +1,12 @@
 import type { SubscriptionState } from "@workcrew/contracts";
 
-// How the user stands against their usage caps. There are three hard caps (a
-// rolling 5-hour rate cap, a daily cap, and a monthly cap); this reports the
-// tightest one, so the low/empty banner appears for whichever is closest. "low"
-// is 80% or more of a cap committed (used plus reserved), "empty" is nothing left.
-// Everything is in internal usage units, shown to the user as plain tokens.
+// How the user stands against their usage caps. There are two hard caps (a
+// rolling daily cap and a monthly cap); this reports the tightest one, so the
+// low/empty banner appears for whichever is closest. "low" is 80% or more of a cap
+// committed (used plus reserved), "empty" is nothing left. Everything is in
+// internal usage units, shown to the user as plain tokens.
 export type UsageLevel = "ok" | "low" | "empty";
-export type UsageWindow = "5h" | "day" | "month";
+export type UsageWindow = "day" | "month";
 
 export type UsageStatus = {
   used: number;
@@ -35,12 +35,11 @@ const SEVERITY: Record<UsageLevel, number> = { ok: 0, low: 1, empty: 2 };
 export function usageStatus(entitlement: SubscriptionState, liveUsed?: number): UsageStatus {
   // Monthly can use the live figure (it reflects the latest turn before a refresh).
   const monthly = windowStatus(liveUsed ?? entitlement.usedMicrodollars, entitlement.reservedMicrodollars, entitlement.budgetMicrodollars, "month");
-  // The rolling caps already include reserved usage in their totals.
+  // The daily cap already includes reserved usage in its total.
   const daily = windowStatus(entitlement.dailyUsedMicrodollars, 0, entitlement.dailyLimitMicrodollars, "day");
-  const fiveHour = windowStatus(entitlement.fiveHourUsedMicrodollars, 0, entitlement.fiveHourLimitMicrodollars, "5h");
 
   // Report the tightest cap: worst level first, then highest percent.
-  return [monthly, daily, fiveHour].reduce((worst, candidate) => {
+  return [monthly, daily].reduce((worst, candidate) => {
     if (SEVERITY[candidate.level] > SEVERITY[worst.level]) return candidate;
     if (SEVERITY[candidate.level] === SEVERITY[worst.level] && candidate.percent > worst.percent) return candidate;
     return worst;

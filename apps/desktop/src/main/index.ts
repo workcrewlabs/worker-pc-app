@@ -48,6 +48,11 @@ let attachmentUploadChain: Promise<unknown> = Promise.resolve();
 
 console.info("[WorkCrew] main process loaded");
 
+// The app follows the OS display scaling (a Windows setting of 125% renders the
+// app at 125%, and changing that setting changes the app to match). We do NOT
+// force a fixed device scale factor, because forcing 100% made the app too small
+// to read on a 125% display and stopped it responding to the Windows setting.
+
 // The shape the renderer sends for a chat turn. requestId is generated in the
 // preload; the rest matches chatSendSchema so the body can be validated before
 // it leaves the desktop.

@@ -48,7 +48,7 @@ import { processAndStoreAttachment } from "./attachments.js";
 import { cancelSubscriptionForDeletion, changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { landingPage } from "./landing.js";
 import { creditReferralOnPayment, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
-import { DAY_MS, FIVE_HOUR_MS } from "@workcrew/contracts";
+import { DAY_MS } from "@workcrew/contracts";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
 import { captureAnonymous, captureEvent, safeErrorCategory } from "./analytics.js";
@@ -161,8 +161,6 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
       budgetMicrodollars: 0,
       usedMicrodollars: 0,
       reservedMicrodollars: 0,
-      fiveHourLimitMicrodollars: 0,
-      fiveHourUsedMicrodollars: 0,
       dailyLimitMicrodollars: 0,
       dailyUsedMicrodollars: 0,
       pendingPlan: null,
@@ -173,9 +171,8 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
   const nowMs = Date.now();
   const window = getBudgetWindow(subscription.budgetAnchorMs, nowMs);
   const limits = planLimits(subscription.plan);
-  const [usage, fiveHourUsed, dailyUsed] = await Promise.all([
+  const [usage, dailyUsed] = await Promise.all([
     getBudgetUsage(userId, window),
-    rollingUsage(userId, nowMs - FIVE_HOUR_MS),
     rollingUsage(userId, nowMs - DAY_MS)
   ]);
   return {
@@ -189,8 +186,6 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
     budgetMicrodollars: planBudget(subscription.plan),
     usedMicrodollars: usage.used,
     reservedMicrodollars: usage.reserved,
-    fiveHourLimitMicrodollars: limits.fiveHour,
-    fiveHourUsedMicrodollars: fiveHourUsed,
     dailyLimitMicrodollars: limits.daily,
     dailyUsedMicrodollars: dailyUsed,
     pendingPlan: subscription.pendingPlan,
@@ -675,7 +670,7 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
     } else {
       // A genuine failure (model or network error) produced no trustworthy
       // usage. Release the hold so a failed turn is never billed and cannot eat
-      // into the user's hard 5-hour, daily, or monthly caps.
+      // into the user's hard daily or monthly caps.
       await releaseBudget(reservation.reservationId);
     }
     run.status = "failed";

@@ -31,24 +31,21 @@ export type PlanId = z.infer<typeof planIdSchema>;
 export const billingIntervalSchema = z.enum(["month", "year"]);
 export type BillingInterval = z.infer<typeof billingIntervalSchema>;
 
-// Hard API-cost caps per plan, in microdollars (one dollar = 1,000,000). Three
+// Hard API-cost caps per plan, in microdollars (one dollar = 1,000,000). Two
 // rolling windows are enforced so the operator's API spend per user is strictly
-// bounded: a short 5-hour rate window, a daily cap, and a monthly cap. The
-// monthly figure is also the user's plain "tokens per month" allowance.
+// bounded: a rolling daily (24-hour) cap and a monthly cap. The daily cap is set
+// to the monthly divided by 30, so using a full day's worth every day for a month
+// lands exactly on the monthly allowance and paces usage evenly across the month.
+// The monthly figure is also the user's plain "tokens per month" allowance.
 export const PLAN_CATALOG = {
   pro: {
     name: "Pro",
     monthlyPriceUsd: 27,
     yearlyPriceUsd: 270,
-    // Rolling 5-hour refresh model (like Claude): the 5-hour cap is the everyday
-    // gate (roughly three to four full high-effort Opus messages per window, which
-    // frees up as the window rolls forward, so users come back through the day).
-    // The monthly cap is a rarely-hit safety net that bounds worst-case API spend
-    // per user, not an everyday wall: at the $27 price a user who somehow hits the
-    // full $12 still leaves about a 56% margin. Raising the 5-hour cap does not
-    // raise worst-case monthly spend, which the monthly cap alone bounds.
-    fiveHourMicrodollars: 700_000,
-    dailyMicrodollars: 2_500_000,
+    // $12 / month, paced as $0.40 / day (12 / 30). The daily cap is the everyday
+    // gate; the monthly cap is the overall allowance a steady daily user reaches
+    // at month end.
+    dailyMicrodollars: 400_000,
     monthlyApiBudgetMicrodollars: 12_000_000,
     devices: 1
   },
@@ -56,8 +53,9 @@ export const PLAN_CATALOG = {
     name: "Ultra",
     monthlyPriceUsd: 200,
     yearlyPriceUsd: 2_000,
-    fiveHourMicrodollars: 750_000,
-    dailyMicrodollars: 3_000_000,
+    // $60 / month, paced as $2.00 / day (60 / 30). Much higher day-to-day headroom
+    // than Pro, matching the higher price.
+    dailyMicrodollars: 2_000_000,
     monthlyApiBudgetMicrodollars: 60_000_000,
     devices: 5
   }
@@ -65,14 +63,12 @@ export const PLAN_CATALOG = {
   name: string;
   monthlyPriceUsd: number;
   yearlyPriceUsd: number;
-  fiveHourMicrodollars: number;
   dailyMicrodollars: number;
   monthlyApiBudgetMicrodollars: number;
   devices: number;
 }>;
 
-// The rolling-window durations the caps are measured over.
-export const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
+// The rolling-window duration the daily cap is measured over.
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const modelTierSchema = z.enum(["auto", "haiku", "sonnet", "opus"]);
@@ -239,11 +235,9 @@ export type SubscriptionState = {
   budgetMicrodollars: number;
   usedMicrodollars: number;
   reservedMicrodollars: number;
-  // The shorter rolling hard caps and how much real usage has gone against each
-  // in its window (credits are excluded so a credit cannot lift a rate limit).
+  // The rolling daily hard cap and how much real usage has gone against it in the
+  // last 24 hours (credits are excluded so a credit cannot lift a rate limit).
   // The monthly cap and usage are budgetMicrodollars / usedMicrodollars above.
-  fiveHourLimitMicrodollars: number;
-  fiveHourUsedMicrodollars: number;
   dailyLimitMicrodollars: number;
   dailyUsedMicrodollars: number;
   // A scheduled downgrade that has not taken effect yet: the lower plan the

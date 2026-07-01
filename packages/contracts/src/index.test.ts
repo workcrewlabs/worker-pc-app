@@ -15,22 +15,19 @@ describe("plan catalog", () => {
   });
 
   it("sets the hard API-cost caps per plan", () => {
-    // Pro: $0.70 / 5h, $2.50 / day, $12 / month. The 5-hour and daily caps are the
-    // everyday rolling gate sized so a few high-effort messages fit; the monthly
-    // cap is a rarely-hit safety net that is the real per-user cost ceiling.
-    expect(PLAN_CATALOG.pro.fiveHourMicrodollars).toBe(700_000);
-    expect(PLAN_CATALOG.pro.dailyMicrodollars).toBe(2_500_000);
+    // Pro: $0.40 / day, $12 / month. The daily cap is the everyday rolling gate,
+    // sized as the monthly divided by 30; the monthly cap is the overall ceiling.
+    expect(PLAN_CATALOG.pro.dailyMicrodollars).toBe(400_000);
     expect(PLAN_CATALOG.pro.monthlyApiBudgetMicrodollars).toBe(12_000_000);
-    // Ultra: $0.75 / 5h, $3 / day, $60 / month.
-    expect(PLAN_CATALOG.ultra.fiveHourMicrodollars).toBe(750_000);
-    expect(PLAN_CATALOG.ultra.dailyMicrodollars).toBe(3_000_000);
+    // Ultra: $2 / day, $60 / month.
+    expect(PLAN_CATALOG.ultra.dailyMicrodollars).toBe(2_000_000);
     expect(PLAN_CATALOG.ultra.monthlyApiBudgetMicrodollars).toBe(60_000_000);
   });
 
-  it("keeps each plan's caps consistent (5h below daily below monthly)", () => {
+  it("keeps each plan's caps consistent (daily below monthly, daily = monthly / 30)", () => {
     for (const plan of [PLAN_CATALOG.pro, PLAN_CATALOG.ultra]) {
-      expect(plan.fiveHourMicrodollars).toBeLessThan(plan.dailyMicrodollars);
       expect(plan.dailyMicrodollars).toBeLessThan(plan.monthlyApiBudgetMicrodollars);
+      expect(plan.dailyMicrodollars).toBe(Math.round(plan.monthlyApiBudgetMicrodollars / 30));
     }
   });
 });

@@ -48,8 +48,6 @@ const EMPTY_ENTITLEMENT: SubscriptionState = {
   budgetMicrodollars: 0,
   usedMicrodollars: 0,
   reservedMicrodollars: 0,
-  fiveHourLimitMicrodollars: 0,
-  fiveHourUsedMicrodollars: 0,
   dailyLimitMicrodollars: 0,
   dailyUsedMicrodollars: 0,
   pendingPlan: null,
@@ -431,19 +429,19 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
   );
 }
 
-// A small circular gauge of the rolling 5-hour usage window, like the Claude
-// desktop app. It shows how much of the 5-hour burst budget is used and frees up
-// as the window rolls forward.
-function FiveHourRing({ entitlement }: { entitlement: SubscriptionState }) {
-  const limit = entitlement.fiveHourLimitMicrodollars;
+// A small circular gauge of the rolling daily (24-hour) usage window. It shows
+// how much of today's budget is used and frees up as the 24-hour window rolls
+// forward.
+function DailyRing({ entitlement }: { entitlement: SubscriptionState }) {
+  const limit = entitlement.dailyLimitMicrodollars;
   if (limit <= 0) return null;
-  const pct = Math.min(100, Math.max(0, (entitlement.fiveHourUsedMicrodollars / limit) * 100));
+  const pct = Math.min(100, Math.max(0, (entitlement.dailyUsedMicrodollars / limit) * 100));
   const radius = 8;
   const circumference = 2 * Math.PI * radius;
   const dash = (pct / 100) * circumference;
-  const title = `5-hour limit: ${Math.round(pct)}% used. Frees up as the 5-hour window rolls forward.`;
+  const title = `Daily limit: ${Math.round(pct)}% used. Frees up as the 24-hour window rolls forward.`;
   return (
-    <div className={`five-hour-ring ${pct >= 80 ? "is-high" : ""}`} title={title} aria-label={title} role="img">
+    <div className={`daily-ring ${pct >= 80 ? "is-high" : ""}`} title={title} aria-label={title} role="img">
       <svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
         <circle className="ring-bg" cx="11" cy="11" r={radius} fill="none" strokeWidth="2.5" />
         <circle className="ring-fg" cx="11" cy="11" r={radius} fill="none" strokeWidth="2.5" strokeLinecap="round" strokeDasharray={`${dash} ${circumference}`} transform="rotate(-90 11 11)" />
@@ -537,10 +535,10 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   const { conversationId, usedTokens } = chat;
 
   // When a chat turn or an automation run finishes it has consumed budget, so
-  // re-fetch the entitlement to update the rolling 5-hour and daily figures (and
-  // the 5-hour ring). The monthly "tokens left" already updates live from the
-  // turn's done frame; this keeps the rolling windows honest right away instead
-  // of waiting for the next window focus.
+  // re-fetch the entitlement to update the rolling daily figure (and the daily
+  // ring). The monthly "tokens left" already updates live from the turn's done
+  // frame; this keeps the daily window honest right away instead of waiting for
+  // the next window focus.
   const wasStreaming = useRef(false);
   useEffect(() => {
     if (wasStreaming.current && !chat.streaming) onRefreshEntitlement();
@@ -876,7 +874,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
                 {upgrading ? "Upgrading..." : "Upgrade"}
               </button>
             )}
-            <FiveHourRing entitlement={entitlement} />
+            <DailyRing entitlement={entitlement} />
             <div className="usage-box">
               <div><span>Tokens</span><strong>{formatTokens(Math.max(0, entitlement.budgetMicrodollars - usage))} left</strong></div>
               <div className="usage-track"><span style={{ width: `${percent}%` }} /></div>
@@ -1040,8 +1038,8 @@ export default function App() {
 
   // Re-fetch only the entitlement (not the whole phase flow). Used after a chat
   // turn or automation run finishes, and when the window regains focus, so the
-  // rolling 5-hour and daily figures (and the 5-hour ring) reflect the latest
-  // usage rather than the value from the last full load.
+  // rolling daily figure (and the daily ring) reflects the latest usage rather
+  // than the value from the last full load.
   function refreshEntitlement() {
     void window.workcrew.api.entitlement().then(setEntitlement).catch(() => {});
   }

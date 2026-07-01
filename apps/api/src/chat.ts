@@ -260,8 +260,8 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
 
   // Release the reservation (charge nothing) exactly once. Used on the abort and
   // failure paths so a turn the user never received is not billed and cannot
-  // consume the hard 5-hour, daily, or monthly caps. Shares the same guard as
-  // settleOnce, so settle-then-release or release-then-settle is a no-op.
+  // consume the hard daily or monthly caps. Shares the same guard as settleOnce,
+  // so settle-then-release or release-then-settle is a no-op.
   const releaseOnce = async (): Promise<void> => {
     if (settled || !reservationId) return;
     settled = true;

@@ -12,7 +12,7 @@ function makeSubscription(): SubscriptionRow {
     userId: randomUUID(),
     stripeCustomerId: null,
     stripeSubscriptionId: null,
-    // Ultra so a sonnet chat turn's worst-case reservation fits the 5-hour cap.
+    // Ultra so a sonnet chat turn's worst-case reservation fits the daily cap.
     plan: "ultra",
     interval: "month",
     status: "active",

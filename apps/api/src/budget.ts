@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { DAY_MS, FIVE_HOUR_MS, PLAN_CATALOG, type PlanId } from "@workcrew/contracts";
+import { DAY_MS, PLAN_CATALOG, type PlanId } from "@workcrew/contracts";
 import {
   addReferralEarned,
   claimReferralCredit,
@@ -48,15 +48,16 @@ export function planBudget(plan: PlanId): number {
   return PLAN_CATALOG[plan].monthlyApiBudgetMicrodollars;
 }
 
-// The three hard caps for a plan, in microdollars.
-export function planLimits(plan: PlanId): { fiveHour: number; daily: number; monthly: number } {
+// The two hard caps for a plan, in microdollars: a rolling daily cap and a
+// monthly cap.
+export function planLimits(plan: PlanId): { daily: number; monthly: number } {
   const item = PLAN_CATALOG[plan];
-  return { fiveHour: item.fiveHourMicrodollars, daily: item.dailyMicrodollars, monthly: item.monthlyApiBudgetMicrodollars };
+  return { daily: item.dailyMicrodollars, monthly: item.monthlyApiBudgetMicrodollars };
 }
 
 // Real API usage (reservations plus settled model cost) since a point in time, for
-// the rolling 5-hour and daily caps. Credit rows (top-ups, referral grants) are
-// excluded so buying tokens can never lift a rate limit; these caps are absolute.
+// the rolling daily cap. Credit rows (top-ups, referral grants) are excluded so
+// buying tokens can never lift a rate limit; this cap is absolute.
 const CREDIT_MODELS = "'token_topup', 'auto_reload', 'referral_credit'";
 export async function rollingUsage(userId: string, sinceMs: number): Promise<number> {
   const result = await client.execute({
@@ -74,12 +75,11 @@ export async function rollingUsage(userId: string, sinceMs: number): Promise<num
 // Current usage against each of the three windows, for the entitlement and the
 // banners. Monthly nets credits (a top-up adds headroom); the rolling windows do
 // not (rate limits are absolute).
-export async function getMultiWindowUsage(userId: string, anchorMs: number, nowMs = Date.now()): Promise<{ fiveHour: number; daily: number; monthly: number }> {
+export async function getMultiWindowUsage(userId: string, anchorMs: number, nowMs = Date.now()): Promise<{ daily: number; monthly: number }> {
   const window = getBudgetWindow(anchorMs, nowMs);
   const monthly = await getBudgetUsage(userId, window);
-  const fiveHour = await rollingUsage(userId, nowMs - FIVE_HOUR_MS);
   const daily = await rollingUsage(userId, nowMs - DAY_MS);
-  return { fiveHour, daily, monthly: Math.max(0, monthly.used + monthly.reserved) };
+  return { daily, monthly: Math.max(0, monthly.used + monthly.reserved) };
 }
 
 export async function getBudgetUsage(userId: string, window: BudgetWindow): Promise<{ used: number; reserved: number }> {
@@ -106,15 +106,14 @@ export async function reserveBudget(input: {
   const window = getBudgetWindow(input.subscription.budgetAnchorMs, nowMs);
   const limits = planLimits(input.subscription.plan);
   const amount = input.amountMicrodollars;
-  const fiveHourStart = nowMs - FIVE_HOUR_MS;
   const dayStart = nowMs - DAY_MS;
   const id = randomUUID();
 
   // One atomic conditional insert that only succeeds when the new reservation
-  // keeps ALL THREE caps satisfied: the monthly window (which nets credits, so a
-  // top-up adds headroom), the rolling 5-hour cap, and the rolling daily cap. The
-  // rolling caps count only real usage (credits excluded) so they are absolute
-  // rate limits a top-up cannot lift. This bounds the operator's API spend hard.
+  // keeps BOTH caps satisfied: the monthly window (which nets credits, so a top-up
+  // adds headroom) and the rolling daily cap. The daily cap counts only real usage
+  // (credits excluded) so it is an absolute rate limit a top-up cannot lift. This
+  // bounds the operator's API spend hard.
   const rollingSum = `SUM(CASE
         WHEN status = 'reserved' THEN reserved_microdollars
         WHEN status = 'settled' AND model NOT IN (${CREDIT_MODELS}) THEN actual_microdollars
@@ -129,14 +128,11 @@ export async function reserveBudget(input: {
         SELECT SUM(CASE WHEN status = 'reserved' THEN reserved_microdollars WHEN status = 'settled' THEN actual_microdollars ELSE 0 END)
         FROM usage_ledger WHERE user_id = ? AND period_start_ms = ? AND period_end_ms = ?
       ), 0) <= ?
-      AND ? + COALESCE((SELECT ${rollingSum} FROM usage_ledger WHERE user_id = ? AND created_at_ms >= ?), 0) <= ?
       AND ? + COALESCE((SELECT ${rollingSum} FROM usage_ledger WHERE user_id = ? AND created_at_ms >= ?), 0) <= ?`,
     args: [
       id, input.subscription.userId, input.runId, window.startMs, window.endMs, input.model, amount, nowMs,
       // monthly
       amount, input.subscription.userId, window.startMs, window.endMs, limits.monthly,
-      // rolling 5-hour
-      amount, input.subscription.userId, fiveHourStart, limits.fiveHour,
       // rolling daily
       amount, input.subscription.userId, dayStart, limits.daily
     ]
@@ -162,10 +158,6 @@ export async function reserveBudget(input: {
 
   if (rowsAffected !== 1) {
     // Report which cap is binding so the user sees a clear, accurate message.
-    const fiveHourUsed = await rollingUsage(input.subscription.userId, fiveHourStart);
-    if (amount + fiveHourUsed > limits.fiveHour) {
-      throw Object.assign(new Error("You have hit your usage limit for now. It will free up within a few hours."), { statusCode: 429, code: "RATE_LIMIT_5H" });
-    }
     const dailyUsed = await rollingUsage(input.subscription.userId, dayStart);
     if (amount + dailyUsed > limits.daily) {
       throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
