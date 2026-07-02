@@ -68,8 +68,9 @@ release).** Many updates touch both.
 ## 3. Backend update: exact steps
 
 1. Claude makes the code change on a branch and pushes it to the canonical repo.
-   Note: a worktree's git `origin` may point at a personal fork
-   (`nazihbizriai-lab`); pushes must go to `workcrewlabs/worker-pc-app`.
+   Note: the GitHub account was renamed from `nazihbizriai-lab` to `workcrewlabs`,
+   so an older worktree's git `origin` may still show the old name (GitHub
+   redirects it). Push to `workcrewlabs/worker-pc-app` to be safe.
 2. Claude opens a PR to `main`. CodeRabbit reviews it.
 3. **You merge the PR** (Squash and merge).
 4. Render auto-deploys `main`. Wait a few minutes.
@@ -128,10 +129,10 @@ These came out of the security audit and the release setup:
    deliveries. Fix in the Stripe Dashboard (test mode): Developers -> Webhooks ->
    open the endpoint for `.../v1/billing/webhook` -> delete it (production uses live
    mode). Confirm a **live-mode** endpoint for that same URL exists and is healthy.
-2. **Desktop update feed vs canonical repo.** The app's auto-update publish target
-   (`apps/desktop/package.json`) and the website's download link must point at the
-   same GitHub org. Decide the single authoritative org (`workcrewlabs`), make sure
-   releases are published there, and cut a release so installed clients repoint.
+2. **Desktop update feed.** RESOLVED: the account was renamed `nazihbizriai-lab` ->
+   `workcrewlabs`, and `apps/desktop/package.json` now publishes to `workcrewlabs`,
+   matching the website download and the canonical repo. Cut the next release from
+   `workcrewlabs` so installed clients follow the correct (non-redirected) feed.
 3. **Code signing.** The Windows installer is unsigned, so auto-updates are trusted
    only via the release feed's checksum. Buy a Windows code-signing certificate, add
    it to the build as a secret, and enable signing.
