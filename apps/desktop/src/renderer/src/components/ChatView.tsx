@@ -476,20 +476,22 @@ export function ChatView({
   if (!hasConversation) {
     return (
       <div className="chat-empty">
-        <h1 className="greeting">{timeGreeting()}</h1>
-        {composer}
-        {aux}
-        <p className="suggestion-label">Try an automation</p>
-        <div className="suggestion-chips">
-          {AUTOMATION_PROMPTS.map((prompt) => (
-            <button key={prompt} type="button" onClick={() => onAutomate(prompt)}>{prompt}</button>
-          ))}
-        </div>
-        <p className="suggestion-label">Ask me a question</p>
-        <div className="suggestion-chips">
-          {QUESTION_PROMPTS.map((prompt) => (
-            <button key={prompt} type="button" onClick={() => submit(prompt)}>{prompt}</button>
-          ))}
+        <div className="chat-empty-inner">
+          <h1 className="greeting">{timeGreeting()}</h1>
+          {composer}
+          {aux}
+          <p className="suggestion-label">Try an automation</p>
+          <div className="suggestion-chips">
+            {AUTOMATION_PROMPTS.map((prompt) => (
+              <button key={prompt} type="button" onClick={() => onAutomate(prompt)}>{prompt}</button>
+            ))}
+          </div>
+          <p className="suggestion-label">Ask me a question</p>
+          <div className="suggestion-chips">
+            {QUESTION_PROMPTS.map((prompt) => (
+              <button key={prompt} type="button" onClick={() => submit(prompt)}>{prompt}</button>
+            ))}
+          </div>
         </div>
       </div>
     );

@@ -465,12 +465,15 @@ select option:checked { background-color: var(--panel-2); }
 .recents-list button:hover { color: var(--text); background: var(--panel-2); }
 .recents-list .recent-active { color: var(--text); background: var(--panel-2); }
 
-/* Chat empty state: a single centered cluster (greeting, composer, chips).
-   justify-content: safe center keeps it centered when it fits but pins it to the
-   top (never overflowing upward over the usage banner) on a short or scaled-up
-   window; overflow-y lets anything below the fold scroll into view instead of
-   being clipped. This is what stops "Good morning" overlapping the red banner. */
-.chat-empty { position: relative; z-index: 1; flex: 1; min-height: 0; width: min(720px, calc(100% - 64px)); margin: 0 auto; padding: 24px 0; display: flex; flex-direction: column; justify-content: safe center; overflow-y: auto; gap: 18px; }
+/* Chat empty state. The OUTER box is full width and owns the scroll, so when the
+   cluster is taller than the space (banner shown, short or scaled-up window) the
+   scrollbar sits at the window edge, not in the middle of the screen. It centers
+   the inner cluster horizontally, and justify-content: safe center centers it
+   vertically when it fits but pins it to the top when it does not, so the greeting
+   never overflows upward over the usage banner. The INNER cluster keeps the
+   readable 720px column width. */
+.chat-empty { position: relative; z-index: 1; flex: 1; min-height: 0; width: 100%; padding: 24px 0; display: flex; flex-direction: column; align-items: center; justify-content: safe center; overflow-y: auto; }
+.chat-empty-inner { width: min(720px, calc(100% - 64px)); display: flex; flex-direction: column; gap: 18px; }
 .greeting { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 0 0 4px; font-family: var(--font-serif); font-size: var(--fs-greeting); font-weight: 500; line-height: 1.2; letter-spacing: normal; }
 .greeting-spark { width: 26px; height: 26px; color: var(--accent-soft); }
 .suggestion-label { margin: 6px 0 2px; text-align: center; color: var(--muted); font-size: 11px; letter-spacing: .4px; text-transform: uppercase; }
