@@ -60,7 +60,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "nazihbizriai-lab",
+        "owner": "workcrewlabs",
         "repo": "worker-pc-app",
         "releaseType": "release"
       }
