@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { actualCostMicrodollars, chooseModel, maximumReservationMicrodollars } from "./anthropic.js";
-import { getBudgetUsage, getBudgetWindow, releaseBudget, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
+import { actualCostMicrodollars, budgetLimitedOutputTokens, chooseModel, maximumReservationMicrodollars } from "./anthropic.js";
+import { budgetHeadroom, getBudgetUsage, getBudgetWindow, releaseBudget, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
 import { client, initializeDatabase, type SubscriptionRow } from "./db.js";
 
 describe("monthly allowance windows", () => {
@@ -31,6 +31,16 @@ describe("model accounting", () => {
     expect(chooseModel("auto", "Open example.com")).toBe("haiku");
     expect(chooseModel("auto", "Plan a complex workflow across multiple applications")).toBe("sonnet");
     expect(chooseModel("auto", "Use deep reasoning to root cause this difficult failure")).toBe("opus");
+  });
+
+  it("caps output tokens to what the remaining budget can pay for", () => {
+    // Output price: opus 25, haiku 5 microdollars/token. The cap is remaining /
+    // output price, floored, never negative. This is what stops a turn generating
+    // past the budget.
+    expect(budgetLimitedOutputTokens("opus", 250_000)).toBe(10_000);
+    expect(budgetLimitedOutputTokens("haiku", 1_000)).toBe(200);
+    expect(budgetLimitedOutputTokens("opus", 24)).toBe(0); // less than one token's price
+    expect(budgetLimitedOutputTokens("opus", 0)).toBe(0);
   });
 });
 
@@ -189,6 +199,30 @@ describe("budget ledger invariants", () => {
     await expect(
       reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs })
     ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
+  });
+
+  it("reports daily and monthly headroom separately", async () => {
+    // A turn's output cap is derived from the smaller of these, so an expensive
+    // turn near the limit is bounded to the money actually left; both are returned
+    // so the caller can say "frees up tomorrow" (daily) vs "used all your tokens"
+    // (monthly) accurately.
+    const subscription = makeSubscription();
+    const nowMs = subscription.budgetAnchorMs;
+    // Pro caps: daily 400k, monthly 12M. Seed 300k of settled usage today.
+    await seedSettled(subscription.userId, 300_000, nowMs, subscription.budgetAnchorMs);
+    const headroom = await budgetHeadroom(subscription.userId, subscription, nowMs);
+    expect(headroom.daily).toBe(100_000); // 400k cap - 300k used today
+    expect(headroom.monthly).toBe(11_700_000); // 12M cap - 300k used
+  });
+
+  it("returns the clamped reserved amount so callers can size output to it", async () => {
+    // Near the cap the reservation is clamped below the requested worst case; the
+    // returned reservedMicrodollars is what a turn may actually spend.
+    const subscription = makeSubscription();
+    const nowMs = subscription.budgetAnchorMs;
+    await seedSettled(subscription.userId, 350_000, nowMs, subscription.budgetAnchorMs); // 50k left
+    const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "opus", amountMicrodollars: 300_000, nowMs });
+    expect(reservation.reservedMicrodollars).toBe(50_000);
   });
 
   it("releases the difference when actual usage settles below the reservation", async () => {

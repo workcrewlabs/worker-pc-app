@@ -6,9 +6,9 @@ import {
   type ChatDeltaFrame,
   type ChatSend
 } from "@workcrew/contracts";
-import { actualCostMicrodollars, maximumReservationMicrodollars, withRollingCacheBreakpoint } from "./anthropic.js";
+import { actualCostMicrodollars, budgetLimitedOutputTokens, estimatedInputMicrodollars, maximumReservationMicrodollars, withRollingCacheBreakpoint } from "./anthropic.js";
 import { blocksForRow, estimateMediaTokens } from "./attachments.js";
-import { getBudgetUsage, releaseBudget, reserveBudget, settleBudget } from "./budget.js";
+import { budgetHeadroom, getBudgetUsage, releaseBudget, reserveBudget, settleBudget } from "./budget.js";
 import { config } from "./config.js";
 import {
   addMessage,
@@ -28,6 +28,11 @@ import { MODEL_PRICES, chooseModel, modelId, type ConcreteModelTier } from "./mo
  * the automation loop so a single chat turn cannot reserve the whole cycle.
  */
 const MAX_OUTPUT_TOKENS = 8_000;
+
+// The smallest answer worth producing. When the remaining budget cannot pay for
+// at least this many output tokens, we stop with the daily-limit message rather
+// than emit a uselessly truncated stub.
+const MIN_OUTPUT_TOKENS = 256;
 
 /**
  * The chat system prompt. It is kept byte stable (no timestamps or ids
@@ -235,16 +240,13 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
   const stored = await getMessages(conversationId, input.userId);
   const { modelMessages, reservationMessages, mediaTokens } = await buildModelMessages(stored, input.userId);
 
-  // Reserve the worst case cost up front, mirroring the runs path: an input
-  // upper bound from the serialized payload plus the full output token budget,
-  // plus a bounded allowance for image and PDF tokens (estimated separately so
-  // megabytes of base64 do not inflate the text estimate). The ledger SQL
-  // enforces the hard cap, so a reservation that would breach the cycle budget
-  // is rejected here.
+  // Both the reservation and the model's response length are sized to the budget
+  // that is actually left (computed inside the try below), so a single turn,
+  // including a long file or spreadsheet generation, can never spend past the cap:
+  // it stops mid-answer when the money runs out. This payload is the input side of
+  // the worst-case estimate; image and PDF tokens are added as a bounded allowance
+  // (estimated separately so megabytes of base64 do not inflate the text estimate).
   const reservationPayload = { model: modelId(tier), system: SYSTEM_PROMPT, messages: reservationMessages };
-  const reservationAmount =
-    maximumReservationMicrodollars(tier, reservationPayload, MAX_OUTPUT_TOKENS) +
-    mediaTokens * MODEL_PRICES[tier].input;
 
   let reservationId: string | null = null;
   let reservationWindow: { startMs: number; endMs: number } | null = null;
@@ -269,6 +271,30 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
   };
 
   try {
+    // Size this turn so the WHOLE turn (input plus output) fits the money that is
+    // actually left, and refuse before spending a cent if it does not. The provider
+    // bills input tokens (history + attachments) on every turn, so the remaining
+    // budget must cover the input first; output, the priciest and ballooning
+    // category (a long file/spreadsheet), is then truncated to whatever budget is
+    // left, so the turn stops mid-answer at the cap instead of running to completion
+    // and overshooting.
+    const headroom = await budgetHeadroom(input.userId, input.subscription);
+    const remaining = Math.min(headroom.daily, headroom.monthly);
+    const inputEstimate = estimatedInputMicrodollars(tier, reservationPayload, mediaTokens);
+    const outputPrice = MODEL_PRICES[tier].output;
+    if (remaining - inputEstimate < MIN_OUTPUT_TOKENS * outputPrice) {
+      // Not enough left to cover this turn's input plus even a minimal answer. Stop
+      // here (no provider call), reporting the window that is actually binding.
+      if (headroom.daily <= headroom.monthly) {
+        throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+      }
+      throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+    }
+    let effectiveMaxTokens = Math.min(MAX_OUTPUT_TOKENS, budgetLimitedOutputTokens(tier, remaining - inputEstimate));
+    const reservationAmount =
+      maximumReservationMicrodollars(tier, reservationPayload, effectiveMaxTokens) +
+      mediaTokens * MODEL_PRICES[tier].input;
+
     const reservation = await reserveBudget({
       subscription: input.subscription,
       runId: conversationId,
@@ -277,6 +303,19 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
     });
     reservationId = reservation.reservationId;
     reservationWindow = reservation.window;
+    // The ledger may have clamped the reservation smaller than requested if a
+    // concurrent turn consumed budget in between. Re-cap the output to the amount
+    // actually reserved (minus input) so the live call can never exceed it; if that
+    // leaves no room for a minimal answer, release the hold and stop.
+    const finalOutputBudget = reservation.reservedMicrodollars - inputEstimate;
+    if (finalOutputBudget < MIN_OUTPUT_TOKENS * outputPrice) {
+      await releaseOnce();
+      if (headroom.daily <= headroom.monthly) {
+        throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+      }
+      throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+    }
+    effectiveMaxTokens = Math.min(effectiveMaxTokens, budgetLimitedOutputTokens(tier, finalOutputBudget));
 
     const useMock = config.mockAi || !config.anthropicApiKey;
 
@@ -317,7 +356,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       const stream = client.messages.stream(
         {
           model: modelId(tier),
-          max_tokens: MAX_OUTPUT_TOKENS,
+          max_tokens: effectiveMaxTokens,
           system: cachedSystem,
           messages: withRollingCacheBreakpoint(modelMessages) as Anthropic.Messages.MessageParam[]
         },

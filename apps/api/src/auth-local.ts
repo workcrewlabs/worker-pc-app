@@ -282,12 +282,12 @@ export class LocalAuthProvider implements AuthProvider {
       // Spend roughly the same work hashing a throwaway value so that the
       // response time does not reveal whether the email exists.
       await hashPassword(password, randomBytes(SCRYPT_SALT_BYTES).toString("hex"));
-      throw authError("The email or password is incorrect", 401, "INVALID_CREDENTIALS");
+      throw authError("The email or password is incorrect. If you do not have an account yet, select Create an account below.", 401, "INVALID_CREDENTIALS");
     }
 
     const ok = await verifyPassword(password, user.passwordSalt, user.passwordHash);
     if (!ok) {
-      throw authError("The email or password is incorrect", 401, "INVALID_CREDENTIALS");
+      throw authError("The email or password is incorrect. If you do not have an account yet, select Create an account below.", 401, "INVALID_CREDENTIALS");
     }
 
     // Block sign-in for an unverified address when verification is required.
