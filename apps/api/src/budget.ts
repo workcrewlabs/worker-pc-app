@@ -72,6 +72,26 @@ export async function rollingUsage(userId: string, sinceMs: number): Promise<num
   return Number(result.rows[0]?.used ?? 0);
 }
 
+// Settled (actually incurred) real usage since a point in time: only 'settled'
+// non-credit rows, excluding in-flight reservations. This is what we DISPLAY for
+// the daily cap. Enforcement (reserveBudget) still counts reservations so spend
+// stays bounded, but the shown number must move only as real cost lands. If the
+// display included a worst-case reservation, a single turn would push the daily
+// total to the cap while it ran and drop back once it settled, making the banner
+// flip between "running low" and "limit reached". Settled-only is stable and
+// monotonic within the day.
+export async function rollingSettledUsage(userId: string, sinceMs: number): Promise<number> {
+  const result = await client.execute({
+    sql: `SELECT COALESCE(SUM(CASE
+        WHEN status = 'settled' AND model NOT IN (${CREDIT_MODELS}) THEN actual_microdollars
+        ELSE 0 END), 0) AS used
+      FROM usage_ledger
+      WHERE user_id = ? AND created_at_ms >= ?`,
+    args: [userId, sinceMs]
+  });
+  return Number(result.rows[0]?.used ?? 0);
+}
+
 // Current usage against each of the three windows, for the entitlement and the
 // banners. Monthly nets credits (a top-up adds headroom); the rolling windows do
 // not (rate limits are absolute).
@@ -109,42 +129,54 @@ export async function reserveBudget(input: {
   const dayStart = nowMs - DAY_MS;
   const id = randomUUID();
 
-  // One atomic conditional insert that succeeds while the user still has ANY
-  // headroom left in BOTH windows: the monthly window (which nets credits, so a
-  // top-up adds headroom) and the rolling daily cap (real usage only, so a top-up
+  // One atomic conditional insert that is a HARD cap: real spend can never exceed
+  // either window (the monthly window, which nets credits so a top-up adds
+  // headroom, and the rolling daily cap, which counts real usage only so a top-up
   // cannot lift this absolute rate limit).
   //
-  // We gate on "is the window already exhausted?" rather than "would this
-  // request's worst case fit?" on purpose. A request reserves its worst-case cost
-  // up front (the full output budget at the model's price plus a byte-based upper
-  // bound on input); on a small daily cap that worst case can be a large fraction
-  // of, or exceed, the whole cap by itself. The old "must fit" gate therefore
-  // refused a user who was sitting well under their real limit (e.g. an Opus turn
-  // at 58% of the Pro cap). Allowing a request whenever the window is not yet full
-  // lets the user spend right up to the cap; the reservation then settles down to
-  // the true, far smaller cost. The only overshoot is at most one in-flight
-  // request's real cost per window, an accepted tradeoff for a usable limit. Spend
-  // stays hard-bounded: once a window is full, every new request is refused.
+  // Two properties combined:
+  //  1. GATE: the row is inserted only while BOTH windows still have headroom
+  //     (committed < cap). So once a window is full, every new request is refused.
+  //  2. CLAMP: the reserved amount is not the raw worst case; it is
+  //     min(worstCase, monthlyRemaining, dailyRemaining). Because settleBudget
+  //     clamps the settled cost to the reserved amount, a turn can be charged at
+  //     most the headroom that was left, so committed spend lands on the cap
+  //     exactly and never a cent over. This is why we can allow a request whenever
+  //     there is ANY headroom (never blocking a user sitting under their limit,
+  //     e.g. an Opus turn at 58%) while still guaranteeing the number never passes
+  //     the cap. The caller keeps its own worst-case estimate for the
+  //     USAGE_RESERVATION_BREACH check, so a turn whose true cost is under the
+  //     worst case (the normal case) still settles cleanly at the clamped ceiling.
   const rollingSum = `SUM(CASE
         WHEN status = 'reserved' THEN reserved_microdollars
         WHEN status = 'settled' AND model NOT IN (${CREDIT_MODELS}) THEN actual_microdollars
         ELSE 0 END)`;
+  const monthlySum = `SUM(CASE WHEN status = 'reserved' THEN reserved_microdollars WHEN status = 'settled' THEN actual_microdollars ELSE 0 END)`;
+  // SQLite exposes a scalar min(a,b,c); Postgres spells it LEAST(a,b,c).
+  const leastFn = client.dialect === "postgres" ? "LEAST" : "min";
   const insert = {
     sql: `INSERT INTO usage_ledger(
       id, user_id, run_id, period_start_ms, period_end_ms, model,
       reserved_microdollars, actual_microdollars, status, created_at_ms
     )
-    SELECT ?, ?, ?, ?, ?, ?, ?, 0, 'reserved', ?
-    WHERE COALESCE((
-        SELECT SUM(CASE WHEN status = 'reserved' THEN reserved_microdollars WHEN status = 'settled' THEN actual_microdollars ELSE 0 END)
-        FROM usage_ledger WHERE user_id = ? AND period_start_ms = ? AND period_end_ms = ?
-      ), 0) < ?
+    SELECT ?, ?, ?, ?, ?, ?,
+      ${leastFn}(
+        ?,
+        ? - COALESCE((SELECT ${monthlySum} FROM usage_ledger WHERE user_id = ? AND period_start_ms = ? AND period_end_ms = ?), 0),
+        ? - COALESCE((SELECT ${rollingSum} FROM usage_ledger WHERE user_id = ? AND created_at_ms >= ?), 0)
+      ),
+      0, 'reserved', ?
+    WHERE COALESCE((SELECT ${monthlySum} FROM usage_ledger WHERE user_id = ? AND period_start_ms = ? AND period_end_ms = ?), 0) < ?
       AND COALESCE((SELECT ${rollingSum} FROM usage_ledger WHERE user_id = ? AND created_at_ms >= ?), 0) < ?`,
     args: [
-      id, input.subscription.userId, input.runId, window.startMs, window.endMs, input.model, amount, nowMs,
-      // monthly: allow while the window is not already exhausted
+      id, input.subscription.userId, input.runId, window.startMs, window.endMs, input.model,
+      // reserved = min(worstCase, monthlyRemaining, dailyRemaining)
+      amount,
+      limits.monthly, input.subscription.userId, window.startMs, window.endMs,
+      limits.daily, input.subscription.userId, dayStart,
+      nowMs,
+      // gate: both windows must still have headroom
       input.subscription.userId, window.startMs, window.endMs, limits.monthly,
-      // rolling daily: allow while the day is not already exhausted
       input.subscription.userId, dayStart, limits.daily
     ]
   };

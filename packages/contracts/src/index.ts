@@ -53,9 +53,10 @@ export const PLAN_CATALOG = {
     name: "Ultra",
     monthlyPriceUsd: 200,
     yearlyPriceUsd: 2_000,
-    // $60 / month, paced as $2.00 / day (60 / 30). Much higher day-to-day headroom
-    // than Pro, matching the higher price.
-    dailyMicrodollars: 2_000_000,
+    // $60 / month. The daily gate stops at $1.95 (1_950_000), a small margin under
+    // $2.00 so a user never sees the day's spend tick past two dollars. Much higher
+    // day-to-day headroom than Pro, matching the higher price.
+    dailyMicrodollars: 1_950_000,
     monthlyApiBudgetMicrodollars: 60_000_000,
     devices: 5
   }

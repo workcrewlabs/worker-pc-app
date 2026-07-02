@@ -374,12 +374,13 @@ export class LocalAuthProvider implements AuthProvider {
       return;
     }
     const token = await issueEmailToken(user, "reset", RESET_TOKEN_TTL_MS);
-    try {
-      await sendEmail(resetEmailMessage(user.email, resetLink(token)));
-      console.info(`[WorkCrew] password reset email handed to the "${emailProvider().name}" provider for ${masked}.`);
-    } catch (error) {
-      console.error("[WorkCrew] reset email FAILED to send", error instanceof Error ? error.message : error);
-    }
+    // Fire-and-forget the outbound email. Awaiting it made the response noticeably
+    // slower for real accounts (a live provider round trip) than for unknown ones,
+    // an enumeration oracle that defeated the constant-response design. Sending in
+    // the background equalizes the response time; errors are logged, not surfaced.
+    void sendEmail(resetEmailMessage(user.email, resetLink(token)))
+      .then(() => console.info(`[WorkCrew] password reset email handed to the "${emailProvider().name}" provider for ${masked}.`))
+      .catch((error) => console.error("[WorkCrew] reset email FAILED to send", error instanceof Error ? error.message : error));
   }
 
   // Re-send the email-verification link for an account that has signed up but not
@@ -401,12 +402,12 @@ export class LocalAuthProvider implements AuthProvider {
       return;
     }
     const token = await issueEmailToken(user, "verify", VERIFY_TOKEN_TTL_MS);
-    try {
-      await sendEmail(verifyEmailMessage(user.email, verifyLink(token)));
-      console.info(`[WorkCrew] verification email re-sent via the "${emailProvider().name}" provider for ${masked}.`);
-    } catch (error) {
-      console.error("[WorkCrew] verification resend email FAILED to send", error instanceof Error ? error.message : error);
-    }
+    // Fire-and-forget for the same reason as reset(): awaiting the provider round
+    // trip made existing-unverified accounts answer slower than unknown ones, an
+    // enumeration oracle. Send in the background and log any failure.
+    void sendEmail(verifyEmailMessage(user.email, verifyLink(token)))
+      .then(() => console.info(`[WorkCrew] verification email re-sent via the "${emailProvider().name}" provider for ${masked}.`))
+      .catch((error) => console.error("[WorkCrew] verification resend email FAILED to send", error instanceof Error ? error.message : error));
   }
 
   // Verify an email address from a link. Single use and time limited.

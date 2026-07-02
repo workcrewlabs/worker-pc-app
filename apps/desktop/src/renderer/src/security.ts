@@ -7,7 +7,12 @@ export function actionNeedsApproval(action: AutomationAction): boolean {
   if (action.kind === "browser") {
     return new Set(["click", "fill", "type", "press", "select", "check", "uncheck", "click-selector", "fill-selector"]).has(action.command);
   }
-  return new Set(["launch", "click", "set-text", "type-keys"]).has(action.command);
+  // Every Windows write command must prompt. "type-text" (type literal text into
+  // the focused control) and "press-key" (send Enter/Tab/arrows) are writes too:
+  // they can fill fields or submit a form, so they were missing here and slipped
+  // past the approval gate entirely. The rest are reads (list-windows, connect,
+  // inspect, get-text, screenshot) and never prompt.
+  return new Set(["launch", "click", "set-text", "type-keys", "type-text", "press-key"]).has(action.command);
 }
 
 // The Permissions panel category an action belongs to, or null for actions with

@@ -19,16 +19,23 @@ describe("plan catalog", () => {
     // sized as the monthly divided by 30; the monthly cap is the overall ceiling.
     expect(PLAN_CATALOG.pro.dailyMicrodollars).toBe(400_000);
     expect(PLAN_CATALOG.pro.monthlyApiBudgetMicrodollars).toBe(12_000_000);
-    // Ultra: $2 / day, $60 / month.
-    expect(PLAN_CATALOG.ultra.dailyMicrodollars).toBe(2_000_000);
+    // Ultra: $1.95 / day (a small margin under the $2 pace so the shown daily spend
+    // never ticks past two dollars), $60 / month.
+    expect(PLAN_CATALOG.ultra.dailyMicrodollars).toBe(1_950_000);
     expect(PLAN_CATALOG.ultra.monthlyApiBudgetMicrodollars).toBe(60_000_000);
   });
 
-  it("keeps each plan's caps consistent (daily below monthly, daily = monthly / 30)", () => {
+  it("keeps each plan's caps consistent (daily below monthly, at or under monthly / 30)", () => {
     for (const plan of [PLAN_CATALOG.pro, PLAN_CATALOG.ultra]) {
+      // Daily is the everyday gate: always below the monthly ceiling, and never
+      // above the monthly-divided-by-30 pace (Ultra sits a little under it as a
+      // display safety margin).
       expect(plan.dailyMicrodollars).toBeLessThan(plan.monthlyApiBudgetMicrodollars);
-      expect(plan.dailyMicrodollars).toBe(Math.round(plan.monthlyApiBudgetMicrodollars / 30));
+      expect(plan.dailyMicrodollars).toBeLessThanOrEqual(Math.round(plan.monthlyApiBudgetMicrodollars / 30));
     }
+    // Pro is exactly monthly / 30; Ultra is $0.05/day under its $2 pace.
+    expect(PLAN_CATALOG.pro.dailyMicrodollars).toBe(Math.round(PLAN_CATALOG.pro.monthlyApiBudgetMicrodollars / 30));
+    expect(Math.round(PLAN_CATALOG.ultra.monthlyApiBudgetMicrodollars / 30) - PLAN_CATALOG.ultra.dailyMicrodollars).toBe(50_000);
   });
 });
 

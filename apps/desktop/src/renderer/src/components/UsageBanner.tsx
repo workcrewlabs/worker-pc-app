@@ -7,11 +7,15 @@ import type { UsageStatus } from "../lib/usage";
 export function UsageBanner({
   status,
   onUpgrade,
-  upgrading
+  upgrading,
+  canUpgrade
 }: {
   status: UsageStatus;
   onUpgrade: () => void;
   upgrading: boolean;
+  // False on the top tier (Ultra): there is nothing higher to move to, so the
+  // banner just states the limit and the user waits for it to free up.
+  canUpgrade: boolean;
 }) {
   if (status.level === "ok") return null;
   const empty = status.level === "empty";
@@ -30,11 +34,13 @@ export function UsageBanner({
     <div className={`usage-banner ${empty ? "usage-banner-empty" : "usage-banner-low"}`} role="status" aria-live="polite">
       <span className="usage-banner-dot" aria-hidden="true" />
       <span className="usage-banner-text">{message}</span>
-      <div className="usage-banner-actions">
-        <button type="button" className="usage-banner-upgrade" onClick={onUpgrade} disabled={upgrading}>
-          {upgrading ? "Upgrading..." : "Upgrade"}
-        </button>
-      </div>
+      {canUpgrade && (
+        <div className="usage-banner-actions">
+          <button type="button" className="usage-banner-upgrade" onClick={onUpgrade} disabled={upgrading}>
+            {upgrading ? "Upgrading..." : "Upgrade"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

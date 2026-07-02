@@ -47,7 +47,7 @@ import {
 import { processAndStoreAttachment } from "./attachments.js";
 import { cancelSubscriptionForDeletion, changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { landingPage } from "./landing.js";
-import { creditReferralOnPayment, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
+import { creditReferralOnPayment, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
 import { DAY_MS } from "@workcrew/contracts";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
@@ -89,7 +89,21 @@ const MAX_RUN_STEPS = 24;
 const MAX_REPEATED_ACTIONS = 3;
 
 const app = Fastify({
-  logger: { level: config.logLevel },
+  logger: {
+    level: config.logLevel,
+    // Redact secret-bearing query params from request logs. Password-reset and
+    // email-verification links carry the raw token in the URL; Fastify's default
+    // request logging would otherwise write that live bearer token into the logs
+    // (and any log drain), where anyone with read access could complete a reset.
+    serializers: {
+      req(request: { method?: string; url?: string; ip?: string; host?: string; hostname?: string; socket?: { remotePort?: number } }) {
+        const url = typeof request.url === "string"
+          ? request.url.replace(/([?&](?:token|access_token|refresh_token)=)[^&]+/gi, "$1[REDACTED]")
+          : request.url;
+        return { method: request.method, url, host: request.host ?? request.hostname, remoteAddress: request.ip, remotePort: request.socket?.remotePort };
+      }
+    }
+  },
   bodyLimit: 256 * 1024,
   requestTimeout: 70_000,
   // Trust a FIXED number of proxy hops in production (Render's load balancer),
@@ -173,7 +187,10 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
   const limits = planLimits(subscription.plan);
   const [usage, dailyUsed] = await Promise.all([
     getBudgetUsage(userId, window),
-    rollingUsage(userId, nowMs - DAY_MS)
+    // Display the settled (real) daily spend only, not in-flight reservations, so
+    // the shown number moves as cost lands and never flickers between "low" and
+    // "limit reached" while a turn's worst-case reservation is held then settled.
+    rollingSettledUsage(userId, nowMs - DAY_MS)
   ]);
   return {
     active: subscription.active && subscription.currentPeriodEndMs > Date.now(),
@@ -350,8 +367,14 @@ app.get<{ Querystring: { token?: string } }>("/v1/auth/verify", authLimit(12), a
   }
 });
 
-app.get<{ Querystring: { token?: string } }>("/reset", async (request, reply) => {
-  const token = typeof request.query.token === "string" ? request.query.token : "";
+app.get<{ Querystring: { token?: string } }>("/reset", authLimit(12), async (request, reply) => {
+  // Validate the token to its known lowercase-hex shape before reflecting it into
+  // the page. A hex-only value can never contain the characters ("<", ">", "/",
+  // quotes) needed to break out of the inline <script>, so this closes a reflected
+  // XSS hole. A malformed or malicious token collapses to "" and the reset simply
+  // fails, which is the correct outcome for a garbage link.
+  const raw = typeof request.query.token === "string" ? request.query.token : "";
+  const token = z.string().max(512).regex(/^[a-f0-9]*$/).catch("").parse(raw);
   sendHtml(reply, "Reset password", `<h1>Choose a new password</h1>
 <p>Enter a new password with at least 10 characters.</p>
 <input id="pw" type="password" placeholder="New password" autocomplete="new-password">
@@ -785,7 +808,7 @@ app.get<{ Params: { id: string } }>("/v1/conversations/:id", async (request) => 
   if (!conversation) {
     throw Object.assign(new Error("Conversation not found"), { statusCode: 404, code: "CONVERSATION_NOT_FOUND" });
   }
-  const stored = await getMessages(conversation.id);
+  const stored = await getMessages(conversation.id, userId);
   const messages = stored.map((message) => ({
     id: message.id,
     conversationId: message.conversationId,

@@ -86,7 +86,7 @@ describe("streamChat mock path", () => {
     if (done?.type !== "done") throw new Error("expected a done frame");
 
     // After one turn there is a user message and an assistant message.
-    const afterFirst = await getMessages(done.conversationId);
+    const afterFirst = await getMessages(done.conversationId, subscription.userId);
     expect(afterFirst.map((message) => message.role)).toEqual(["user", "assistant"]);
 
     // A second turn into the same conversation appends two more messages.
@@ -106,7 +106,7 @@ describe("streamChat mock path", () => {
     );
     expect(second.at(-1)?.type).toBe("done");
 
-    const afterSecond = await getMessages(done.conversationId);
+    const afterSecond = await getMessages(done.conversationId, subscription.userId);
     expect(afterSecond.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
