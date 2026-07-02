@@ -101,9 +101,9 @@ Only needed when the app's own screens/behavior change.
    can take 45 to 90 minutes; upload the two small files first, then the installer.
 4. Installed apps pick up the new release and auto-update.
 
-**Important open question about the desktop update feed (needs your decision, see
-section 6):** the app currently checks a *different* GitHub account for updates than
-the website downloads from. Resolve that before relying on desktop auto-updates.
+**Desktop update feed:** the app's auto-update setting and the website download both
+point at `workcrewlabs` (`apps/desktop/package.json` -> `build.publish.owner`). Keep
+publishing releases there so installed apps follow the correct feed.
 
 ---
 
