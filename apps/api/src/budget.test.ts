@@ -111,11 +111,14 @@ describe("budget ledger invariants", () => {
   it("accumulates toward the daily cap across the 24-hour window", async () => {
     const subscription = makeSubscription();
     const t = subscription.budgetAnchorMs;
-    // Pro daily cap is 400_000; spread 130k across separate hours of the same day.
+    // Pro daily cap is 400_000; three 130k reservations (390k) still leave headroom.
     for (const offset of [0, 6, 12]) {
       await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + offset * HOUR });
     }
-    // A fourth 130k (520k total in the rolling day) exceeds the daily cap.
+    // A fourth 130k is allowed because the day was not yet full (390k < 400k); it
+    // overshoots to 520k. The window is now exhausted, so a fifth is refused.
+    const fourth = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + 15 * HOUR });
+    expect(fourth.reservationId).toBeTruthy();
     await expect(
       reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + 18 * HOUR })
     ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
@@ -133,16 +136,37 @@ describe("budget ledger invariants", () => {
   });
 
   it("gives the bigger plan bigger caps", async () => {
-    const ultra = { ...makeSubscription(), plan: "ultra" as const };
-    const nowMs = ultra.budgetAnchorMs;
-    // 1.5M fits comfortably under Ultra's 2M daily cap...
-    const ok = await reserveBudget({ subscription: ultra, runId: randomUUID(), model: "sonnet", amountMicrodollars: 1_500_000, nowMs });
-    expect(ok.reservationId).toBeTruthy();
-    // ...but the same 1.5M is far over a Pro user's 400k daily cap.
+    // After 400k of usage a Pro user is at their daily cap and is blocked, while an
+    // Ultra user (2M daily cap) still has plenty of headroom for more.
     const pro = makeSubscription();
+    await reserveBudget({ subscription: pro, runId: randomUUID(), model: "haiku", amountMicrodollars: 400_000, nowMs: pro.budgetAnchorMs });
     await expect(
-      reserveBudget({ subscription: pro, runId: randomUUID(), model: "sonnet", amountMicrodollars: 1_500_000, nowMs: pro.budgetAnchorMs })
+      reserveBudget({ subscription: pro, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs: pro.budgetAnchorMs })
     ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
+
+    const ultra = { ...makeSubscription(), plan: "ultra" as const };
+    await reserveBudget({ subscription: ultra, runId: randomUUID(), model: "haiku", amountMicrodollars: 400_000, nowMs: ultra.budgetAnchorMs });
+    const stillOk = await reserveBudget({ subscription: ultra, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs: ultra.budgetAnchorMs });
+    expect(stillOk.reservationId).toBeTruthy();
+  });
+
+  it("lets a user with headroom start a turn whose worst-case reservation exceeds it", async () => {
+    // The reported bug: a Pro user sitting at 58% of the daily cap was blocked from
+    // an Opus turn because the turn's worst-case reservation (near the whole 400k
+    // cap) did not "fit" the remaining headroom, even though real usage was far
+    // under the limit. The gate must allow a request while any headroom remains,
+    // and the oversized reservation must settle back down to the true cost.
+    const subscription = makeSubscription();
+    const nowMs = subscription.budgetAnchorMs;
+    // Seed the day at 58% used (232k of the 400k Pro cap).
+    await seedSettled(subscription.userId, 232_000, nowMs, subscription.budgetAnchorMs);
+    // A worst-case Opus reservation of 300k would not fit the remaining 168k, but
+    // it is still allowed because the day is not yet exhausted.
+    const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "opus", amountMicrodollars: 300_000, nowMs });
+    expect(reservation.reservationId).toBeTruthy();
+    // It settles to the true, far smaller cost, so the user keeps real headroom.
+    await settleBudget(reservation.reservationId, 5_000);
+    expect(await rollingUsage(subscription.userId, nowMs - 24 * HOUR)).toBe(237_000);
   });
 
   it("releases the difference when actual usage settles below the reservation", async () => {
