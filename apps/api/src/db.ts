@@ -1089,10 +1089,11 @@ export async function getConversation(id: string, userId: string): Promise<Conve
   return row ? mapConversation(row) : null;
 }
 
-/** List a user's conversations newest first. Filters by user_id. */
+/** List a user's conversations newest first. Filters by user_id. Bounded so a
+ * user with a very large history cannot force an unbounded result set into memory. */
 export async function listConversations(userId: string): Promise<ConversationRow[]> {
   const result = await client.execute({
-    sql: "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at_ms DESC",
+    sql: "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at_ms DESC LIMIT 500",
     args: [userId]
   });
   return result.rows.map((row) => mapConversation(row as unknown as Record<string, unknown>));
@@ -1123,11 +1124,20 @@ export async function addMessage(input: {
   };
 }
 
-/** All messages in a conversation, oldest first, for replay and reload. */
-export async function getMessages(conversationId: string): Promise<MessageRow[]> {
+/**
+ * All messages in a conversation, oldest first, for replay and reload. Scoped by
+ * owner via a join on conversations.user_id so ownership is enforced in the query
+ * itself, not left to the caller. The messages table has no own user_id column, so
+ * the join is how a message inherits its conversation's owner. This makes a future
+ * caller physically unable to read another user's transcript.
+ */
+export async function getMessages(conversationId: string, userId: string): Promise<MessageRow[]> {
   const result = await client.execute({
-    sql: "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at_ms ASC, id ASC",
-    args: [conversationId]
+    sql: `SELECT m.* FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id
+      WHERE m.conversation_id = ? AND c.user_id = ?
+      ORDER BY m.created_at_ms ASC, m.id ASC`,
+    args: [conversationId, userId]
   });
   return result.rows.map((row) => mapMessage(row as unknown as Record<string, unknown>));
 }

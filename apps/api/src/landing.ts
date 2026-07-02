@@ -43,7 +43,12 @@ function brandGlyph(size: number): string {
 
 export function landingPage(downloadUrl: string): string {
   const download = downloadUrl && downloadUrl.length > 0 ? downloadUrl : "";
-  const downloadAttr = download ? `href="${download}"` : `href="#" data-missing="1"`;
+  // The download URL is operator-configured, but escape it for the HTML attribute
+  // context anyway so a stray quote or angle bracket can never break out of the
+  // href and inject markup. Defense in depth on an admin-controlled value.
+  const escapeAttr = (value: string): string =>
+    value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const downloadAttr = download ? `href="${escapeAttr(download)}"` : `href="#" data-missing="1"`;
   const mailHref = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("WorkCrew support")}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

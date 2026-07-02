@@ -115,10 +115,12 @@ describe("budget ledger invariants", () => {
     for (const offset of [0, 6, 12]) {
       await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + offset * HOUR });
     }
-    // A fourth 130k is allowed because the day was not yet full (390k < 400k); it
-    // overshoots to 520k. The window is now exhausted, so a fifth is refused.
+    // A fourth 130k is allowed (390k < 400k) but is CLAMPED to the remaining 10k,
+    // so committed lands exactly on the cap and never over. The window is now full,
+    // so a fifth is refused.
     const fourth = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + 15 * HOUR });
     expect(fourth.reservationId).toBeTruthy();
+    expect(await rollingUsage(subscription.userId, t + 15 * HOUR - 24 * HOUR)).toBe(400_000);
     await expect(
       reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + 18 * HOUR })
     ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
@@ -137,7 +139,7 @@ describe("budget ledger invariants", () => {
 
   it("gives the bigger plan bigger caps", async () => {
     // After 400k of usage a Pro user is at their daily cap and is blocked, while an
-    // Ultra user (2M daily cap) still has plenty of headroom for more.
+    // Ultra user (1.95M daily cap) still has plenty of headroom for more.
     const pro = makeSubscription();
     await reserveBudget({ subscription: pro, runId: randomUUID(), model: "haiku", amountMicrodollars: 400_000, nowMs: pro.budgetAnchorMs });
     await expect(
@@ -167,6 +169,26 @@ describe("budget ledger invariants", () => {
     // It settles to the true, far smaller cost, so the user keeps real headroom.
     await settleBudget(reservation.reservationId, 5_000);
     expect(await rollingUsage(subscription.userId, nowMs - 24 * HOUR)).toBe(237_000);
+  });
+
+  it("never lets settled spend exceed the daily cap, even when a turn costs more than the headroom", async () => {
+    // The hard-cap guarantee. Near the cap the reservation is clamped to the
+    // remaining headroom, and settleBudget clamps the charge to that reservation,
+    // so a turn whose real cost is larger still cannot push committed spend over
+    // the cap. This is what stops the number ever ticking past the limit.
+    const subscription = makeSubscription();
+    const nowMs = subscription.budgetAnchorMs;
+    // Pro at 350k of the 400k cap: only 50k of headroom remains.
+    await seedSettled(subscription.userId, 350_000, nowMs, subscription.budgetAnchorMs);
+    const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "opus", amountMicrodollars: 300_000, nowMs });
+    expect(reservation.reservationId).toBeTruthy();
+    // The real cost lands far above the 50k of headroom; it must be clamped to 50k.
+    await settleBudget(reservation.reservationId, 300_000);
+    expect(await rollingUsage(subscription.userId, nowMs - 24 * HOUR)).toBe(400_000);
+    // The day is now exactly full, so the next request is refused.
+    await expect(
+      reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs })
+    ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
   });
 
   it("releases the difference when actual usage settles below the reservation", async () => {

@@ -887,6 +887,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
             status={usageState}
             onUpgrade={() => void handleUpgrade()}
             upgrading={upgrading}
+            canUpgrade={!isUltra}
           />
         )}
         <ChatView

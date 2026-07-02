@@ -153,7 +153,7 @@ describe("streamChat with an attachment", () => {
     expect(done?.type).toBe("done");
     if (done?.type !== "done") throw new Error("expected a done frame");
 
-    const messages = await getMessages(done.conversationId);
+    const messages = await getMessages(done.conversationId, subscription.userId);
     expect(messages[0]?.role).toBe("user");
     expect(JSON.stringify(messages[0]?.content)).toContain("attachment_ref");
     expect(JSON.stringify(messages[0]?.content)).toContain(ref.attachmentId);

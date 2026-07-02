@@ -232,7 +232,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
 
   // Build the model input from the full stored history (which now includes the
   // user turn just written), expanding attachments into real content blocks.
-  const stored = await getMessages(conversationId);
+  const stored = await getMessages(conversationId, input.userId);
   const { modelMessages, reservationMessages, mediaTokens } = await buildModelMessages(stored, input.userId);
 
   // Reserve the worst case cost up front, mirroring the runs path: an input
@@ -324,13 +324,19 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
         { signal: input.signal }
       );
 
+      // Track whether the provider actually produced (and billed) output. If the
+      // client aborts after tokens were generated, those tokens cost real money and
+      // were already streamed to the user, so the turn must be charged, not freed.
+      let producedOutput = false;
       try {
         for await (const event of stream) {
           if (event.type === "content_block_delta") {
             const delta = event.delta;
             if (delta.type === "text_delta") {
+              producedOutput = true;
               yield { type: "text", text: delta.text };
             } else if (delta.type === "thinking_delta") {
+              producedOutput = true;
               yield { type: "thinking", text: delta.thinking };
             } else if (delta.type === "citations_delta") {
               yield { type: "citation", citation: delta.citation };
@@ -341,11 +347,16 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
         // Make sure the stream is torn down before surfacing the error so no
         // socket is left open.
         stream.abort();
-        // If the client hung up, this is an expected cancellation, not a fault.
-        // Release the reservation (charge nothing) and stop quietly; nobody is
-        // reading, so there is no error frame to send.
+        // If the client hung up, this is an expected cancellation, not a fault, so
+        // there is no error frame to send. But an abort AFTER output was generated
+        // still incurred real provider cost, so charge it at the reservation
+        // ceiling (settleBudget clamps to the headroom-limited reservation, so this
+        // respects the hard cap) rather than releasing it for free. Only a genuine
+        // no-output abort is released. This closes a "stream then abort in a loop"
+        // hole that would otherwise pull provider-billed answers past the caps.
         if (input.signal?.aborted) {
-          await releaseOnce();
+          if (producedOutput) await settleOnce(reservationAmount);
+          else await releaseOnce();
           return;
         }
         throw streamError;
