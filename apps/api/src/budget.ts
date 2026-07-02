@@ -109,11 +109,22 @@ export async function reserveBudget(input: {
   const dayStart = nowMs - DAY_MS;
   const id = randomUUID();
 
-  // One atomic conditional insert that only succeeds when the new reservation
-  // keeps BOTH caps satisfied: the monthly window (which nets credits, so a top-up
-  // adds headroom) and the rolling daily cap. The daily cap counts only real usage
-  // (credits excluded) so it is an absolute rate limit a top-up cannot lift. This
-  // bounds the operator's API spend hard.
+  // One atomic conditional insert that succeeds while the user still has ANY
+  // headroom left in BOTH windows: the monthly window (which nets credits, so a
+  // top-up adds headroom) and the rolling daily cap (real usage only, so a top-up
+  // cannot lift this absolute rate limit).
+  //
+  // We gate on "is the window already exhausted?" rather than "would this
+  // request's worst case fit?" on purpose. A request reserves its worst-case cost
+  // up front (the full output budget at the model's price plus a byte-based upper
+  // bound on input); on a small daily cap that worst case can be a large fraction
+  // of, or exceed, the whole cap by itself. The old "must fit" gate therefore
+  // refused a user who was sitting well under their real limit (e.g. an Opus turn
+  // at 58% of the Pro cap). Allowing a request whenever the window is not yet full
+  // lets the user spend right up to the cap; the reservation then settles down to
+  // the true, far smaller cost. The only overshoot is at most one in-flight
+  // request's real cost per window, an accepted tradeoff for a usable limit. Spend
+  // stays hard-bounded: once a window is full, every new request is refused.
   const rollingSum = `SUM(CASE
         WHEN status = 'reserved' THEN reserved_microdollars
         WHEN status = 'settled' AND model NOT IN (${CREDIT_MODELS}) THEN actual_microdollars
@@ -124,17 +135,17 @@ export async function reserveBudget(input: {
       reserved_microdollars, actual_microdollars, status, created_at_ms
     )
     SELECT ?, ?, ?, ?, ?, ?, ?, 0, 'reserved', ?
-    WHERE ? + COALESCE((
+    WHERE COALESCE((
         SELECT SUM(CASE WHEN status = 'reserved' THEN reserved_microdollars WHEN status = 'settled' THEN actual_microdollars ELSE 0 END)
         FROM usage_ledger WHERE user_id = ? AND period_start_ms = ? AND period_end_ms = ?
-      ), 0) <= ?
-      AND ? + COALESCE((SELECT ${rollingSum} FROM usage_ledger WHERE user_id = ? AND created_at_ms >= ?), 0) <= ?`,
+      ), 0) < ?
+      AND COALESCE((SELECT ${rollingSum} FROM usage_ledger WHERE user_id = ? AND created_at_ms >= ?), 0) < ?`,
     args: [
       id, input.subscription.userId, input.runId, window.startMs, window.endMs, input.model, amount, nowMs,
-      // monthly
-      amount, input.subscription.userId, window.startMs, window.endMs, limits.monthly,
-      // rolling daily
-      amount, input.subscription.userId, dayStart, limits.daily
+      // monthly: allow while the window is not already exhausted
+      input.subscription.userId, window.startMs, window.endMs, limits.monthly,
+      // rolling daily: allow while the day is not already exhausted
+      input.subscription.userId, dayStart, limits.daily
     ]
   };
 
@@ -157,9 +168,10 @@ export async function reserveBudget(input: {
   const rowsAffected = await runInsert();
 
   if (rowsAffected !== 1) {
-    // Report which cap is binding so the user sees a clear, accurate message.
+    // The insert only fails when a window is already exhausted. Report which one
+    // is binding so the user sees a clear, accurate message.
     const dailyUsed = await rollingUsage(input.subscription.userId, dayStart);
-    if (amount + dailyUsed > limits.daily) {
+    if (dailyUsed >= limits.daily) {
       throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
     }
     throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
