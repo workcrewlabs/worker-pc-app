@@ -115,13 +115,35 @@ export async function getBudgetUsage(userId: string, window: BudgetWindow): Prom
   return { used: Number(row?.used ?? 0), reserved: Number(row?.reserved ?? 0) };
 }
 
+// The budget still available right now, in microdollars, for each window: daily
+// and monthly headroom, each measured exactly as the reserveBudget gate does
+// (committed = in-flight reservations plus settled real usage). Never negative.
+// Callers use the smaller of the two to cap a single request's cost to what the
+// remaining money can pay for, so an expensive turn (a long file/spreadsheet
+// generation, an automation step, or a chat answer) stops when the budget runs out
+// instead of generating to completion and pushing real spend past the cap. The two
+// values are returned separately so the caller can say "frees up tomorrow" (daily)
+// versus "used all your tokens for this period" (monthly) accurately.
+export async function budgetHeadroom(userId: string, subscription: SubscriptionRow, nowMs = Date.now()): Promise<{ daily: number; monthly: number }> {
+  const window = getBudgetWindow(subscription.budgetAnchorMs, nowMs);
+  const limits = planLimits(subscription.plan);
+  const [monthly, daily] = await Promise.all([
+    getBudgetUsage(userId, window),
+    rollingUsage(userId, nowMs - DAY_MS)
+  ]);
+  return {
+    monthly: Math.max(0, limits.monthly - (monthly.used + monthly.reserved)),
+    daily: Math.max(0, limits.daily - daily)
+  };
+}
+
 export async function reserveBudget(input: {
   subscription: SubscriptionRow;
   runId: string;
   model: string;
   amountMicrodollars: number;
   nowMs?: number;
-}): Promise<{ reservationId: string; window: BudgetWindow }> {
+}): Promise<{ reservationId: string; window: BudgetWindow; reservedMicrodollars: number }> {
   const nowMs = input.nowMs ?? Date.now();
   const window = getBudgetWindow(input.subscription.budgetAnchorMs, nowMs);
   const limits = planLimits(input.subscription.plan);
@@ -208,7 +230,17 @@ export async function reserveBudget(input: {
     }
     throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
   }
-  return { reservationId: id, window };
+  // Read back the amount actually reserved. The SQL clamps it to the headroom that
+  // was left at insert time (serialized by the advisory lock), so this is the real
+  // budget this turn may spend. Callers size the response length from it, so the
+  // whole turn (input plus output) stays within the money that is left even when a
+  // concurrent turn consumed budget between here and the caller's own read.
+  const back = await client.execute({
+    sql: "SELECT reserved_microdollars FROM usage_ledger WHERE id = ?",
+    args: [id]
+  });
+  const reservedMicrodollars = Number(back.rows[0]?.reserved_microdollars ?? amount);
+  return { reservationId: id, window, reservedMicrodollars };
 }
 
 export async function settleBudget(reservationId: string, actualMicrodollars: number, providerRequestId?: string): Promise<void> {

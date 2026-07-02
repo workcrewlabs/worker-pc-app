@@ -22,6 +22,10 @@ type AuthResponse = {
 
 export class AuthVault {
   private session: StoredSession | null = null;
+  // A single shared in-flight refresh. The refresh token is single-use, so if two
+  // callers exchanged it at the same time the backend would see it reused and
+  // revoke the whole session. Coalescing guarantees one exchange per cycle.
+  private refreshInFlight: Promise<string> | null = null;
 
   // Resolved per request so a backend URL saved in Settings takes effect without
   // an app restart.
@@ -127,8 +131,22 @@ export class AuthVault {
   }
 
   // POST the stored refresh token, persist the new session, and return the new
-  // access token. The API client calls this on a 401 to retry once.
+  // access token. The API client calls this on a 401 to retry once, and
+  // getAccessToken() calls it when the token is near expiry. Both share ONE
+  // in-flight exchange: a burst of API calls on startup (common right after an
+  // auto-update, once the 1-hour access token has expired) would otherwise each
+  // send the same single-use refresh token, which the backend treats as reuse and
+  // revokes the session, signing the user out on every update. Coalescing sends
+  // the token exactly once; every concurrent caller awaits the same result.
   async refresh(): Promise<string> {
+    if (this.refreshInFlight) return this.refreshInFlight;
+    this.refreshInFlight = this.performRefresh().finally(() => {
+      this.refreshInFlight = null;
+    });
+    return this.refreshInFlight;
+  }
+
+  private async performRefresh(): Promise<string> {
     if (!this.session) throw new Error("Sign in is required");
     const payload = await this.request("/v1/auth/refresh", { refreshToken: this.session.refreshToken });
     if (!payload.session) throw new Error("Refresh did not return a session");

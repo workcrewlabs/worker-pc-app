@@ -36,10 +36,13 @@ import {
 } from "./auth-local.js";
 import { simulatedBillingProvider } from "./billing-simulated.js";
 import {
+  MODEL_PRICES,
   actionSignature,
   actualCostMicrodollars,
+  budgetLimitedOutputTokens,
   callModel,
   chooseModel,
+  estimatedInputMicrodollars,
   maximumReservationMicrodollars,
   modelRequestPayload,
   summarizeRecording
@@ -47,7 +50,7 @@ import {
 import { processAndStoreAttachment } from "./attachments.js";
 import { cancelSubscriptionForDeletion, changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { landingPage } from "./landing.js";
-import { creditReferralOnPayment, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
+import { budgetHeadroom, creditReferralOnPayment, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
 import { DAY_MS } from "@workcrew/contracts";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
@@ -435,10 +438,29 @@ app.post("/v1/recordings/summarize", authLimit(20), async (request) => {
   // only an active subscriber may use it, and a tight per-route limit bounds spend
   // beyond the loose global limit.
   const userId = await authenticate(request);
-  requireActive(await getSubscription(userId));
+  const subscription = requireActive(await getSubscription(userId));
   const body = summarizeRecordingRequestSchema.parse(request.body);
-  const task = await summarizeRecording(body.surface, body.events);
-  return { task };
+  // Count this small model call against the same hard caps as chat and automation,
+  // and cap its output by the budget too so nothing keeps spending once the daily
+  // or monthly limit is reached. It is a single bounded Haiku call.
+  const headroom = await budgetHeadroom(userId, subscription);
+  const summaryMaxTokens = Math.min(400, budgetLimitedOutputTokens("haiku", Math.min(headroom.daily, headroom.monthly)));
+  if (summaryMaxTokens < 1) {
+    if (headroom.daily <= headroom.monthly) {
+      throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+    }
+    throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+  }
+  const reservationAmount = maximumReservationMicrodollars("haiku", body, summaryMaxTokens);
+  const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: reservationAmount });
+  try {
+    const task = await summarizeRecording(body.surface, body.events, summaryMaxTokens);
+    await settleBudget(reservation.reservationId, reservationAmount);
+    return { task };
+  } catch (error) {
+    await releaseBudget(reservation.reservationId);
+    throw error;
+  }
 });
 
 // Simulated checkout. Requires authentication, is allowed only when the
@@ -584,7 +606,23 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
 
   const originalTask = String((run.messages[0] as { content?: unknown } | undefined)?.content ?? "");
   const tier = chooseModel(run.model, originalTask);
-  const maxOutputTokens = 1_200;
+  // Size this step so the whole step (input plus output) fits the money that is
+  // left, and stop the run before spending if it does not. The input (the growing
+  // accumulated context) is covered first, then output is truncated to whatever
+  // budget remains, so the automation halts at the cap instead of running another
+  // full step past it. A step needs a little room to emit one action.
+  const MIN_STEP_OUTPUT_TOKENS = 64;
+  const headroom = await budgetHeadroom(userId, subscription);
+  const remaining = Math.min(headroom.daily, headroom.monthly);
+  const inputEstimate = estimatedInputMicrodollars(tier, modelRequestPayload(run.messages, tier, 1_200));
+  const outputPrice = MODEL_PRICES[tier].output;
+  if (remaining - inputEstimate < MIN_STEP_OUTPUT_TOKENS * outputPrice) {
+    if (headroom.daily <= headroom.monthly) {
+      throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+    }
+    throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+  }
+  let maxOutputTokens = Math.min(1_200, budgetLimitedOutputTokens(tier, remaining - inputEstimate));
   const payload = modelRequestPayload(run.messages, tier, maxOutputTokens);
   const reservationAmount = maximumReservationMicrodollars(tier, payload, maxOutputTokens);
   const reservation = await reserveBudget({
@@ -593,6 +631,17 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
     model: tier,
     amountMicrodollars: reservationAmount
   });
+  // Re-cap output to what was actually reserved (minus input) after any concurrent
+  // consumption; release the hold and stop the run if nothing meaningful is left.
+  const finalOutputBudget = reservation.reservedMicrodollars - inputEstimate;
+  if (finalOutputBudget < MIN_STEP_OUTPUT_TOKENS * outputPrice) {
+    await releaseBudget(reservation.reservationId);
+    if (headroom.daily <= headroom.monthly) {
+      throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+    }
+    throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+  }
+  maxOutputTokens = Math.min(maxOutputTokens, budgetLimitedOutputTokens(tier, finalOutputBudget));
 
   try {
     const result = await callModel({ tier, messages: run.messages, maxOutputTokens });

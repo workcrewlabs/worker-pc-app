@@ -159,6 +159,29 @@ export function maximumReservationMicrodollars(tier: ConcreteModelTier, payload:
   return inputUpperBoundTokens * price.input + maxOutputTokens * price.output;
 }
 
+// How many output tokens the given budget can pay for at this model's output
+// price. Output is the most expensive token category, so capping a request's
+// max_tokens to this value keeps a single turn from spending past the budget:
+// generation stops when the money runs out. Never negative.
+export function budgetLimitedOutputTokens(tier: ConcreteModelTier, remainingMicrodollars: number): number {
+  const price = MODEL_PRICES[tier].output;
+  return price > 0 ? Math.max(0, Math.floor(remainingMicrodollars / price)) : 0;
+}
+
+// A realistic estimate of what the INPUT side of a turn will cost, in microdollars.
+// The provider bills for input tokens (history plus attachments) on every turn, so
+// this must be subtracted from the remaining budget before sizing the output: a
+// turn near the cap must fit BOTH its input and its output in the money that is
+// left, otherwise real spend overshoots by the input cost. Text tokens are
+// estimated from bytes (about four bytes per token); mediaTokens is already a token
+// count. This is charged at full input price (a small safety margin, since cached
+// history bills cheaper). It is an estimate for sizing only; the ledger reservation
+// still uses the strict byte-based upper bound, and settle clamps the real charge.
+export function estimatedInputMicrodollars(tier: ConcreteModelTier, payload: unknown, mediaTokens = 0): number {
+  const textTokens = Math.ceil(Buffer.byteLength(JSON.stringify(payload), "utf8") / 4);
+  return (textTokens + mediaTokens) * MODEL_PRICES[tier].input;
+}
+
 export function actualCostMicrodollars(tier: ConcreteModelTier, usage: AnthropicUsage): number {
   const price = MODEL_PRICES[tier];
   const baseInput = usage.input_tokens ?? 0;
@@ -360,7 +383,7 @@ function extractText(content: AnthropicContent[]): string {
  * the cheapest tier (this is a small one-shot summarization) and no tools. In
  * mock mode it returns a deterministic placeholder so tests never hit the API.
  */
-export async function summarizeRecording(surface: "browser" | "windows", events: RecordedEvent[]): Promise<string> {
+export async function summarizeRecording(surface: "browser" | "windows", events: RecordedEvent[], maxOutputTokens = 400): Promise<string> {
   const description = describeRecording(surface, events);
   if (config.mockAi && config.nodeEnv !== "production") {
     return `Repeat the recorded ${surface} task: ${events.length} step${events.length === 1 ? "" : "s"}.`;
@@ -376,7 +399,7 @@ export async function summarizeRecording(surface: "browser" | "windows", events:
     },
     body: JSON.stringify({
       model: modelId("haiku"),
-      max_tokens: 400,
+      max_tokens: maxOutputTokens,
       system: RECORDING_SUMMARY_SYSTEM,
       messages: [{ role: "user", content: description }]
     }),
