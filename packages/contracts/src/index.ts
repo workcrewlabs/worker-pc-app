@@ -315,16 +315,26 @@ export const chatSendSchema = z.object({
 }).strict();
 export type ChatSend = z.infer<typeof chatSendSchema>;
 
-// A one-line summary of a conversation used in the Recents list.
+// A one-line summary of a conversation used in the Recents list. pinnedAtMs is set
+// when the user pins the chat (null otherwise); the list shows pinned chats first.
 export const conversationSummarySchema = z.object({
   id: z.string().uuid(),
   title: z.string(),
   model: modelTierSchema,
   createdAtMs: z.number().int(),
   updatedAtMs: z.number().int(),
-  projectId: z.string().uuid().nullable()
+  projectId: z.string().uuid().nullable(),
+  pinnedAtMs: z.number().int().nullable()
 });
 export type ConversationSummary = z.infer<typeof conversationSummarySchema>;
+
+// Rename and/or pin a conversation from the Recents menu. Both fields are
+// optional so one PATCH can carry either action; the title is bounded.
+export const conversationUpdateSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  pinned: z.boolean().optional()
+}).strict();
+export type ConversationUpdate = z.infer<typeof conversationUpdateSchema>;
 
 // A stored message. contentJson holds the full Anthropic content block array
 // (text, thinking, citations, tool_use) so reload preserves everything. It is

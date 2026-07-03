@@ -127,7 +127,9 @@ const workcrew = {
   conversations: {
     list: (): Promise<ConversationSummary[]> => ipcRenderer.invoke("conversations:list"),
     get: (id: string): Promise<ConversationDetail> => ipcRenderer.invoke("conversations:get", id),
-    delete: (id: string): Promise<{ deleted: boolean }> => ipcRenderer.invoke("conversations:delete", id)
+    delete: (id: string): Promise<{ deleted: boolean }> => ipcRenderer.invoke("conversations:delete", id),
+    rename: (id: string, title: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("conversations:rename", id, title),
+    setPinned: (id: string, pinned: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke("conversations:pin", id, pinned)
   },
   automation: {
     execute: (action: AutomationAction): Promise<string> => {

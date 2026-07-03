@@ -584,6 +584,15 @@ function registerIpc(): void {
     const safeId = z.string().uuid().parse(id);
     return api.request(`/v1/conversations/${safeId}`, { method: "DELETE" });
   });
+  ipcMain.handle("conversations:rename", (_event, id, title) => {
+    const safeId = z.string().uuid().parse(id);
+    const safeTitle = z.string().trim().min(1).max(200).parse(title);
+    return api.request(`/v1/conversations/${safeId}`, { method: "PATCH", body: { title: safeTitle } });
+  });
+  ipcMain.handle("conversations:pin", (_event, id, pinned) => {
+    const safeId = z.string().uuid().parse(id);
+    return api.request(`/v1/conversations/${safeId}`, { method: "PATCH", body: { pinned: z.boolean().parse(pinned) } });
+  });
 
   // Contact support: open a Gmail compose window addressed to the support inbox.
   // Opening an external URL goes through the OS browser, not the sandboxed

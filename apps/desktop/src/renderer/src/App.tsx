@@ -502,6 +502,10 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   const [routines, setRoutines] = useState<Routine[]>(() => loadRoutines());
   const [recents, setRecents] = useState<ConversationSummary[]>([]);
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  // Recents row menu (three dots) and inline rename state, keyed by conversation id.
+  const [recentMenuId, setRecentMenuId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   // The task of the automation currently shown inline in the chat (running or
   // just finished), used as the heading of the inline run activity.
   const [automationTask, setAutomationTask] = useState("");
@@ -598,6 +602,107 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   useEffect(() => {
     void refreshRecents();
   }, []);
+
+  // Close the open Recents menu on any outside click or Escape.
+  useEffect(() => {
+    if (!recentMenuId) return;
+    const close = (): void => setRecentMenuId(null);
+    const onKey = (event: KeyboardEvent): void => { if (event.key === "Escape") setRecentMenuId(null); };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("click", close); window.removeEventListener("keydown", onKey); };
+  }, [recentMenuId]);
+
+  // Pin or unpin a conversation, then refresh so it jumps into or out of the
+  // Pinned section. Optimistic-free: a failure just leaves the list as it was.
+  async function togglePinRecent(item: ConversationSummary): Promise<void> {
+    setRecentMenuId(null);
+    try {
+      await window.workcrew.conversations.setPinned(item.id, item.pinnedAtMs == null);
+      await refreshRecents();
+    } catch {
+      // Non-fatal: the chat still works even if the pin did not persist.
+    }
+  }
+
+  // Enter inline-rename mode for a conversation, seeding the editor with its title.
+  function startRenameRecent(item: ConversationSummary): void {
+    setRecentMenuId(null);
+    setRenameDraft(item.title || "");
+    setRenamingId(item.id);
+  }
+
+  // Save the edited title (unless empty or unchanged), then leave rename mode.
+  async function commitRenameRecent(id: string): Promise<void> {
+    const title = renameDraft.trim();
+    const item = recents.find((entry) => entry.id === id);
+    setRenamingId(null);
+    if (!title || (item && title === item.title)) return;
+    try {
+      await window.workcrew.conversations.rename(id, title);
+      await refreshRecents();
+    } catch {
+      // Non-fatal.
+    }
+  }
+
+  // One Recents row: opens on click, shows a three-dots menu (Rename, Pin/Unpin)
+  // like Claude Code, and swaps to an inline text field while renaming.
+  function renderRecent(item: ConversationSummary) {
+    if (renamingId === item.id) {
+      return (
+        <div key={item.id} className="recent-item recent-renaming">
+          <input
+            className="recent-rename"
+            value={renameDraft}
+            autoFocus
+            aria-label="Rename conversation"
+            onChange={(event) => setRenameDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); void commitRenameRecent(item.id); }
+              else if (event.key === "Escape") setRenamingId(null);
+            }}
+            onBlur={() => void commitRenameRecent(item.id)}
+          />
+        </div>
+      );
+    }
+    return (
+      <div
+        key={item.id}
+        className={`recent-item${item.id === conversationId ? " recent-active" : ""}${recentMenuId === item.id ? " recent-menu-open" : ""}`}
+      >
+        <button className="recent-open" onClick={() => void openConversation(item.id)} title={item.title}>
+          {item.pinnedAtMs != null && (
+            <svg className="recent-pin" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+              <path fill="currentColor" d="M9 4V2h6v2h-1v6l2 2v2h-4v6l-1 1-1-1v-6H6v-2l2-2V4z" />
+            </svg>
+          )}
+          <span className="recent-title">{item.title || "New conversation"}</span>
+        </button>
+        <button
+          className="recent-menu-trigger"
+          aria-label="Chat options"
+          aria-haspopup="menu"
+          onClick={(event) => { event.stopPropagation(); setRecentMenuId(recentMenuId === item.id ? null : item.id); }}
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <circle cx="5" cy="12" r="1.7" fill="currentColor" />
+            <circle cx="12" cy="12" r="1.7" fill="currentColor" />
+            <circle cx="19" cy="12" r="1.7" fill="currentColor" />
+          </svg>
+        </button>
+        {recentMenuId === item.id && (
+          <div className="recent-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+            <button type="button" role="menuitem" onClick={() => startRenameRecent(item)}>Rename</button>
+            <button type="button" role="menuitem" onClick={() => void togglePinRecent(item)}>
+              {item.pinnedAtMs != null ? "Unpin" : "Pin"}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // Subscribe to auto-update status and check once on launch. In a packaged
   // build this downloads a newer version in the background and reports "ready";
@@ -808,23 +913,29 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
           </button>
         </nav>
         <div className="recents" aria-label="Recent conversations">
-          <span className="recents-title">Recents</span>
-          {recents.length === 0 ? (
-            <p className="recents-empty">Your conversations appear here.</p>
-          ) : (
-            <div className="recents-list">
-              {recents.map((item) => (
-                <button
-                  key={item.id}
-                  className={item.id === conversationId ? "recent-active" : ""}
-                  onClick={() => void openConversation(item.id)}
-                  title={item.title}
-                >
-                  <span className="recent-title">{item.title || "New conversation"}</span>
-                </button>
-              ))}
-            </div>
-          )}
+          {(() => {
+            const pinned = recents.filter((item) => item.pinnedAtMs != null);
+            const unpinned = recents.filter((item) => item.pinnedAtMs == null);
+            if (recents.length === 0) {
+              return <p className="recents-empty">Your conversations appear here.</p>;
+            }
+            return (
+              <>
+                {pinned.length > 0 && (
+                  <>
+                    <span className="recents-title">Pinned</span>
+                    <div className="recents-list">{pinned.map(renderRecent)}</div>
+                  </>
+                )}
+                {unpinned.length > 0 && (
+                  <>
+                    <span className="recents-title">Recents</span>
+                    <div className="recents-list">{unpinned.map(renderRecent)}</div>
+                  </>
+                )}
+              </>
+            );
+          })()}
         </div>
         {!isUltra && (
           <button className="upgrade-card" onClick={handleUpgrade} disabled={upgrading} aria-label="Upgrade to Ultra">
