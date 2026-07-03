@@ -452,18 +452,30 @@ select option:checked { background-color: var(--panel-2); }
 .new-chat:hover { border-color: var(--accent); }
 .new-chat-spark { width: 20px; height: 20px; flex: none; display: grid; place-items: center; }
 .new-chat-plus { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 7px; background: var(--panel); color: var(--accent-soft); font-size: 17px; font-weight: 700; line-height: 1; }
-.recents { display: flex; flex-direction: column; min-height: 0; flex: 1; margin-top: 14px; overflow: hidden; }
+/* The whole Recents area scrolls (Pinned section + Recents section together) so
+   the Upgrade/Invite cards below stay fixed and every conversation is reachable. */
+.recents { display: flex; flex-direction: column; min-height: 0; flex: 1; margin-top: 14px; overflow-y: auto; }
 .recents-title { padding: 0 4px 8px; color: var(--muted); font-size: var(--fs-eyebrow); font-weight: 700; letter-spacing: .6px; }
+/* A little air between the Pinned section and the Recents section. */
+.recents-list + .recents-title { margin-top: 10px; }
 .recents-empty { margin: 0; padding: 0 4px; color: #6b6359; font-size: var(--fs-small); line-height: 1.5; }
-/* The list takes the remaining space inside .recents and scrolls on its own, so
-   older conversations are reachable instead of being clipped. */
-.recents-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
-/* Each item is a flex row so its label sits vertically centered in the box, with
-   the truncation handled by the inner span. */
-.recents-list button { display: flex; align-items: center; width: 100%; min-height: 34px; padding: 0 10px; border: 0; border-radius: 8px; cursor: pointer; color: var(--muted); background: transparent; font-size: var(--fs-ui); }
-.recents-list .recent-title { display: block; width: 100%; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.recents-list button:hover { color: var(--text); background: var(--panel-2); }
-.recents-list .recent-active { color: var(--text); background: var(--panel-2); }
+.recents-list { display: flex; flex-direction: column; gap: 1px; }
+/* Each row: the open button flexes to fill, a three-dots trigger sits at the end
+   (revealed on hover or while its menu is open), and the menu pops over the row. */
+.recent-item { position: relative; display: flex; align-items: center; border-radius: 8px; }
+.recent-item:hover, .recent-active, .recent-menu-open { background: var(--panel-2); }
+.recent-open { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; min-height: 34px; padding: 0 4px 0 10px; border: 0; border-radius: 8px; cursor: pointer; color: var(--muted); background: transparent; font-size: var(--fs-ui); }
+.recent-item:hover .recent-open, .recent-active .recent-open, .recent-menu-open .recent-open { color: var(--text); }
+.recent-title { display: block; min-width: 0; flex: 1; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recent-pin { flex: none; color: var(--accent-soft); }
+.recent-menu-trigger { flex: none; display: grid; place-items: center; width: 26px; height: 26px; margin-right: 4px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; opacity: 0; }
+.recent-item:hover .recent-menu-trigger, .recent-menu-open .recent-menu-trigger { opacity: 1; }
+.recent-menu-trigger:hover { background: var(--panel); color: var(--text); }
+.recent-menu { position: absolute; top: 30px; right: 6px; z-index: 30; min-width: 148px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); box-shadow: 0 14px 34px -12px rgba(0,0,0,.65); display: flex; flex-direction: column; gap: 2px; }
+.recent-menu button { display: flex; align-items: center; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font-size: var(--fs-ui); text-align: left; cursor: pointer; }
+.recent-menu button:hover { background: var(--panel); }
+.recent-rename { width: 100%; min-height: 34px; padding: 0 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); color: var(--text); font-size: var(--fs-ui); outline: none; }
+.recent-renaming { padding: 0; }
 
 /* Chat empty state. The OUTER box is full width and owns the scroll, so when the
    cluster is taller than the space (banner shown, short or scaled-up window) the

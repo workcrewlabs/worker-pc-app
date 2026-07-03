@@ -10,6 +10,7 @@ import {
   REFERRAL_LINK_BASE,
   attachmentUploadSchema,
   chatSendSchema,
+  conversationUpdateSchema,
   createCheckoutSchema,
   createRunSchema,
   nextRunStepSchema,
@@ -69,6 +70,8 @@ import {
   getUserById,
   initializeDatabase,
   listConversations,
+  renameConversation,
+  setConversationPinned,
   setUserName,
   updateRun,
   type SubscriptionRow
@@ -846,7 +849,8 @@ app.get("/v1/conversations", async (request) => {
     model: conversation.model,
     createdAtMs: conversation.createdAtMs,
     updatedAtMs: conversation.updatedAtMs,
-    projectId: conversation.projectId
+    projectId: conversation.projectId,
+    pinnedAtMs: conversation.pinnedAtMs
   }));
   return { conversations: summaries };
 });
@@ -872,10 +876,27 @@ app.get<{ Params: { id: string } }>("/v1/conversations/:id", async (request) => 
       model: conversation.model,
       createdAtMs: conversation.createdAtMs,
       updatedAtMs: conversation.updatedAtMs,
-      projectId: conversation.projectId
+      projectId: conversation.projectId,
+      pinnedAtMs: conversation.pinnedAtMs
     },
     messages
   };
+});
+
+// Rename and/or pin a conversation from the Recents menu. Ownership is enforced
+// by scoping every write to the authenticated user_id; a request for a
+// conversation the user does not own affects no rows and returns 404.
+app.patch<{ Params: { id: string } }>("/v1/conversations/:id", routeLimit(60), async (request) => {
+  const userId = await authenticate(request);
+  const id = z.string().uuid().parse(request.params.id);
+  const body = conversationUpdateSchema.parse(request.body);
+  if (body.title !== undefined && !(await renameConversation(id, userId, body.title))) {
+    throw Object.assign(new Error("Conversation not found"), { statusCode: 404, code: "CONVERSATION_NOT_FOUND" });
+  }
+  if (body.pinned !== undefined && !(await setConversationPinned(id, userId, body.pinned))) {
+    throw Object.assign(new Error("Conversation not found"), { statusCode: 404, code: "CONVERSATION_NOT_FOUND" });
+  }
+  return { ok: true };
 });
 
 app.delete<{ Params: { id: string } }>("/v1/conversations/:id", async (request) => {

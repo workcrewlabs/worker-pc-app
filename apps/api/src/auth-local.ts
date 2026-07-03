@@ -239,7 +239,7 @@ export class LocalAuthProvider implements AuthProvider {
       // The UNIQUE constraint on email surfaces as a constraint error. Translate
       // it into the contract EMAIL_IN_USE response.
       if (message.includes("unique") || message.includes("constraint") || message.includes("duplicate")) {
-        throw authError("This email is already registered", 409, "EMAIL_IN_USE");
+        throw authError("This email is already registered. Please sign in instead, or use Forgot password if you cannot remember it.", 409, "EMAIL_IN_USE");
       }
       throw error;
     }

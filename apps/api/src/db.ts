@@ -280,6 +280,9 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   // Per-credit dedupe key on existing ledgers, so Stripe top-up fulfilment and
   // auto-reload can be made idempotent at the credit write itself.
   await addColumnIfMissing(db, "usage_ledger", "dedupe_id", "TEXT");
+  // When a user pins a conversation. NULL means unpinned; a timestamp orders the
+  // pinned chats (most recently pinned first) above the rest of Recents.
+  await addColumnIfMissing(db, "conversations", "pinned_at_ms", "BIGINT");
   // Created after the column migration so it also applies to databases whose
   // users table predates the referral columns. Multiple NULL codes are allowed
   // by both SQLite and Postgres, so legacy rows without a code do not collide.
@@ -1019,6 +1022,7 @@ export type ConversationRow = {
   model: ModelTier;
   createdAtMs: number;
   updatedAtMs: number;
+  pinnedAtMs: number | null;
 };
 
 export type MessageRow = {
@@ -1038,7 +1042,8 @@ function mapConversation(row: Record<string, unknown>): ConversationRow {
     title: String(row.title),
     model: String(row.model) as ModelTier,
     createdAtMs: asNumber(row.created_at_ms),
-    updatedAtMs: asNumber(row.updated_at_ms)
+    updatedAtMs: asNumber(row.updated_at_ms),
+    pinnedAtMs: row.pinned_at_ms == null ? null : asNumber(row.pinned_at_ms)
   };
 }
 
@@ -1075,7 +1080,8 @@ export async function createConversation(input: {
     title: input.title,
     model: input.model,
     createdAtMs: now,
-    updatedAtMs: now
+    updatedAtMs: now,
+    pinnedAtMs: null
   };
 }
 
@@ -1093,10 +1099,35 @@ export async function getConversation(id: string, userId: string): Promise<Conve
  * user with a very large history cannot force an unbounded result set into memory. */
 export async function listConversations(userId: string): Promise<ConversationRow[]> {
   const result = await client.execute({
-    sql: "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at_ms DESC LIMIT 500",
+    // Pinned chats first (most recently pinned on top), then the rest by recency.
+    // The CASE keeps the ordering identical on SQLite and Postgres, which differ on
+    // where NULLs sort by default.
+    sql: `SELECT * FROM conversations WHERE user_id = ?
+      ORDER BY CASE WHEN pinned_at_ms IS NULL THEN 1 ELSE 0 END, pinned_at_ms DESC, updated_at_ms DESC
+      LIMIT 500`,
     args: [userId]
   });
   return result.rows.map((row) => mapConversation(row as unknown as Record<string, unknown>));
+}
+
+/** Rename a conversation (title only; does not change its recency order). Scoped
+ * by user_id. Returns true when the user owns and updated the conversation. */
+export async function renameConversation(id: string, userId: string, title: string): Promise<boolean> {
+  const result = await client.execute({
+    sql: "UPDATE conversations SET title = ? WHERE id = ? AND user_id = ?",
+    args: [title, id, userId]
+  });
+  return result.rowsAffected > 0;
+}
+
+/** Pin or unpin a conversation. Pinning stamps pinned_at_ms with now; unpinning
+ * clears it. Scoped by user_id. Returns true when the user owns the conversation. */
+export async function setConversationPinned(id: string, userId: string, pinned: boolean): Promise<boolean> {
+  const result = await client.execute({
+    sql: "UPDATE conversations SET pinned_at_ms = ? WHERE id = ? AND user_id = ?",
+    args: [pinned ? Date.now() : null, id, userId]
+  });
+  return result.rowsAffected > 0;
 }
 
 /** Append a message to a conversation. content is stored as a JSON block array. */
