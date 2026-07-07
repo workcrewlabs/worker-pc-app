@@ -366,7 +366,13 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       // once to Claude so a provider hiccup never blocks a chat. The same reservation
       // is reused (settleBudget clamps the pricier Claude cost to it).
       const fallbackTier = routeChatTier({ mode: "privacy", requested: body.model, task: body.text });
-      const attemptTiers: ConcreteModelTier[] = isEconomyEngine ? [tier, fallbackTier] : [tier];
+      // Only line up a Claude fallback when a Claude key is actually configured.
+      // In production it always is (required at boot); this guards a non-production
+      // setup running with only the economy key, where a doomed fallback would just
+      // add a failing call. Without a Claude key the economy engine stands alone.
+      const attemptTiers: ConcreteModelTier[] = isEconomyEngine && config.anthropicApiKey
+        ? [tier, fallbackTier]
+        : [tier];
       for (let attempt = 0; attempt < attemptTiers.length; attempt += 1) {
         const attemptTier = attemptTiers[attempt]!;
         const attemptEconomy = provider(attemptTier) === "zai";

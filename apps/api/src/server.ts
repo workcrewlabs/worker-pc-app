@@ -720,7 +720,8 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
       // here: they bubble up and leave the run resumable.
       const stepCode = (stepError as { code?: string }).code;
       const modelFailed = stepCode === "MODEL_REQUEST_FAILED" || stepCode === "MODEL_UNAVAILABLE";
-      if (modelFailed && provider(tier) === "zai" && !run.escalated) {
+      // Only fall back when a Claude key is configured (always true in production).
+      if (modelFailed && provider(tier) === "zai" && !run.escalated && config.anthropicApiKey) {
         run.escalated = true;
         request.log.warn({ runId: run.id, step: run.stepCount, code: stepCode }, "economy engine request failed; falling back to Claude");
         tier = routeAutomationTier({ mode, escalated: true, ultra: isUltra });
