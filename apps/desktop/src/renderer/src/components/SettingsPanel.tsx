@@ -115,7 +115,7 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
 
       <div className="save-form update-section">
         <label className="field-label">Privacy</label>
-        <p className="field-hint">WorkCrew records anonymous usage events (for example app opened, or a download clicked) to improve the app. It never records your messages, files, screenshots, passwords, or any private data. You can turn this off.</p>
+        <p className="field-hint">WorkCrew records anonymous usage events (for example app opened, or a download clicked) to improve the app, and you can turn this off. It never records your messages, files, screenshots, passwords, or any private data, and your chats are never used to train AI models.</p>
         <label className="always-toggle">
           <span className={`switch ${!optOut ? "switch-on" : ""}`}>
             <input
