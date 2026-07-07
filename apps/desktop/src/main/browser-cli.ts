@@ -131,16 +131,29 @@ const RECORDER_INSTALL = `(() => {
 })()`;
 
 
-// Common Chrome install locations on Windows. The first that exists is used to
-// launch a debugging-enabled window when one is not already running.
-function findChrome(): string | null {
-  const candidates = [
+// Resolve a Chromium-based browser to drive: Chrome first, then Microsoft Edge if
+// Chrome is not installed. Both are Chromium and speak the same remote-debugging
+// (CDP) protocol, so the launch and connect logic below is identical for either.
+// WORKCREW_CHROME_PATH / WORKCREW_EDGE_PATH force a specific executable.
+function firstExisting(candidates: (string | undefined)[]): string | null {
+  return candidates.filter((value): value is string => Boolean(value)).find((candidate) => existsSync(candidate)) ?? null;
+}
+function findBrowser(): { path: string; name: string } | null {
+  const chrome = firstExisting([
     process.env.WORKCREW_CHROME_PATH,
     join(process.env["PROGRAMFILES"] ?? "C:\\Program Files", "Google\\Chrome\\Application\\chrome.exe"),
     join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google\\Chrome\\Application\\chrome.exe"),
     join(process.env["LOCALAPPDATA"] ?? "", "Google\\Chrome\\Application\\chrome.exe")
-  ].filter((value): value is string => Boolean(value));
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+  ]);
+  if (chrome) return { path: chrome, name: "Chrome" };
+  const edge = firstExisting([
+    process.env.WORKCREW_EDGE_PATH,
+    join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Microsoft\\Edge\\Application\\msedge.exe"),
+    join(process.env["PROGRAMFILES"] ?? "C:\\Program Files", "Microsoft\\Edge\\Application\\msedge.exe"),
+    join(process.env["LOCALAPPDATA"] ?? "", "Microsoft\\Edge\\Application\\msedge.exe")
+  ]);
+  if (edge) return { path: edge, name: "Edge" };
+  return null;
 }
 
 export class BrowserCli {
@@ -159,19 +172,20 @@ export class BrowserCli {
   private recordPageHandlers = new Map<Page, () => void>();
 
   /**
-   * Launch a Chrome window with remote debugging enabled, using a dedicated
-   * WorkCrew profile that persists the user's sign-ins across runs. This is the
-   * one-time setup so automations can act with the user's accounts. If Chrome is
-   * already reachable on the debugging port this is effectively a no-op.
+   * Launch a Chrome (or Edge, if Chrome is not installed) window with remote
+   * debugging enabled, using a dedicated WorkCrew profile that persists the user's
+   * sign-ins across runs. This is the one-time setup so automations can act with
+   * the user's accounts. If a browser is already reachable on the debugging port
+   * this is effectively a no-op.
    */
   async launchBrowser(): Promise<{ launched: boolean; message: string }> {
     if (await this.isReachable()) return { launched: false, message: "The automation browser is already running." };
-    const chromePath = findChrome();
-    if (!chromePath) {
-      throw new Error("Google Chrome was not found. Install Chrome to use browser automation.");
+    const browser = findBrowser();
+    if (!browser) {
+      throw new Error("No supported browser was found. Install Google Chrome or Microsoft Edge to use browser automation.");
     }
     const profileDir = join(app.getPath("userData"), "automation-profile");
-    const child = spawn(chromePath, [
+    const child = spawn(browser.path, [
       `--remote-debugging-port=${DEFAULT_CDP_PORT}`,
       `--user-data-dir=${profileDir}`,
       "--no-first-run",
@@ -180,7 +194,7 @@ export class BrowserCli {
     child.unref();
     // Wait briefly for the debugging endpoint to come up.
     for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (await this.isReachable()) return { launched: true, message: "Automation browser ready. Sign in to your accounts in this window." };
+      if (await this.isReachable()) return { launched: true, message: `Automation browser (${browser.name}) ready. Sign in to your accounts in this window.` };
       await new Promise((done) => setTimeout(done, 300));
     }
     throw new Error("The automation browser did not start in time. Try again.");
