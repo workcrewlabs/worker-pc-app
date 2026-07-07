@@ -25,7 +25,8 @@ function makeSubscription(): SubscriptionRow {
     stripePaymentMethodId: null,
     pendingPlan: null,
     pendingInterval: null,
-    pendingEffectiveMs: null
+    pendingEffectiveMs: null,
+    modelMode: "economy"
   };
 }
 

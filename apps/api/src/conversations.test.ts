@@ -52,13 +52,13 @@ describe("conversation rename and pin", () => {
     const list = await listConversations(userId);
     // Pinned block first (C above A), then the unpinned B.
     expect(list.map((x) => x.title)).toEqual(["C", "A", "B"]);
-    expect(list[0].pinnedAtMs).not.toBeNull();
+    expect(list[0]!.pinnedAtMs).not.toBeNull();
     expect(list.find((x) => x.title === "B")?.pinnedAtMs).toBeNull();
 
     // Unpinning drops it back out of the pinned block.
     expect(await setConversationPinned(c.id, userId, false)).toBe(true);
     const after = await listConversations(userId);
-    expect(after[0].title).toBe("A"); // the only remaining pinned one
+    expect(after[0]!.title).toBe("A"); // the only remaining pinned one
     expect(after.find((x) => x.title === "C")?.pinnedAtMs).toBeNull();
     void b;
   });

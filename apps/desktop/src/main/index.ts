@@ -12,6 +12,8 @@ import {
   createCheckoutSchema,
   createRunSchema,
   nextRunStepSchema,
+  modelModeSchema,
+  type ModelMode,
   type RecordedEvent,
   type ChatDeltaFrame
 } from "@workcrew/contracts";
@@ -349,6 +351,23 @@ function registerIpc(): void {
   ipcMain.handle("settings:set-backend-url", (_event, raw) => setBackendUrl(z.string().min(1).max(2_048).parse(raw)));
   ipcMain.handle("settings:get-analytics-opt-out", () => getAnalyticsOptOut());
   ipcMain.handle("settings:set-analytics-opt-out", (_event, raw) => setAnalyticsOptOut(z.boolean().parse(raw)));
+
+  // Token-spend mode (Economy vs Privacy). Stored on the backend so a routing
+  // decision is authoritative and follows the user across devices; the desktop just
+  // reads and writes it. Falls back to the default if the read fails (e.g. offline).
+  ipcMain.handle("settings:get-model-mode", async (): Promise<ModelMode> => {
+    try {
+      const res = await api.request<{ modelMode?: string }>("/v1/preferences", { method: "GET" });
+      return res.modelMode === "privacy" ? "privacy" : "economy";
+    } catch {
+      return "economy";
+    }
+  });
+  ipcMain.handle("settings:set-model-mode", async (_event, raw): Promise<ModelMode> => {
+    const modelMode = modelModeSchema.parse(raw);
+    const res = await api.request<{ modelMode?: string }>("/v1/preferences", { method: "PATCH", body: { modelMode } });
+    return res.modelMode === "privacy" ? "privacy" : "economy";
+  });
 
   // Product analytics. The renderer asks the main process to capture a safe,
   // allow-listed event; main attaches the distinct id (the internal user id after

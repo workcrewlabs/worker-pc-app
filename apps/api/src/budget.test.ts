@@ -70,7 +70,8 @@ describe("budget ledger invariants", () => {
       stripePaymentMethodId: null,
       pendingPlan: null,
       pendingInterval: null,
-      pendingEffectiveMs: null
+      pendingEffectiveMs: null,
+      modelMode: "economy"
     };
   }
 
