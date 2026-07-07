@@ -52,7 +52,8 @@ const EMPTY_ENTITLEMENT: SubscriptionState = {
   dailyUsedMicrodollars: 0,
   pendingPlan: null,
   pendingInterval: null,
-  pendingEffective: null
+  pendingEffective: null,
+  modelMode: "economy"
 };
 
 // Tell a refreshed entitlement (returned by a downgrade) apart from the

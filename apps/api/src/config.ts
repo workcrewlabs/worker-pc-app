@@ -38,6 +38,18 @@ const envSchema = z.object({
   ANTHROPIC_HAIKU_MODEL: z.string().default("claude-haiku-4-5-20251001"),
   ANTHROPIC_SONNET_MODEL: z.string().default("claude-sonnet-4-6"),
   ANTHROPIC_OPUS_MODEL: z.string().default("claude-opus-4-8"),
+  // Economy-mode engine (an additional model provider used to do more work per
+  // dollar). Backend only, never shipped to the desktop. It is OPTIONAL: when
+  // ZAI_API_KEY is unset the app runs entirely on the Claude models and Economy
+  // mode simply falls back to the cheap Claude routing, so nothing breaks before
+  // the key is added. The endpoint speaks the Anthropic Messages format, so the
+  // same request body works; only the address, auth header, and model id differ.
+  ZAI_API_KEY: z.string().optional(),
+  ZAI_BASE_URL: z.preprocess(
+    (value) => (typeof value === "string" && value.length > 0 ? value : undefined),
+    z.string().url().default("https://api.z.ai/api/anthropic")
+  ),
+  ZAI_MODEL: z.string().default("glm-4.6"),
   // Transactional email (sign-up verification and password reset). When
   // RESEND_API_KEY is set the backend sends real email; otherwise it logs the
   // link to the server output so the flow is testable locally. WORKCREW_PUBLIC_URL
@@ -245,7 +257,15 @@ export const config = {
   models: {
     haiku: env.ANTHROPIC_HAIKU_MODEL,
     sonnet: env.ANTHROPIC_SONNET_MODEL,
-    opus: env.ANTHROPIC_OPUS_MODEL
+    opus: env.ANTHROPIC_OPUS_MODEL,
+    glm: env.ZAI_MODEL
+  },
+  // Economy-mode provider. enabled is true only when an API key is present, which
+  // is the single switch the routing layer checks before sending any work here.
+  zai: {
+    apiKey: env.ZAI_API_KEY,
+    baseUrl: env.ZAI_BASE_URL.replace(/\/$/, ""),
+    enabled: Boolean(env.ZAI_API_KEY)
   },
   resendApiKey: env.RESEND_API_KEY,
   emailFrom: env.EMAIL_FROM,

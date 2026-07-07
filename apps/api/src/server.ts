@@ -14,6 +14,7 @@ import {
   createCheckoutSchema,
   createRunSchema,
   nextRunStepSchema,
+  preferencesUpdateSchema,
   summarizeRecordingRequestSchema,
   type ConversationSummary,
   type ReferralInfo,
@@ -42,12 +43,13 @@ import {
   actualCostMicrodollars,
   budgetLimitedOutputTokens,
   callModel,
-  chooseModel,
   estimatedInputMicrodollars,
   maximumReservationMicrodollars,
   modelRequestPayload,
-  summarizeRecording
+  summarizeRecording,
+  type ModelResult
 } from "./anthropic.js";
+import { economyEngineAvailable, provider, routeAutomationTier, type ConcreteModelTier } from "./model-registry.js";
 import { processAndStoreAttachment } from "./attachments.js";
 import { cancelSubscriptionForDeletion, changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { landingPage } from "./landing.js";
@@ -72,6 +74,7 @@ import {
   listConversations,
   renameConversation,
   setConversationPinned,
+  setModelMode,
   setUserName,
   updateRun,
   type SubscriptionRow
@@ -185,7 +188,8 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
       dailyUsedMicrodollars: 0,
       pendingPlan: null,
       pendingInterval: null,
-      pendingEffective: null
+      pendingEffective: null,
+      modelMode: "economy"
     };
   }
   const nowMs = Date.now();
@@ -213,7 +217,8 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
     dailyUsedMicrodollars: dailyUsed,
     pendingPlan: subscription.pendingPlan,
     pendingInterval: subscription.pendingInterval,
-    pendingEffective: subscription.pendingEffectiveMs ? new Date(subscription.pendingEffectiveMs).toISOString() : null
+    pendingEffective: subscription.pendingEffectiveMs ? new Date(subscription.pendingEffectiveMs).toISOString() : null,
+    modelMode: subscription.modelMode
   };
 }
 
@@ -445,19 +450,21 @@ app.post("/v1/recordings/summarize", authLimit(20), async (request) => {
   const body = summarizeRecordingRequestSchema.parse(request.body);
   // Count this small model call against the same hard caps as chat and automation,
   // and cap its output by the budget too so nothing keeps spending once the daily
-  // or monthly limit is reached. It is a single bounded Haiku call.
+  // or monthly limit is reached. It is a single bounded call, on the Economy engine
+  // in Economy mode (cheaper) or Claude Haiku otherwise.
+  const summaryTier: ConcreteModelTier = subscription.modelMode === "economy" && economyEngineAvailable() ? "glm" : "haiku";
   const headroom = await budgetHeadroom(userId, subscription);
-  const summaryMaxTokens = Math.min(400, budgetLimitedOutputTokens("haiku", Math.min(headroom.daily, headroom.monthly)));
+  const summaryMaxTokens = Math.min(400, budgetLimitedOutputTokens(summaryTier, Math.min(headroom.daily, headroom.monthly)));
   if (summaryMaxTokens < 1) {
     if (headroom.daily <= headroom.monthly) {
       throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
     }
     throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
   }
-  const reservationAmount = maximumReservationMicrodollars("haiku", body, summaryMaxTokens);
-  const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: reservationAmount });
+  const reservationAmount = maximumReservationMicrodollars(summaryTier, body, summaryMaxTokens);
+  const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: summaryTier, amountMicrodollars: reservationAmount });
   try {
-    const task = await summarizeRecording(body.surface, body.events, summaryMaxTokens);
+    const task = await summarizeRecording(body.surface, body.events, summaryMaxTokens, summaryTier);
     await settleBudget(reservation.reservationId, reservationAmount);
     return { task };
   } catch (error) {
@@ -541,6 +548,26 @@ app.post("/v1/billing/webhook", { config: { rawBody: true } }, async (request, r
   }
 });
 
+// Read the signed-in user's preferences (currently just the token-spend mode).
+// Tolerant of a user without a subscription row yet so Settings can render before
+// checkout; it returns the default in that case.
+app.get("/v1/preferences", routeLimit(60), async (request) => {
+  const userId = await authenticate(request);
+  const subscription = await getSubscription(userId);
+  return { modelMode: subscription?.modelMode ?? "economy" };
+});
+
+// Update the signed-in user's preferences. The mode only affects paid model use, so
+// it requires an active subscription (the row the mode is stored on).
+app.patch("/v1/preferences", routeLimit(30), async (request) => {
+  const userId = await authenticate(request);
+  requireActive(await getSubscription(userId));
+  const body = preferencesUpdateSchema.parse(request.body);
+  const saved = await setModelMode(userId, body.modelMode);
+  if (!saved) throw Object.assign(new Error("Could not save your preferences."), { statusCode: 400, code: "PREFERENCES_NOT_SAVED" });
+  return { modelMode: body.modelMode };
+});
+
 app.post("/v1/runs", routeLimit(30), async (request) => {
   const userId = await authenticate(request);
   requireActive(await getSubscription(userId));
@@ -556,6 +583,7 @@ app.post("/v1/runs", routeLimit(30), async (request) => {
     stepCount: 0,
     lastActionSignature: null,
     repeatCount: 0,
+    escalated: false,
     tokensInput: 0,
     tokensCacheRead: 0,
     tokensCacheWrite: 0,
@@ -571,6 +599,9 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
   const runId = z.string().uuid().parse(request.params.runId);
   const run = await getRun(runId, userId);
   if (!run) throw Object.assign(new Error("Run not found"), { statusCode: 404, code: "RUN_NOT_FOUND" });
+  // A non-null alias so the nested planStep closure below sees a defined run
+  // (control-flow narrowing from the check above does not reach into a closure).
+  const activeRun = run;
   if (run.status === "complete") return { runId: run.id, status: "complete", message: "This run is already complete." };
   if (run.status === "failed") {
     return { runId: run.id, status: "failed", message: "This run has already stopped and cannot continue." };
@@ -607,76 +638,137 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
   }
   run.stepCount += 1;
 
-  const originalTask = String((run.messages[0] as { content?: unknown } | undefined)?.content ?? "");
-  const tier = chooseModel(run.model, originalTask);
-  // Size this step so the whole step (input plus output) fits the money that is
-  // left, and stop the run before spending if it does not. The input (the growing
-  // accumulated context) is covered first, then output is truncated to whatever
-  // budget remains, so the automation halts at the cap instead of running another
-  // full step past it. A step needs a little room to emit one action.
+  const mode = subscription.modelMode;
+  const isUltra = subscription.plan === "ultra";
+
+  // One automation step is a single tool call chosen against the latest snapshot,
+  // so its output is small. This ceiling is trimmed from the old 1200 to cut wasted
+  // output budget on every step (a real share of automation spend) while leaving
+  // ample room for any actual action. A step still needs a little room to emit one.
   const MIN_STEP_OUTPUT_TOKENS = 64;
-  const headroom = await budgetHeadroom(userId, subscription);
-  const remaining = Math.min(headroom.daily, headroom.monthly);
-  const inputEstimate = estimatedInputMicrodollars(tier, modelRequestPayload(run.messages, tier, 1_200));
-  const outputPrice = MODEL_PRICES[tier].output;
-  if (remaining - inputEstimate < MIN_STEP_OUTPUT_TOKENS * outputPrice) {
-    if (headroom.daily <= headroom.monthly) {
-      throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+  const STEP_MAX_OUTPUT_TOKENS = 700;
+  // After the Economy engine repeats the same action this many times, hand the run
+  // off to Claude. MAX_REPEATED_ACTIONS remains the final give-up if even Claude loops.
+  const ESCALATE_AFTER_REPEATS = 2;
+
+  // Plan one step on a given engine: size the request to the money that is left,
+  // reserve, call the model, and settle the real cost, all against the ONE shared
+  // budget (so a cheaper engine simply stretches the same daily and monthly caps
+  // further). Throws 429/402 before spending when a cap is reached, and releases its
+  // hold on a genuine model failure. It does NOT append to run.messages; the caller
+  // appends the action it actually returns, so an escalation can discard a stuck
+  // action without leaving a dangling tool_use in the transcript.
+  async function planStep(tier: ConcreteModelTier): Promise<ModelResult> {
+    const headroom = await budgetHeadroom(userId, subscription);
+    const remaining = Math.min(headroom.daily, headroom.monthly);
+    const inputEstimate = estimatedInputMicrodollars(tier, modelRequestPayload(activeRun.messages, tier, STEP_MAX_OUTPUT_TOKENS));
+    const outputPrice = MODEL_PRICES[tier].output;
+    if (remaining - inputEstimate < MIN_STEP_OUTPUT_TOKENS * outputPrice) {
+      if (headroom.daily <= headroom.monthly) {
+        throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+      }
+      throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
     }
-    throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
-  }
-  let maxOutputTokens = Math.min(1_200, budgetLimitedOutputTokens(tier, remaining - inputEstimate));
-  const payload = modelRequestPayload(run.messages, tier, maxOutputTokens);
-  const reservationAmount = maximumReservationMicrodollars(tier, payload, maxOutputTokens);
-  const reservation = await reserveBudget({
-    subscription,
-    runId: run.id,
-    model: tier,
-    amountMicrodollars: reservationAmount
-  });
-  // Re-cap output to what was actually reserved (minus input) after any concurrent
-  // consumption; release the hold and stop the run if nothing meaningful is left.
-  const finalOutputBudget = reservation.reservedMicrodollars - inputEstimate;
-  if (finalOutputBudget < MIN_STEP_OUTPUT_TOKENS * outputPrice) {
-    await releaseBudget(reservation.reservationId);
-    if (headroom.daily <= headroom.monthly) {
-      throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+    let maxOutputTokens = Math.min(STEP_MAX_OUTPUT_TOKENS, budgetLimitedOutputTokens(tier, remaining - inputEstimate));
+    const payload = modelRequestPayload(activeRun.messages, tier, maxOutputTokens);
+    const reservationAmount = maximumReservationMicrodollars(tier, payload, maxOutputTokens);
+    const reservation = await reserveBudget({ subscription, runId: activeRun.id, model: tier, amountMicrodollars: reservationAmount });
+    // Re-cap output to what was actually reserved (minus input) after any concurrent
+    // consumption; release the hold and stop if nothing meaningful is left.
+    const finalOutputBudget = reservation.reservedMicrodollars - inputEstimate;
+    if (finalOutputBudget < MIN_STEP_OUTPUT_TOKENS * outputPrice) {
+      await releaseBudget(reservation.reservationId);
+      if (headroom.daily <= headroom.monthly) {
+        throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+      }
+      throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
     }
-    throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+    maxOutputTokens = Math.min(maxOutputTokens, budgetLimitedOutputTokens(tier, finalOutputBudget));
+    try {
+      const result = await callModel({ tier, messages: activeRun.messages, maxOutputTokens });
+      const actualCost = actualCostMicrodollars(tier, result.usage);
+      if (actualCost > reservationAmount) {
+        // Provider reported usage above the reserved maximum. Settle at the clamped
+        // ceiling (settleBudget clamps) so a genuine overage is billed, then fail.
+        await settleBudget(reservation.reservationId, actualCost, result.providerRequestId);
+        throw Object.assign(new Error("Provider usage exceeded the reserved maximum"), { code: "USAGE_RESERVATION_BREACH", providerRequestId: result.providerRequestId });
+      }
+      await settleBudget(reservation.reservationId, actualCost, result.providerRequestId);
+      activeRun.tokensInput += result.usage.input_tokens;
+      activeRun.tokensCacheRead += result.usage.cache_read_input_tokens;
+      activeRun.tokensCacheWrite += result.usage.cache_creation_input_tokens;
+      activeRun.tokensOutput += result.usage.output_tokens;
+      return result;
+    } catch (error) {
+      if ((error as { code?: string }).code === "USAGE_RESERVATION_BREACH") throw error; // already settled at the ceiling
+      await releaseBudget(reservation.reservationId); // genuine failure: never bill it, never eat the caps
+      throw error;
+    }
   }
-  maxOutputTokens = Math.min(maxOutputTokens, budgetLimitedOutputTokens(tier, finalOutputBudget));
 
   try {
-    const result = await callModel({ tier, messages: run.messages, maxOutputTokens });
-    const actualCost = actualCostMicrodollars(tier, result.usage);
-    if (actualCost > reservationAmount) {
-      throw Object.assign(new Error("Provider usage exceeded the reserved maximum"), {
-        code: "USAGE_RESERVATION_BREACH",
-        actualCost,
-        providerRequestId: result.providerRequestId
-      });
+    // Economy runs the loop on the cost-efficient engine; Privacy (or an unconfigured
+    // engine) uses cheap Claude Haiku. Once escalated, every step is Claude.
+    let tier = routeAutomationTier({ mode, escalated: run.escalated, ultra: isUltra });
+    let result: ModelResult;
+    try {
+      result = await planStep(tier);
+    } catch (stepError) {
+      // If the Economy engine fails the REQUEST itself (a config, format, or upstream
+      // error, not a budget cap), fall back to Claude for the rest of the run so a
+      // provider hiccup never blocks the user. Budget and rate errors are not caught
+      // here: they bubble up and leave the run resumable.
+      const stepCode = (stepError as { code?: string }).code;
+      const modelFailed = stepCode === "MODEL_REQUEST_FAILED" || stepCode === "MODEL_UNAVAILABLE";
+      if (modelFailed && provider(tier) === "zai" && !run.escalated) {
+        run.escalated = true;
+        request.log.warn({ runId: run.id, step: run.stepCount, code: stepCode }, "economy engine request failed; falling back to Claude");
+        tier = routeAutomationTier({ mode, escalated: true, ultra: isUltra });
+        result = await planStep(tier);
+      } else {
+        throw stepError;
+      }
     }
-    await settleBudget(reservation.reservationId, actualCost, result.providerRequestId);
-    run.messages.push({ role: "assistant", content: result.content });
 
-    // Token instrumentation. Accumulate the raw token categories on the run and
-    // log this step plus the running total, so prompt-cache effectiveness
-    // (cacheRead growing while input stays small) and per-run usage are visible
-    // without re-deriving them from the cost ledger.
-    run.tokensInput += result.usage.input_tokens;
-    run.tokensCacheRead += result.usage.cache_read_input_tokens;
-    run.tokensCacheWrite += result.usage.cache_creation_input_tokens;
-    run.tokensOutput += result.usage.output_tokens;
+    // Track repeated actions for both the escalation trigger and the final loop
+    // stop. A finish action ends the run and is never a loop.
+    if (result.action.kind !== "finish") {
+      const signature = actionSignature(result.action);
+      run.repeatCount = signature === run.lastActionSignature ? run.repeatCount + 1 : 1;
+      run.lastActionSignature = signature;
+    }
+
+    // Claude solves what the Economy engine cannot. When the engine repeats the same
+    // action ESCALATE_AFTER_REPEATS times (stuck), hand off to Claude for the rest of
+    // the run and re-plan this step now, discarding the stuck action instead of
+    // executing it. This happens at most once per run.
+    if (
+      result.action.kind !== "finish" &&
+      !run.escalated &&
+      provider(tier) === "zai" &&
+      run.repeatCount >= ESCALATE_AFTER_REPEATS
+    ) {
+      run.escalated = true;
+      request.log.info({ runId: run.id, step: run.stepCount }, "automation escalated to Claude after a repeated action");
+      tier = routeAutomationTier({ mode, escalated: true, ultra: isUltra });
+      result = await planStep(tier);
+      // Reset loop tracking against Claude's fresh action.
+      if (result.action.kind !== "finish") {
+        run.repeatCount = 1;
+        run.lastActionSignature = actionSignature(result.action);
+      } else {
+        run.repeatCount = 0;
+        run.lastActionSignature = null;
+      }
+    }
+
+    // Append the action we will actually return so the transcript stays valid.
+    run.messages.push({ role: "assistant", content: result.content });
     request.log.info({
       runId: run.id,
       step: run.stepCount,
       tier,
-      stepTokens: {
-        input: result.usage.input_tokens,
-        cacheRead: result.usage.cache_read_input_tokens,
-        cacheWrite: result.usage.cache_creation_input_tokens,
-        output: result.usage.output_tokens
-      },
+      escalated: run.escalated,
       runTokens: {
         input: run.tokensInput,
         cacheRead: run.tokensCacheRead,
@@ -685,21 +777,15 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
       }
     }, "automation step token usage");
 
-    // Loop protection. A finish action ends the run and is never a loop. For
-    // any other action, compare its normalized signature with the previous one
-    // and stop the run when the same action repeats too many times in a row
-    // instead of spending more budget on the next step.
-    const signature = actionSignature(result.action);
-    if (result.action.kind !== "finish") {
-      run.repeatCount = signature === run.lastActionSignature ? run.repeatCount + 1 : 1;
-      run.lastActionSignature = signature;
-    }
-    const usage = await getBudgetUsage(userId, reservation.window);
+    const window = getBudgetWindow(subscription.budgetAnchorMs);
+    const usage = await getBudgetUsage(userId, window);
     const usagePayload = {
       usedMicrodollars: usage.used,
       budgetMicrodollars: PLAN_CATALOG[subscription.plan].monthlyApiBudgetMicrodollars
     };
 
+    // Final loop stop: if the same action still repeats too many times in a row
+    // (even after any escalation), end the run instead of spending more budget.
     if (result.action.kind !== "finish" && run.repeatCount >= MAX_REPEATED_ACTIONS) {
       run.status = "failed";
       run.pendingToolUseId = null;
@@ -736,18 +822,16 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
       usage: usagePayload
     };
   } catch (error) {
-    if ((error as { code?: string }).code === "USAGE_RESERVATION_BREACH") {
-      // The model finished but reported usage above the reserved maximum. Charge
-      // the real cost (settleBudget clamps it to the reservation) so a genuine
-      // overage is still billed at the ceiling.
-      const actualCost = (error as { actualCost?: number }).actualCost ?? reservationAmount;
-      await settleBudget(reservation.reservationId, actualCost, (error as { providerRequestId?: string }).providerRequestId);
-    } else {
-      // A genuine failure (model or network error) produced no trustworthy
-      // usage. Release the hold so a failed turn is never billed and cannot eat
-      // into the user's hard daily or monthly caps.
-      await releaseBudget(reservation.reservationId);
+    const code = (error as { code?: string }).code;
+    if (code === "RATE_LIMIT_DAY" || code === "BUDGET_EXHAUSTED") {
+      // A cap was reached before a step could run. planStep spent nothing (or already
+      // released its hold), so leave the run resumable: do not persist a failed status
+      // or the step increment. It can continue once the daily window frees or the
+      // period resets.
+      throw error;
     }
+    // planStep already released or settled its own reservation. Just record the run
+    // as failed and surface the error.
     run.status = "failed";
     await updateRun(run);
     throw error;

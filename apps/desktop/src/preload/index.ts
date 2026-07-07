@@ -64,7 +64,11 @@ const workcrew = {
     setBackendUrl: (url: string): Promise<string> => ipcRenderer.invoke("settings:set-backend-url", url),
     // Anonymous product analytics opt-out. Reading and writing the user's choice.
     getAnalyticsOptOut: (): Promise<boolean> => ipcRenderer.invoke("settings:get-analytics-opt-out"),
-    setAnalyticsOptOut: (value: boolean): Promise<boolean> => ipcRenderer.invoke("settings:set-analytics-opt-out", value)
+    setAnalyticsOptOut: (value: boolean): Promise<boolean> => ipcRenderer.invoke("settings:set-analytics-opt-out", value),
+    // Token-spend mode: "economy" (default) does more per dollar; "privacy" keeps
+    // everything on WorkCrew's most private engine. Stored on the backend.
+    getModelMode: (): Promise<"economy" | "privacy"> => ipcRenderer.invoke("settings:get-model-mode"),
+    setModelMode: (mode: "economy" | "privacy"): Promise<"economy" | "privacy"> => ipcRenderer.invoke("settings:set-model-mode", mode)
   },
   // Safe product analytics. The renderer only names an allow-listed event and a
   // few safe properties; the main process attaches identity and does the sending.

@@ -9,6 +9,7 @@ import {
   PROMPT_VERSION,
   chooseModel,
   modelId,
+  provider,
   type ConcreteModelTier
 } from "./model-registry.js";
 
@@ -16,6 +17,36 @@ import {
 // imports from "./anthropic.js" working. The model registry is the single
 // source of truth for prices, model ids, and routing.
 export { MODEL_PRICES, PROMPT_VERSION, chooseModel, modelId };
+
+/**
+ * Resolve the HTTP endpoint and auth header for an engine tier. Both providers
+ * speak the Anthropic Messages format, so only the address, the auth scheme, and
+ * whether a key is present differ. The Economy provider authenticates with a
+ * Bearer token (its Anthropic-compatible endpoint), Claude with x-api-key. Keys
+ * are read here and never leave the backend.
+ */
+function providerEndpoint(tier: ConcreteModelTier): { url: string; headers: Record<string, string>; keyPresent: boolean } {
+  if (provider(tier) === "zai") {
+    return {
+      url: `${config.zai.baseUrl}/v1/messages`,
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${config.zai.apiKey ?? ""}`,
+        "anthropic-version": "2023-06-01"
+      },
+      keyPresent: Boolean(config.zai.apiKey)
+    };
+  }
+  return {
+    url: "https://api.anthropic.com/v1/messages",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": config.anthropicApiKey ?? "",
+      "anthropic-version": "2023-06-01"
+    },
+    keyPresent: Boolean(config.anthropicApiKey)
+  };
+}
 
 type AnthropicUsage = {
   input_tokens?: number;
@@ -257,11 +288,13 @@ export async function callModel(input: {
   maxOutputTokens: number;
 }): Promise<ModelResult> {
   if (config.mockAi && config.nodeEnv !== "production") return mockResponse(input.messages, input.tier);
-  if (!config.anthropicApiKey) throw Object.assign(new Error("Claude is not configured"), { statusCode: 503, code: "MODEL_UNAVAILABLE" });
+  const endpoint = providerEndpoint(input.tier);
+  if (!endpoint.keyPresent) throw Object.assign(new Error("The model provider is not configured"), { statusCode: 503, code: "MODEL_UNAVAILABLE" });
 
-  // Effort is unsupported on Haiku (the API rejects output_config.effort there),
-  // so it is only sent for Sonnet and Opus. Haiku runs omit it and stay cheapest.
-  const supportsEffort = input.tier !== "haiku";
+  // output_config.effort is an Anthropic Sonnet/Opus feature: Haiku rejects it and
+  // the Economy engine does not accept the same field, so it is only sent for the
+  // two Claude tiers that support it. Every other engine omits it.
+  const supportsEffort = input.tier === "sonnet" || input.tier === "opus";
   const body = {
     model: modelId(input.tier),
     max_tokens: input.maxOutputTokens,
@@ -276,13 +309,9 @@ export async function callModel(input: {
     ...(supportsEffort ? { output_config: { effort: AUTOMATION_EFFORT } } : {}),
     messages: withRollingCacheBreakpoint(input.messages)
   };
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetch(endpoint.url, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": config.anthropicApiKey,
-      "anthropic-version": "2023-06-01"
-    },
+    headers: endpoint.headers,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(60_000)
   });
@@ -293,7 +322,7 @@ export async function callModel(input: {
     error?: { message?: string };
   };
   if (!response.ok || !payload.content || !payload.usage) {
-    throw Object.assign(new Error(payload.error?.message ?? `Claude request failed with ${response.status}`), {
+    throw Object.assign(new Error(payload.error?.message ?? `The model request failed with ${response.status}`), {
       statusCode: response.status >= 500 ? 502 : 400,
       code: "MODEL_REQUEST_FAILED",
       providerRequestId: requestId
@@ -383,22 +412,19 @@ function extractText(content: AnthropicContent[]): string {
  * the cheapest tier (this is a small one-shot summarization) and no tools. In
  * mock mode it returns a deterministic placeholder so tests never hit the API.
  */
-export async function summarizeRecording(surface: "browser" | "windows", events: RecordedEvent[], maxOutputTokens = 400): Promise<string> {
+export async function summarizeRecording(surface: "browser" | "windows", events: RecordedEvent[], maxOutputTokens = 400, tier: ConcreteModelTier = "haiku"): Promise<string> {
   const description = describeRecording(surface, events);
   if (config.mockAi && config.nodeEnv !== "production") {
     return `Repeat the recorded ${surface} task: ${events.length} step${events.length === 1 ? "" : "s"}.`;
   }
-  if (!config.anthropicApiKey) throw Object.assign(new Error("Claude is not configured"), { statusCode: 503, code: "MODEL_UNAVAILABLE" });
+  const endpoint = providerEndpoint(tier);
+  if (!endpoint.keyPresent) throw Object.assign(new Error("The model provider is not configured"), { statusCode: 503, code: "MODEL_UNAVAILABLE" });
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetch(endpoint.url, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": config.anthropicApiKey,
-      "anthropic-version": "2023-06-01"
-    },
+    headers: endpoint.headers,
     body: JSON.stringify({
-      model: modelId("haiku"),
+      model: modelId(tier),
       max_tokens: maxOutputTokens,
       system: RECORDING_SUMMARY_SYSTEM,
       messages: [{ role: "user", content: description }]
@@ -407,7 +433,7 @@ export async function summarizeRecording(surface: "browser" | "windows", events:
   });
   const payload = await response.json() as { content?: AnthropicContent[]; error?: { message?: string } };
   if (!response.ok || !payload.content) {
-    throw Object.assign(new Error(payload.error?.message ?? `Claude request failed with ${response.status}`), {
+    throw Object.assign(new Error(payload.error?.message ?? `The model request failed with ${response.status}`), {
       statusCode: response.status >= 500 ? 502 : 400,
       code: "MODEL_REQUEST_FAILED"
     });

@@ -42,6 +42,11 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
   // Once the user changes the toggle, ignore a late-arriving initial read so it
   // cannot overwrite the newer choice with the stale stored value.
   const optOutTouchedRef = useRef(false);
+  // Token-spend mode: "economy" (default) does much more per plan; "privacy" keeps
+  // everything on the most private engine and spends more. Exactly one is active.
+  const [modelMode, setModelMode] = useState<"economy" | "privacy">("economy");
+  const [modelNotice, setModelNotice] = useState("");
+  const modelModeTouchedRef = useRef(false);
 
   useEffect(() => window.workcrew.updates.onStatus((status) => setUpdate(status)), []);
   useEffect(() => {
@@ -49,6 +54,27 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
       .then((value) => { if (!optOutTouchedRef.current) setOptOut(value); })
       .catch(() => {});
   }, []);
+  useEffect(() => {
+    void window.workcrew.settings.getModelMode()
+      .then((value) => { if (!modelModeTouchedRef.current) setModelMode(value); })
+      .catch(() => {});
+  }, []);
+
+  // Choose a mode. The two toggles are mutually exclusive: turning one on turns the
+  // other off, so exactly one is always active. Optimistic with rollback on failure.
+  async function chooseMode(mode: "economy" | "privacy") {
+    modelModeTouchedRef.current = true;
+    if (mode === modelMode) return;
+    const previous = modelMode;
+    setModelMode(mode);
+    setModelNotice("");
+    try {
+      await window.workcrew.settings.setModelMode(mode);
+    } catch {
+      setModelMode(previous);
+      setModelNotice("Could not save that setting. Please try again.");
+    }
+  }
 
   async function toggleAnalytics(share: boolean) {
     optOutTouchedRef.current = true;
@@ -114,7 +140,37 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
       </div>
 
       <div className="save-form update-section">
-        <label className="field-label">Privacy</label>
+        <label className="field-label">AI mode</label>
+        <p className="field-hint">Choose how WorkCrew uses your tokens. WorkCrew never stores your chats or uses them to train AI models.</p>
+        <label className="always-toggle">
+          <span className={`switch ${modelMode === "economy" ? "switch-on" : ""}`}>
+            <input
+              type="checkbox"
+              checked={modelMode === "economy"}
+              onChange={(event) => void chooseMode(event.target.checked ? "economy" : "privacy")}
+              aria-label="Economy mode"
+            />
+            <span className="switch-knob" aria-hidden="true" />
+          </span>
+          <span className="always-toggle-label">Economy mode: do much more on the same plan</span>
+        </label>
+        <label className="always-toggle">
+          <span className={`switch ${modelMode === "privacy" ? "switch-on" : ""}`}>
+            <input
+              type="checkbox"
+              checked={modelMode === "privacy"}
+              onChange={(event) => void chooseMode(event.target.checked ? "privacy" : "economy")}
+              aria-label="Privacy mode"
+            />
+            <span className="switch-knob" aria-hidden="true" />
+          </span>
+          <span className="always-toggle-label">Privacy mode: keep everything on WorkCrew's most private AI. This uses a lot more tokens, so chats and tasks go through your limit faster.</span>
+        </label>
+        {modelNotice && <p className="notice" role="alert">{modelNotice}</p>}
+      </div>
+
+      <div className="save-form update-section">
+        <label className="field-label">Analytics</label>
         <p className="field-hint">WorkCrew records anonymous usage events (for example app opened, or a download clicked) to improve the app, and you can turn this off. It never records your messages, files, screenshots, passwords, or any private data, and your chats are never used to train AI models.</p>
         <label className="always-toggle">
           <span className={`switch ${!optOut ? "switch-on" : ""}`}>

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { BillingInterval, ModelTier, PlanId } from "@workcrew/contracts";
+import type { BillingInterval, ModelMode, ModelTier, PlanId } from "@workcrew/contracts";
 import { createDatabaseClient, type DatabaseClient } from "./database/driver.js";
 
 // Referral codes use an unambiguous uppercase alphabet (no O/0, I/1, L) so a
@@ -37,6 +37,9 @@ export type SubscriptionRow = {
   pendingPlan: PlanId | null;
   pendingInterval: BillingInterval | null;
   pendingEffectiveMs: number | null;
+  /** The user's token-spend mode chosen in Settings. "economy" (default) uses the
+   * cost-efficient engine for heavy work; "privacy" stays on Claude only. */
+  modelMode: ModelMode;
   /** Referral bonus earned by this user (added to their monthly budget). Joined
    * from the users table on read; optional because it is not part of the
    * writable subscription row (upsert ignores it). */
@@ -56,6 +59,9 @@ export type RunRow = {
   lastActionSignature: string | null;
   /** Number of consecutive identical actions seen so far (1 means seen once). */
   repeatCount: number;
+  /** Whether this run has handed off to Claude after the Economy engine got stuck.
+   * Once true, every remaining step uses Claude (the "solves what glm can't" net). */
+  escalated: boolean;
   /** Cumulative model token usage across the run, for per-run cost and cache
    * effectiveness logging. Settled cost still lives in the usage ledger; these
    * are the raw token categories so a per-run total can be reported. */
@@ -106,6 +112,7 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       pending_plan TEXT CHECK (pending_plan IN ('pro', 'ultra')),
       pending_interval TEXT CHECK (pending_interval IN ('month', 'year')),
       pending_effective_ms BIGINT,
+      model_mode TEXT NOT NULL DEFAULT 'economy',
       updated_at_ms BIGINT NOT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS usage_ledger (
@@ -138,6 +145,7 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       step_count INTEGER NOT NULL DEFAULT 0,
       last_action_signature TEXT,
       repeat_count INTEGER NOT NULL DEFAULT 0,
+      escalated INTEGER NOT NULL DEFAULT 0,
       tokens_input BIGINT NOT NULL DEFAULT 0,
       tokens_cache_read BIGINT NOT NULL DEFAULT 0,
       tokens_cache_write BIGINT NOT NULL DEFAULT 0,
@@ -258,6 +266,7 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   await addColumnIfMissing(db, "runs", "step_count", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "runs", "last_action_signature", "TEXT");
   await addColumnIfMissing(db, "runs", "repeat_count", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfMissing(db, "runs", "escalated", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "runs", "tokens_input", "BIGINT NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "runs", "tokens_cache_read", "BIGINT NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "runs", "tokens_cache_write", "BIGINT NOT NULL DEFAULT 0");
@@ -277,6 +286,8 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   await addColumnIfMissing(db, "subscriptions", "pending_plan", "TEXT CHECK (pending_plan IN ('pro', 'ultra'))");
   await addColumnIfMissing(db, "subscriptions", "pending_interval", "TEXT CHECK (pending_interval IN ('month', 'year'))");
   await addColumnIfMissing(db, "subscriptions", "pending_effective_ms", "BIGINT");
+  // The user's token-spend mode (Economy vs Privacy), on existing subscription rows.
+  await addColumnIfMissing(db, "subscriptions", "model_mode", "TEXT NOT NULL DEFAULT 'economy'");
   // Per-credit dedupe key on existing ledgers, so Stripe top-up fulfilment and
   // auto-reload can be made idempotent at the credit write itself.
   await addColumnIfMissing(db, "usage_ledger", "dedupe_id", "TEXT");
@@ -344,8 +355,19 @@ function mapSubscription(row: Record<string, unknown>): SubscriptionRow {
     pendingPlan: row.pending_plan ? (String(row.pending_plan) as PlanId) : null,
     pendingInterval: row.pending_interval ? (String(row.pending_interval) as BillingInterval) : null,
     pendingEffectiveMs: row.pending_effective_ms == null ? null : asNumber(row.pending_effective_ms),
+    modelMode: String(row.model_mode) === "privacy" ? "privacy" : "economy",
     referralBonusMicrodollars: asNumber(row.referral_bonus_microdollars)
   };
+}
+
+// Save the user's token-spend mode chosen in Settings. A no-op (returns false) if
+// the user has no subscription row, since the mode only affects paid model use.
+export async function setModelMode(userId: string, mode: ModelMode): Promise<boolean> {
+  const result = await client.execute({
+    sql: "UPDATE subscriptions SET model_mode = ?, updated_at_ms = ? WHERE user_id = ?",
+    args: [mode, Date.now(), userId]
+  });
+  return result.rowsAffected > 0;
 }
 
 export async function getSubscription(userId: string): Promise<SubscriptionRow | null> {
@@ -377,7 +399,7 @@ export async function getSubscriptionByStripeId(subscriptionId: string): Promise
 type SubscriptionUpsert = Omit<
   SubscriptionRow,
   "autoReloadEnabled" | "autoReloadPack" | "monthlyTopupLimitMicro" | "stripePaymentMethodId"
-    | "pendingPlan" | "pendingInterval" | "pendingEffectiveMs" | "referralBonusMicrodollars"
+    | "pendingPlan" | "pendingInterval" | "pendingEffectiveMs" | "modelMode" | "referralBonusMicrodollars"
 >;
 
 export async function upsertSubscription(input: SubscriptionUpsert): Promise<void> {
@@ -484,11 +506,11 @@ export async function createRun(run: RunRow): Promise<void> {
   await client.execute({
     sql: `INSERT INTO runs(
         id, user_id, model, status, messages_json, pending_tool_use_id,
-        step_count, last_action_signature, repeat_count,
+        step_count, last_action_signature, repeat_count, escalated,
         tokens_input, tokens_cache_read, tokens_cache_write, tokens_output,
         created_at_ms, updated_at_ms
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       run.id,
       run.userId,
@@ -499,6 +521,7 @@ export async function createRun(run: RunRow): Promise<void> {
       run.stepCount,
       run.lastActionSignature,
       run.repeatCount,
+      run.escalated ? 1 : 0,
       run.tokensInput,
       run.tokensCacheRead,
       run.tokensCacheWrite,
@@ -526,6 +549,7 @@ export async function getRun(runId: string, userId: string): Promise<RunRow | nu
     stepCount: asNumber(row.step_count),
     lastActionSignature: row.last_action_signature ? String(row.last_action_signature) : null,
     repeatCount: asNumber(row.repeat_count),
+    escalated: asNumber(row.escalated) === 1,
     tokensInput: asNumber(row.tokens_input),
     tokensCacheRead: asNumber(row.tokens_cache_read),
     tokensCacheWrite: asNumber(row.tokens_cache_write),
@@ -537,7 +561,7 @@ export async function updateRun(run: RunRow): Promise<void> {
   await client.execute({
     sql: `UPDATE runs SET
         model = ?, status = ?, messages_json = ?, pending_tool_use_id = ?,
-        step_count = ?, last_action_signature = ?, repeat_count = ?,
+        step_count = ?, last_action_signature = ?, repeat_count = ?, escalated = ?,
         tokens_input = ?, tokens_cache_read = ?, tokens_cache_write = ?, tokens_output = ?,
         updated_at_ms = ?
       WHERE id = ? AND user_id = ?`,
@@ -549,6 +573,7 @@ export async function updateRun(run: RunRow): Promise<void> {
       run.stepCount,
       run.lastActionSignature,
       run.repeatCount,
+      run.escalated ? 1 : 0,
       run.tokensInput,
       run.tokensCacheRead,
       run.tokensCacheWrite,

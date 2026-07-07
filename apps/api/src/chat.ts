@@ -20,7 +20,7 @@ import {
   type AttachmentRow,
   type SubscriptionRow
 } from "./db.js";
-import { MODEL_PRICES, chooseModel, modelId, type ConcreteModelTier } from "./model-registry.js";
+import { MODEL_PRICES, modelId, provider, routeChatTier, type ConcreteModelTier } from "./model-registry.js";
 
 /**
  * Maximum output tokens for a chat turn. This caps the worst case budget
@@ -204,9 +204,14 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
   const body = chatSendSchema.parse(input.body);
 
   // Resolve or create the conversation. A missing conversationId starts a new
-  // conversation titled from the first user message. The default chat tier is
-  // sonnet per chatSendSchema, and auto is routed through the registry.
-  const tier: ConcreteModelTier = chooseModel(body.model, body.text);
+  // conversation titled from the first user message. Economy mode runs the turn on
+  // the cost-efficient engine; Privacy mode uses the capability-aware Claude routing
+  // (auto/haiku/sonnet/opus).
+  const tier: ConcreteModelTier = routeChatTier({
+    mode: input.subscription.modelMode,
+    requested: body.model,
+    task: body.text
+  });
   let conversationId = body.conversationId ?? null;
   let isNewConversation = false;
   if (conversationId) {
@@ -317,10 +322,11 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
     }
     effectiveMaxTokens = Math.min(effectiveMaxTokens, budgetLimitedOutputTokens(tier, finalOutputBudget));
 
-    const useMock = config.mockAi || !config.anthropicApiKey;
+    const isEconomyEngine = provider(tier) === "zai";
+    const useMock = config.mockAi || (isEconomyEngine ? !config.zai.apiKey : !config.anthropicApiKey);
 
-    let assistantContent: unknown[];
-    let actualCost: number;
+    let assistantContent: unknown[] = [];
+    let actualCost = 0;
     let providerRequestId: string | undefined;
 
     if (useMock) {
@@ -344,7 +350,9 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       // LIVE PATH: stream from the official SDK and map text deltas to text
       // frames, thinking deltas to thinking frames, and citations to citation
       // frames. The final message gives us the full content and real usage.
-      const client = new Anthropic({ apiKey: config.anthropicApiKey });
+      // Both providers speak the Anthropic Messages format. The Economy engine uses
+      // its Anthropic-compatible endpoint (Bearer auth via authToken + baseURL);
+      // Claude uses the default endpoint with x-api-key. Keys stay on the backend.
       // Cache the stable system prompt and roll an ephemeral breakpoint onto the
       // newest message, so a multi-turn chat reads the prior conversation prefix
       // at cache-read price instead of re-paying full price for the whole history
@@ -353,66 +361,81 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       const cachedSystem: Anthropic.Messages.TextBlockParam[] = [
         { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }
       ];
-      const stream = client.messages.stream(
-        {
-          model: modelId(tier),
-          max_tokens: effectiveMaxTokens,
-          system: cachedSystem,
-          messages: withRollingCacheBreakpoint(modelMessages) as Anthropic.Messages.MessageParam[]
-        },
-        { signal: input.signal }
-      );
+      // Try the routed engine; if the Economy engine fails BEFORE any output has
+      // streamed (a config, format, or upstream error, not a user cancel), fall back
+      // once to Claude so a provider hiccup never blocks a chat. The same reservation
+      // is reused (settleBudget clamps the pricier Claude cost to it).
+      const fallbackTier = routeChatTier({ mode: "privacy", requested: body.model, task: body.text });
+      const attemptTiers: ConcreteModelTier[] = isEconomyEngine ? [tier, fallbackTier] : [tier];
+      for (let attempt = 0; attempt < attemptTiers.length; attempt += 1) {
+        const attemptTier = attemptTiers[attempt]!;
+        const attemptEconomy = provider(attemptTier) === "zai";
+        const client = attemptEconomy
+          ? new Anthropic({ authToken: config.zai.apiKey ?? "", baseURL: config.zai.baseUrl })
+          : new Anthropic({ apiKey: config.anthropicApiKey });
+        const stream = client.messages.stream(
+          {
+            model: modelId(attemptTier),
+            max_tokens: effectiveMaxTokens,
+            system: cachedSystem,
+            messages: withRollingCacheBreakpoint(modelMessages) as Anthropic.Messages.MessageParam[]
+          },
+          { signal: input.signal }
+        );
 
-      // Track whether the provider actually produced (and billed) output. If the
-      // client aborts after tokens were generated, those tokens cost real money and
-      // were already streamed to the user, so the turn must be charged, not freed.
-      let producedOutput = false;
-      try {
-        for await (const event of stream) {
-          if (event.type === "content_block_delta") {
-            const delta = event.delta;
-            if (delta.type === "text_delta") {
-              producedOutput = true;
-              yield { type: "text", text: delta.text };
-            } else if (delta.type === "thinking_delta") {
-              producedOutput = true;
-              yield { type: "thinking", text: delta.thinking };
-            } else if (delta.type === "citations_delta") {
-              yield { type: "citation", citation: delta.citation };
+        // Track whether the provider actually produced (and billed) output. If the
+        // client aborts after tokens were generated, those tokens cost real money and
+        // were already streamed to the user, so the turn must be charged, not freed.
+        let producedOutput = false;
+        try {
+          for await (const event of stream) {
+            if (event.type === "content_block_delta") {
+              const delta = event.delta;
+              if (delta.type === "text_delta") {
+                producedOutput = true;
+                yield { type: "text", text: delta.text };
+              } else if (delta.type === "thinking_delta") {
+                producedOutput = true;
+                yield { type: "thinking", text: delta.thinking };
+              } else if (delta.type === "citations_delta") {
+                yield { type: "citation", citation: delta.citation };
+              }
             }
           }
+        } catch (streamError) {
+          // Make sure the stream is torn down before surfacing the error so no
+          // socket is left open.
+          stream.abort();
+          // A client cancel is expected, not a fault. An abort AFTER output was
+          // generated still incurred real provider cost, so charge it at the
+          // reservation ceiling (settleBudget clamps to the headroom-limited
+          // reservation) rather than releasing it for free; only a genuine no-output
+          // abort is released. This closes a "stream then abort in a loop" hole.
+          if (input.signal?.aborted) {
+            if (producedOutput) await settleOnce(reservationAmount);
+            else await releaseOnce();
+            return;
+          }
+          // Economy engine failed before any output: fall back to Claude once. If
+          // this was already the fallback (or output had started), surface the error.
+          if (attemptEconomy && !producedOutput && attempt < attemptTiers.length - 1) continue;
+          throw streamError;
         }
-      } catch (streamError) {
-        // Make sure the stream is torn down before surfacing the error so no
-        // socket is left open.
-        stream.abort();
-        // If the client hung up, this is an expected cancellation, not a fault, so
-        // there is no error frame to send. But an abort AFTER output was generated
-        // still incurred real provider cost, so charge it at the reservation
-        // ceiling (settleBudget clamps to the headroom-limited reservation, so this
-        // respects the hard cap) rather than releasing it for free. Only a genuine
-        // no-output abort is released. This closes a "stream then abort in a loop"
-        // hole that would otherwise pull provider-billed answers past the caps.
-        if (input.signal?.aborted) {
-          if (producedOutput) await settleOnce(reservationAmount);
-          else await releaseOnce();
-          return;
-        }
-        throw streamError;
-      }
 
-      const finalMessage = await stream.finalMessage();
-      providerRequestId = stream.request_id ?? undefined;
-      assistantContent = finalMessage.content;
-      actualCost = actualCostMicrodollars(tier, {
-        input_tokens: finalMessage.usage.input_tokens,
-        output_tokens: finalMessage.usage.output_tokens,
-        cache_creation_input_tokens: finalMessage.usage.cache_creation_input_tokens ?? 0,
-        cache_read_input_tokens: finalMessage.usage.cache_read_input_tokens ?? 0
-      });
-      // The settled amount is clamped to the reservation by settleBudget, but
-      // clamp here too so the ledger invariant is honored explicitly.
-      actualCost = Math.min(actualCost, reservationAmount);
+        const finalMessage = await stream.finalMessage();
+        providerRequestId = stream.request_id ?? undefined;
+        assistantContent = finalMessage.content;
+        actualCost = actualCostMicrodollars(attemptTier, {
+          input_tokens: finalMessage.usage.input_tokens,
+          output_tokens: finalMessage.usage.output_tokens,
+          cache_creation_input_tokens: finalMessage.usage.cache_creation_input_tokens ?? 0,
+          cache_read_input_tokens: finalMessage.usage.cache_read_input_tokens ?? 0
+        });
+        // The settled amount is clamped to the reservation by settleBudget, but
+        // clamp here too so the ledger invariant is honored explicitly.
+        actualCost = Math.min(actualCost, reservationAmount);
+        break;
+      }
     }
 
     // Settle the actual cost and persist the assistant message.

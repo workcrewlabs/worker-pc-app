@@ -75,6 +75,21 @@ export const DAY_MS = 24 * 60 * 60 * 1000;
 export const modelTierSchema = z.enum(["auto", "haiku", "sonnet", "opus"]);
 export type ModelTier = z.infer<typeof modelTierSchema>;
 
+// How WorkCrew spends tokens for a user, chosen in Settings. "economy" (the
+// default) does the token-heavy work with the most cost-efficient engine so the
+// same plan goes much further; "privacy" keeps everything on WorkCrew's most
+// private engine and never sends work to any additional service, which costs more
+// per task. Exactly one is active at a time (the two Settings toggles are mutually
+// exclusive), so a single value captures the choice.
+export const modelModeSchema = z.enum(["economy", "privacy"]);
+export type ModelMode = z.infer<typeof modelModeSchema>;
+
+// Body for updating the signed-in user's preferences from Settings.
+export const preferencesUpdateSchema = z.object({
+  modelMode: modelModeSchema
+}).strict();
+export type PreferencesUpdate = z.infer<typeof preferencesUpdateSchema>;
+
 export const browserCommandSchema = z.enum([
   "open",
   "goto",
@@ -248,6 +263,9 @@ export type SubscriptionState = {
   pendingPlan: PlanId | null;
   pendingInterval: BillingInterval | null;
   pendingEffective: string | null;
+  // The user's current token-spend mode (see modelModeSchema). Defaults to
+  // "economy" so a new or unset account gets the most usage per plan.
+  modelMode: ModelMode;
 };
 
 export type RunStepResponse = {

@@ -19,6 +19,7 @@ function entitlement(over: Partial<SubscriptionState>): SubscriptionState {
     pendingPlan: null,
     pendingInterval: null,
     pendingEffective: null,
+    modelMode: "economy",
     ...over
   };
 }
