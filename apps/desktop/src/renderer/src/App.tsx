@@ -980,7 +980,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
                 <div className="usage-track"><span style={{ width: `${dailyPercent}%` }} /></div>
               </div>
             )}
-            <div className="usage-box" title="Your monthly limit. It resets at the start of your billing period.">
+            <div className={`usage-box ${percent >= 80 ? "usage-box-high" : ""}`} title="Your monthly limit. It resets at the start of your billing period.">
               <div><span>This month</span><strong>{formatTokens(Math.max(0, entitlement.budgetMicrodollars - usage))} left</strong></div>
               <div className="usage-track"><span style={{ width: `${percent}%` }} /></div>
             </div>

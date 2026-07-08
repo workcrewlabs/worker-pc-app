@@ -140,8 +140,11 @@ function numericCell(value: string): { value: string; style: number } | null {
   // Grouped digits must be genuine thousands grouping (1-3 digits, then commas
   // every 3), so a value like "555,12" stays text instead of being mangled.
   const GROUPED = /^\d{1,3}(?:,\d{3})*(?:\.\d+)?$/;
+  // A plain number, with or without thousands separators (so "$1200.50",
+  // "$500.00", and "$1,200.50" all read as currency).
+  const NUMBER_OR_GROUPED = /^(?:\d+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)$/;
   const currency = /^(-?)\$\s?([\d,.]+)$/.exec(v);
-  if (currency && GROUPED.test(currency[2] ?? "")) {
+  if (currency && NUMBER_OR_GROUPED.test(currency[2] ?? "")) {
     return { value: `${currency[1]}${(currency[2] ?? "").replace(/,/g, "")}`, style: 2 };
   }
   if (v.includes(",")) {

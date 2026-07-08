@@ -149,12 +149,24 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
       <div className="save-form update-section">
         <label className="field-label">Appearance</label>
         <p className="field-hint">Choose how WorkCrew looks on this computer.</p>
-        <div className="theme-picker" role="radiogroup" aria-label="Appearance">
+        <div
+          className="theme-picker"
+          role="radiogroup"
+          aria-label="Appearance"
+          onKeyDown={(event) => {
+            // Arrow keys move between options, matching the radiogroup convention.
+            if (["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
+              event.preventDefault();
+              chooseTheme(theme === "dark" ? "light" : "dark");
+            }
+          }}
+        >
           <button
             type="button"
             className={`theme-option ${theme === "dark" ? "theme-option-active" : ""}`}
             role="radio"
             aria-checked={theme === "dark"}
+            tabIndex={theme === "dark" ? 0 : -1}
             onClick={() => chooseTheme("dark")}
           >
             <span className="theme-swatch theme-swatch-dark" aria-hidden="true" />
@@ -165,6 +177,7 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
             className={`theme-option ${theme === "light" ? "theme-option-active" : ""}`}
             role="radio"
             aria-checked={theme === "light"}
+            tabIndex={theme === "light" ? 0 : -1}
             onClick={() => chooseTheme("light")}
           >
             <span className="theme-swatch theme-swatch-light" aria-hidden="true" />

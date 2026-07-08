@@ -85,6 +85,13 @@ export class WindowsAgent {
     const target = resolveAppTarget(raw);
     if (!target) throw new Error("Tell me which app to open, for example Excel or Notepad.");
     const known = APP_TARGETS[raw.toLowerCase()] !== undefined;
+    // The launch runs through cmd's "start", which re-parses the command line, so
+    // a name with shell metacharacters (& | > < ^ % " etc.) could inject commands.
+    // App names are simple, so allow only a safe set and reject the rest, pointing
+    // the model at the full-path form instead. Known targets are hardcoded above.
+    if (!known && !/^[A-Za-z0-9 ._+()-]+$/.test(target)) {
+      throw new Error(`I can only open "${raw}" if you give me the full path to its .exe file. Tell me where it is installed and I will open it directly.`);
+    }
     const child = spawn("cmd", ["/c", "start", "", target], { windowsHide: true, detached: true, stdio: "ignore", shell: false });
     child.unref();
     // Known Windows/Office targets are trusted to start. For anything else,

@@ -103,7 +103,7 @@ const TOOLS = [
   },
   {
     name: "windows_action",
-    description: "Work with Windows desktop apps (not websites). To open or start an app, use command \"launch\" with application set to the app name (for example \"Excel\") or the full path to its .exe (for example \"C:\\\\Program Files\\\\Vendor\\\\app.exe\"); never use shell commands to find or start apps. Then use list-windows, connect, inspect, click, and the typing commands to interact with it. type-text types literal text into whatever is focused (no control needed); press-key sends one navigation key (enter, tab, up, down, left, right, home, end) in the value field; type-keys and set-text target a specific numbered control.",
+    description: "Work with Windows desktop apps (not websites). To open or start an app, use command \"launch\" with application set to the app name (for example \"Excel\") or the full path to its .exe (for example \"C:\\\\Program Files\\\\Vendor\\\\app.exe\"); never use shell commands to find or start apps. Then use list-windows, connect, inspect, click, and the typing commands to interact with it. type-text types literal text into whatever is focused (no control needed); press-key sends one navigation key (enter, escape, tab, up, down, left, right, home, end) in the value field; type-keys and set-text target a specific numbered control.",
     input_schema: {
       type: "object",
       additionalProperties: false,
