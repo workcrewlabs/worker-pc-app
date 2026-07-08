@@ -78,24 +78,44 @@ describe("local auth provider", () => {
     expect(second.refreshToken).not.toBe(first.refreshToken);
   });
 
-  it("revokes the whole session when a used refresh token is replayed", async () => {
+  it("recovers a client that lost a rotation instead of signing it out", async () => {
     const email = uniqueEmail();
     const { session } = await localAuthProvider.signUp(email, PASSWORD);
     if (!session) throw new Error("expected a session");
 
-    // Use the original token once to rotate it.
-    const rotated = await localAuthProvider.refresh(session.refreshToken);
+    // The client refreshes (R -> S) but is force quit before it saves S (an update
+    // install or a power-off), so it never advances past R. On the next launch it
+    // replays R. Because S was never used and the replay is within the grace
+    // window, the user stays signed in with a freshly issued token.
+    const lostRotation = await localAuthProvider.refresh(session.refreshToken); // R -> S (S unused)
+    const recovered = await localAuthProvider.refresh(session.refreshToken); // replay R -> re-issue from S
+    expect(recovered.userId).toBe(session.userId);
+    expect(recovered.refreshToken).not.toBe(session.refreshToken);
+    expect(recovered.refreshToken).not.toBe(lostRotation.refreshToken);
 
-    // Replaying the original (now used) token must be rejected and must revoke
-    // the session.
+    // The recovered token keeps working for further refreshes.
+    const next = await localAuthProvider.refresh(recovered.refreshToken);
+    expect(next.userId).toBe(session.userId);
+  });
+
+  it("revokes the session when an ancestor token is replayed after the chain advanced", async () => {
+    const email = uniqueEmail();
+    const { session } = await localAuthProvider.signUp(email, PASSWORD);
+    if (!session) throw new Error("expected a session");
+
+    // The client advances the chain normally: R -> S -> T. S is now consumed.
+    const s = await localAuthProvider.refresh(session.refreshToken); // R -> S
+    await localAuthProvider.refresh(s.refreshToken); // S -> T
+
+    // Replaying the original R now is genuine reuse (its successor S was used), so
+    // the whole session is revoked.
     await expect(localAuthProvider.refresh(session.refreshToken)).rejects.toMatchObject({
       code: "INVALID_REFRESH_TOKEN",
       statusCode: 401
     });
 
-    // After the reuse-triggered revoke, even the most recent valid token can no
-    // longer refresh because the session itself is revoked.
-    await expect(localAuthProvider.refresh(rotated.refreshToken)).rejects.toMatchObject({
+    // After the revoke, even the latest valid token can no longer refresh.
+    await expect(localAuthProvider.refresh(s.refreshToken)).rejects.toMatchObject({
       code: "INVALID_REFRESH_TOKEN",
       statusCode: 401
     });

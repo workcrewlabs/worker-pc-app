@@ -17,6 +17,7 @@ import {
   createSession,
   createUser,
   getEmailToken,
+  getRefreshTokenById,
   getSessionByRefreshToken,
   getUserByEmail,
   getUserById,
@@ -33,6 +34,16 @@ const scrypt = promisify(scryptCallback);
 // Access tokens live about one hour. Refresh tokens live thirty days.
 const ACCESS_TOKEN_TTL_MS = 60 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+// Grace window for recovering a client that lost a rotation. When an app is force
+// quit mid-refresh (an auto-update install, or a power-off), the backend has
+// already rotated the refresh token but the app never persisted the new one, so
+// on the next launch it replays the token it last saved. If that replay arrives
+// within this window AND the successor token was never used (proof the legitimate
+// client never received the rotation), we re-issue from the successor instead of
+// signing the user out. Kept short so a genuinely stolen token cannot be revived
+// long after the fact; long enough to cover an update install and relaunch.
+const REFRESH_REUSE_GRACE_MS = 10 * 60 * 1000;
 
 // scrypt output length in bytes. 64 is a common, comfortably strong choice.
 const SCRYPT_KEY_LENGTH = 64;
@@ -313,10 +324,40 @@ export class LocalAuthProvider implements AuthProvider {
       throw authError("The session is no longer valid", 401, "INVALID_REFRESH_TOKEN");
     }
 
-    // Reuse detection. A refresh token is single use. If this token was already
-    // consumed, an attacker (or a buggy client) is replaying it, so revoke the
-    // entire session and reject.
+    // Reuse handling. A refresh token is single use. A replay is usually one of
+    // two things: a genuine attacker replaying a stolen token, or a legitimate
+    // client that was force quit mid-refresh (an auto-update install or a
+    // power-off) so it never received the rotated token and replays the last one
+    // it saved. We tell them apart: if the replay is within a short grace window
+    // AND the successor token was never used (the client provably never advanced
+    // the chain), re-issue from the successor and keep the user signed in.
+    // Anything else is treated as reuse and revokes the whole session.
     if (token.usedAtMs != null) {
+      const withinGrace = now - token.usedAtMs <= REFRESH_REUSE_GRACE_MS;
+      const successor = token.replacedBy ? await getRefreshTokenById(token.replacedBy) : null;
+      if (withinGrace && successor && successor.usedAtMs == null) {
+        const recoveredTokenId = randomUUID();
+        const recovered = newRefreshToken();
+        const rotated = await rotateRefreshToken({
+          oldTokenId: successor.id,
+          newTokenId: recoveredTokenId,
+          sessionId: session.id,
+          newTokenHash: recovered.hash
+        });
+        const user = rotated ? await getUserById(session.userId) : null;
+        if (rotated && user) {
+          const accessExpiresAtMs = now + ACCESS_TOKEN_TTL_MS;
+          const accessToken = await signAccessToken(session.userId, user.email, accessExpiresAtMs);
+          return {
+            accessToken,
+            refreshToken: recovered.token,
+            expiresAtMs: accessExpiresAtMs,
+            userId: session.userId,
+            email: user.email,
+            name: user.name
+          };
+        }
+      }
       await revokeSession(session.id);
       throw authError("The refresh token was already used", 401, "INVALID_REFRESH_TOKEN");
     }
