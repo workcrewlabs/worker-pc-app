@@ -22,6 +22,7 @@ import { InviteDialog } from "./components/InviteDialog";
 import { RecorderDialog } from "./components/RecorderDialog";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { UsageBanner } from "./components/UsageBanner";
+import { UsageBoostBanner } from "./components/UsageBoostBanner";
 import { usageStatus } from "./lib/usage";
 import { useAutomationRunner } from "./hooks/useAutomationRunner";
 import {
@@ -1221,5 +1222,8 @@ export default function App() {
       }}
     />
   );
-  return <>{gate}{screen}</>;
+  // The one-time usage-upgrade announcement, shown only inside the signed-in app
+  // and never while a required-update gate is covering the screen.
+  const announce = phase === "workspace" && update?.state !== "required" ? <UsageBoostBanner /> : null;
+  return <>{gate}{screen}{announce}</>;
 }

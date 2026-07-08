@@ -840,6 +840,17 @@ export async function getRefreshTokenByHash(tokenHash: string): Promise<RefreshT
   return row ? mapRefreshToken(row) : null;
 }
 
+/** Look up a refresh token by its id. Used to follow a rotation (replaced_by) to
+ * the successor token when recovering a client that lost a rotation. */
+export async function getRefreshTokenById(id: string): Promise<RefreshTokenRow | null> {
+  const result = await client.execute({
+    sql: "SELECT * FROM refresh_tokens WHERE id = ? LIMIT 1",
+    args: [id]
+  });
+  const row = result.rows[0] as unknown as Record<string, unknown> | undefined;
+  return row ? mapRefreshToken(row) : null;
+}
+
 /**
  * Look up the session that owns a refresh token, joining the token by its hash.
  * Returns both rows so the caller can validate freshness and rotation state in

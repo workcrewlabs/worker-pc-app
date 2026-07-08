@@ -747,3 +747,24 @@ button.danger:disabled { opacity: .6; cursor: default; }
   .update-gate, .update-gate-card { animation: none; }
   .update-gate-fill { transition: none; }
 }
+
+/* One-time "what's new" announcement (usage upgrade). A centered card over a dim
+   backdrop; matches the app's dark surfaces and purple accent. Shown once, then
+   dismissed for good via a stored flag (see UsageBoostBanner). */
+.announce-overlay { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 24px; background: rgba(0,0,0,.55); animation: announce-fade .18s ease; }
+.announce-card { position: relative; width: min(440px, 100%); padding: 28px 26px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel-2); box-shadow: 0 24px 70px -20px rgba(0,0,0,.7); animation: announce-rise .2s ease; }
+.announce-close { position: absolute; top: 12px; right: 12px; width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 17px; line-height: 1; cursor: pointer; }
+.announce-close:hover { background: var(--panel); color: var(--text); }
+.announce-eyebrow { display: inline-block; margin-bottom: 14px; padding: 4px 11px; border-radius: 99px; background: var(--accent-glow); color: var(--accent-soft); font-size: var(--fs-small); font-weight: 650; }
+.announce-title { margin: 0 0 10px; font-size: 22px; font-weight: 700; line-height: 1.3; color: var(--text); }
+.announce-accent { color: var(--accent-soft); }
+.announce-body { margin: 0 0 22px; font-size: var(--fs-body); line-height: 1.62; color: var(--muted); }
+.announce-actions { display: flex; justify-content: flex-end; }
+.announce-cta { padding: 9px 18px; border: 0; border-radius: 10px; font-size: var(--fs-ui); font-weight: 700; cursor: pointer; }
+
+@keyframes announce-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes announce-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .announce-overlay, .announce-card { animation: none; }
+}
