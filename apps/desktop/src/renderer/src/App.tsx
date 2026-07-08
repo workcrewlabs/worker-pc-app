@@ -434,24 +434,6 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
 // A small circular gauge of the rolling daily (24-hour) usage window. It shows
 // how much of today's budget is used and frees up as the 24-hour window rolls
 // forward.
-function DailyRing({ entitlement }: { entitlement: SubscriptionState }) {
-  const limit = entitlement.dailyLimitMicrodollars;
-  if (limit <= 0) return null;
-  const pct = Math.min(100, Math.max(0, (entitlement.dailyUsedMicrodollars / limit) * 100));
-  const radius = 8;
-  const circumference = 2 * Math.PI * radius;
-  const dash = (pct / 100) * circumference;
-  const title = `Daily limit: ${Math.round(pct)}% used. Frees up as the 24-hour window rolls forward.`;
-  return (
-    <div className={`daily-ring ${pct >= 80 ? "is-high" : ""}`} title={title} aria-label={title} role="img">
-      <svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
-        <circle className="ring-bg" cx="11" cy="11" r={radius} fill="none" strokeWidth="2.5" />
-        <circle className="ring-fg" cx="11" cy="11" r={radius} fill="none" strokeWidth="2.5" strokeLinecap="round" strokeDasharray={`${dash} ${circumference}`} transform="rotate(-90 11 11)" />
-      </svg>
-    </div>
-  );
-}
-
 // A full-screen, non-dismissable gate shown once an update has been out past its
 // mandatory deadline. The user cannot return to the app without installing it;
 // the only other option is to close the app (which installs the update on quit).
@@ -586,6 +568,11 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   // latest value reported by a completed chat turn (done frame usage).
   const usage = usedTokens ?? entitlement.usedMicrodollars;
   const percent = Math.min(100, ((usage + entitlement.reservedMicrodollars) / entitlement.budgetMicrodollars) * 100 || 0);
+  // The daily rolling-window meter, shown as its own bar next to the monthly one so
+  // the two are never confused. Percent of the daily cap used in the last 24 hours.
+  const dailyLimit = entitlement.dailyLimitMicrodollars;
+  const dailyLeft = Math.max(0, dailyLimit - entitlement.dailyUsedMicrodollars);
+  const dailyPercent = dailyLimit > 0 ? Math.min(100, (entitlement.dailyUsedMicrodollars / dailyLimit) * 100) : 0;
   // Token status drives the low/empty banner above the chat. It uses the live
   // usage figure so it appears as soon as a turn pushes the user near the limit.
   const usageState = usageStatus(entitlement, usage);
@@ -987,9 +974,14 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
                 {upgrading ? "Upgrading..." : "Upgrade"}
               </button>
             )}
-            <DailyRing entitlement={entitlement} />
-            <div className="usage-box">
-              <div><span>Tokens</span><strong>{formatTokens(Math.max(0, entitlement.budgetMicrodollars - usage))} left</strong></div>
+            {dailyLimit > 0 && (
+              <div className={`usage-box ${dailyPercent >= 80 ? "usage-box-high" : ""}`} title="Your daily limit. It frees up as the 24-hour window rolls forward.">
+                <div><span>Today</span><strong>{formatTokens(dailyLeft)} left</strong></div>
+                <div className="usage-track"><span style={{ width: `${dailyPercent}%` }} /></div>
+              </div>
+            )}
+            <div className="usage-box" title="Your monthly limit. It resets at the start of your billing period.">
+              <div><span>This month</span><strong>{formatTokens(Math.max(0, entitlement.budgetMicrodollars - usage))} left</strong></div>
               <div className="usage-track"><span style={{ width: `${percent}%` }} /></div>
             </div>
           </div>

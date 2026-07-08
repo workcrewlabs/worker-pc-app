@@ -1,9 +1,12 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { promisify } from "node:util";
 import { app } from "electron";
 import { APP_NAME, windowsActionSchema } from "@workcrew/contracts";
+
+const execFileAsync = promisify(execFile);
 
 // Where the packaged Windows helper executable lives. In an installed build it
 // is bundled under the app resources; in development it is the PyInstaller output
@@ -50,15 +53,57 @@ export class WindowsAgent {
   private token: string | null = null;
   private healthChecked = false;
 
-  // Open a desktop app by name. Launching is done here with the Windows "start"
-  // command rather than the helper, so it works without any extra setup; the
-  // helper is only needed to inspect and control the window afterwards.
+  // Open a desktop app by name or full exe path. Launching is done here rather
+  // than the helper, so it works without any extra setup; the helper is only
+  // needed to inspect and control the window afterwards.
+  //
+  // Two behaviors matter for third-party apps:
+  //  1. A full exe path is spawned with the exe's OWN folder as the working
+  //     directory. Many legacy business apps (VB6-era accounting tools and the
+  //     like) load their config and libraries relative to their install folder
+  //     and crash with startup errors (e.g. "Run-time error 91") when started
+  //     from anywhere else.
+  //  2. An unknown name is verified: if no matching process appears shortly
+  //     after the launch, this returns an error instead of a phantom "Opened",
+  //     so the model can ask for the full path instead of hunting with shell
+  //     commands in a loop.
   private async launchApp(name: string): Promise<string> {
-    const target = resolveAppTarget(name);
+    const raw = name.trim().replace(/^["']|["']$/g, "");
+    if (!raw) throw new Error("Tell me which app to open, for example Excel or Notepad.");
+
+    // A full path to an executable: run it directly from its own directory.
+    if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith("\\\\")) {
+      const exePath = /\.exe$/i.test(raw) ? raw : `${raw}.exe`;
+      if (!existsSync(exePath)) {
+        throw new Error(`No program was found at ${exePath}. Check the path and try again.`);
+      }
+      const child = spawn(exePath, [], { cwd: dirname(exePath), windowsHide: false, detached: true, stdio: "ignore", shell: false });
+      child.unref();
+      return `Opened ${basename(exePath)}.`;
+    }
+
+    const target = resolveAppTarget(raw);
     if (!target) throw new Error("Tell me which app to open, for example Excel or Notepad.");
+    const known = APP_TARGETS[raw.toLowerCase()] !== undefined;
     const child = spawn("cmd", ["/c", "start", "", target], { windowsHide: true, detached: true, stdio: "ignore", shell: false });
     child.unref();
-    return `Opened ${name.trim() || target}.`;
+    // Known Windows/Office targets are trusted to start. For anything else,
+    // confirm a matching process actually appeared; "start" reports no failure
+    // itself, and a false "Opened" sends the model on a shell-command hunt.
+    if (!known) {
+      await new Promise((settle) => setTimeout(settle, 1_500));
+      const image = `${target.replace(/\.exe$/i, "")}.exe`;
+      try {
+        const { stdout } = await execFileAsync("tasklist", ["/FI", `IMAGENAME eq ${image}`, "/FO", "CSV", "/NH"], { windowsHide: true, timeout: 5_000 });
+        if (!stdout.toLowerCase().includes(image.toLowerCase())) {
+          throw new Error(`I could not find an installed app called "${raw}". If you know where it is installed, tell me the full path to its .exe file and I will open it directly.`);
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("I could not find")) throw error;
+        // tasklist itself failed: do not block the launch on the verification.
+      }
+    }
+    return `Opened ${raw || target}.`;
   }
 
   private reset(): void {
