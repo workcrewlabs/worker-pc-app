@@ -121,10 +121,56 @@ function columnName(index: number): string {
   return name;
 }
 
+// Excel stores dates as a serial day count from 1899-12-30. Returns null for an
+// out-of-range date so a bad value stays as text.
+function excelDateSerial(year: number, month: number, day: number): number | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const serial = Math.round((Date.UTC(year, month - 1, day) - Date.UTC(1899, 11, 30)) / 86_400_000);
+  return serial > 0 ? serial : null;
+}
+
+// Classify a non-plain cell into a real number plus the style index that displays
+// it correctly: 2 currency ("$1,200.50"), 4 thousands integer ("1,200"), 5 percent
+// ("15%"), 3 date ("2026-07-08" or "7/8/2026"). Returns null to keep it as text.
+// This is what makes a plain CSV render as a polished, sortable sheet.
+function numericCell(value: string): { value: string; style: number } | null {
+  const v = value.trim();
+  const percent = /^(-?\d+(?:\.\d+)?)%$/.exec(v);
+  if (percent) return { value: String(Number(percent[1]) / 100), style: 5 };
+  // Grouped digits must be genuine thousands grouping (1-3 digits, then commas
+  // every 3), so a value like "555,12" stays text instead of being mangled.
+  const GROUPED = /^\d{1,3}(?:,\d{3})*(?:\.\d+)?$/;
+  // A plain number, with or without thousands separators (so "$1200.50",
+  // "$500.00", and "$1,200.50" all read as currency).
+  const NUMBER_OR_GROUPED = /^(?:\d+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)$/;
+  const currency = /^(-?)\$\s?([\d,.]+)$/.exec(v);
+  if (currency && NUMBER_OR_GROUPED.test(currency[2] ?? "")) {
+    return { value: `${currency[1]}${(currency[2] ?? "").replace(/,/g, "")}`, style: 2 };
+  }
+  if (v.includes(",")) {
+    const grouped = /^(-?)([\d,.]+)$/.exec(v);
+    if (grouped && GROUPED.test(grouped[2] ?? "")) {
+      return { value: `${grouped[1]}${(grouped[2] ?? "").replace(/,/g, "")}`, style: 4 };
+    }
+  }
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (iso) {
+    const serial = excelDateSerial(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+    if (serial != null) return { value: String(serial), style: 3 };
+  }
+  const mdy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v);
+  if (mdy) {
+    const serial = excelDateSerial(Number(mdy[3]), Number(mdy[1]), Number(mdy[2]));
+    if (serial != null) return { value: String(serial), style: 3 };
+  }
+  return null;
+}
+
 /**
- * Build a real .xlsx workbook from a grid of cells. Strings go through the
- * shared-strings table (the same part the reader extracts text from), numbers
- * are written as numeric cells. Returns the packaged bytes.
+ * Build a real, polished .xlsx workbook from a grid of cells: a bold frozen header
+ * row, columns sized to their content, and currency/thousands/percent/date values
+ * written as real numbers with the matching display format (not left-aligned
+ * text). Strings go through the shared-strings table. Returns the packaged bytes.
  */
 export async function buildXlsx(rows: string[][]): Promise<Buffer> {
   // Shared strings, de-duplicated in first-seen order.
@@ -141,14 +187,37 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
     return index;
   };
 
+  // Per-column display width, from the longest content seen (header included),
+  // clamped so one long cell cannot blow a column out.
+  const columnWidths: number[] = [];
+  const noteWidth = (colIndex: number, text: string): void => {
+    const width = Math.min(48, Math.max(9, text.length + 2.5));
+    if (width > (columnWidths[colIndex] ?? 0)) columnWidths[colIndex] = width;
+  };
+
   const sheetRows: string[] = [];
   rows.forEach((cells, rowIndex) => {
+    const isHeader = rowIndex === 0 && rows.length > 1;
     const cellXml: string[] = [];
     cells.forEach((value, colIndex) => {
       const ref = `${columnName(colIndex)}${rowIndex + 1}`;
       if (value === "") return; // empty cell: omit entirely
+      noteWidth(colIndex, value);
+      if (isHeader) {
+        // The first row is the column headers: always text, always bold (style 1).
+        cellXml.push(`<c r="${ref}" s="1" t="s"><v>${internString(value)}</v></c>`);
+        return;
+      }
       if (isNumeric(value)) {
         cellXml.push(`<c r="${ref}"><v>${value}</v></c>`);
+        return;
+      }
+      // Currency, grouped numbers, percentages, and dates become real typed
+      // numbers with the right display format, so they align, sort, and sum
+      // like a hand-made spreadsheet instead of reading as plain text.
+      const typed = numericCell(value);
+      if (typed) {
+        cellXml.push(`<c r="${ref}" s="${typed.style}"><v>${typed.value}</v></c>`);
       } else {
         cellXml.push(`<c r="${ref}" t="s"><v>${internString(value)}</v></c>`);
       }
@@ -164,6 +233,7 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
     `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
     `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
     `<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>` +
+    `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
     `</Types>`;
   const rootRels =
     `${header}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
@@ -177,10 +247,38 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
     `${header}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
     `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>` +
     `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>` +
+    `<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
     `</Relationships>`;
+  // Freeze the header row (when there is one) and size each column to fit. OOXML
+  // requires child order: sheetViews, then cols, then sheetData.
+  const hasHeader = rows.length > 1;
+  const frozenPane = hasHeader
+    ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" state="frozen" activePane="bottomLeft"/></sheetView></sheetViews>`
+    : "";
+  const cols = columnWidths.length > 0
+    ? `<cols>${columnWidths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join("")}</cols>`
+    : "";
   const sheet =
     `${header}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
-    `<sheetData>${sheetRows.join("")}</sheetData></worksheet>`;
+    `${frozenPane}${cols}<sheetData>${sheetRows.join("")}</sheetData></worksheet>`;
+  // The style table behind the s= indexes used above: 0 default, 1 bold header,
+  // 2 currency, 3 date, 4 thousands-grouped number, 5 percent. Number formats use
+  // Excel's builtin ids so every spreadsheet app renders them natively.
+  const styles =
+    `${header}<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+    `<numFmts count="1"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00"/></numFmts>` +
+    `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>` +
+    `<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>` +
+    `<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>` +
+    `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
+    `<cellXfs count="6">` +
+    `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>` +
+    `<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>` +
+    `<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
+    `<xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
+    `<xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
+    `<xf numFmtId="10" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
+    `</cellXfs></styleSheet>`;
   const sharedStrings =
     `${header}<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
     `count="${stringCellCount}" uniqueCount="${sharedList.length}">` +
@@ -194,6 +292,7 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
   zip.file("xl/_rels/workbook.xml.rels", workbookRels);
   zip.file("xl/worksheets/sheet1.xml", sheet);
   zip.file("xl/sharedStrings.xml", sharedStrings);
+  zip.file("xl/styles.xml", styles);
   return (await zip.generateAsync({ type: "nodebuffer" })) as Buffer;
 }
 

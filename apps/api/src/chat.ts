@@ -57,6 +57,27 @@ const MOCK_ANSWER_CHUNKS = [
   "Ask me anything to get started."
 ];
 
+// Mock chunks for a file request, streamed with a short delay per chunk so the
+// desktop's "preparing the file" state is visible before the fence closes and
+// the Download button appears. Mirrors the live path's file-fence format.
+const MOCK_FILE_CHUNKS = [
+  "Here is the spreadsheet you asked for.\n\n",
+  "```file:xlsx name=demo-budget.xlsx\n",
+  "Item,Cost,Date\n",
+  "Desk,\"$1,200.50\",2026-07-01\n",
+  "Chair,\"$350.00\",2026-07-02\n",
+  "Monitor,\"$780.25\",2026-07-03\n",
+  "Laptop,\"$2,450.00\",2026-07-04\n",
+  "Total,\"$4,780.75\",\n",
+  "```\n",
+  "\nClick Download to save it."
+];
+
+/** Whether a mock turn should demo the downloadable-file flow. */
+function mockWantsFile(text: string): boolean {
+  return /\b(excel|xlsx|csv|spreadsheet|docx|file)\b/i.test(text);
+}
+
 /** A fixed, small settled cost for a mock turn, in integer microdollars. */
 const MOCK_SETTLED_MICRODOLLARS = 50;
 
@@ -333,8 +354,11 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       // MOCK PATH: emit the canned answer as several small text frames, then
       // settle a small fixed cost. When the turn carries attachments, prepend a
       // short acknowledgement so the offline experience reflects that the files
-      // were received (the real path actually reads them).
-      const chunks = [...MOCK_ANSWER_CHUNKS];
+      // were received (the real path actually reads them). A file-ish request
+      // streams a real file fence with a short delay per chunk, so the desktop's
+      // preparing-then-Download flow can be exercised without a paid API call.
+      const wantsFile = mockWantsFile(body.text);
+      const chunks = wantsFile ? [...MOCK_FILE_CHUNKS] : [...MOCK_ANSWER_CHUNKS];
       if (body.attachments.length > 0) {
         const noun = body.attachments.length === 1 ? "file" : "files";
         chunks.unshift(`I received your ${body.attachments.length} ${noun}. `);
@@ -343,6 +367,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       for (const chunk of chunks) {
         pieces.push({ type: "text", text: chunk });
         yield { type: "text", text: chunk };
+        if (wantsFile) await new Promise((settle) => setTimeout(settle, 450));
       }
       assistantContent = [{ type: "text", text: pieces.map((piece) => piece.text).join("") }];
       actualCost = Math.min(MOCK_SETTLED_MICRODOLLARS, reservationAmount);

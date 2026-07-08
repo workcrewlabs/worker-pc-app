@@ -53,6 +53,23 @@ function FileBlock({ name, ext, content }: { name: string; ext: ExportExtension;
   );
 }
 
+// While a file is still streaming in (its closing fence has not arrived yet), show
+// a quiet "preparing" card with no Download button, so the user can never grab a
+// half-written file. It swaps to the real download card the moment the file is
+// complete. This is what makes the Download button appear only once the Excel (or
+// any) file has finished building.
+function FilePending({ name, ext }: { name: string; ext: ExportExtension }): ReactNode {
+  return (
+    <div className="file-card file-card-pending">
+      <div className="file-card-info">
+        <span className="file-card-name" title={name}>{name}</span>
+        <span className="file-card-meta">Preparing your {ext.toUpperCase()} file...</span>
+      </div>
+      <span className="file-card-spinner" aria-hidden="true" />
+    </div>
+  );
+}
+
 // Plain fence languages we can hand back as a real file, mapped to the download
 // extension. So a model that writes ```csv (instead of the explicit file: form)
 // still gets a Download card. Kept to clearly file-like formats so ordinary code
@@ -134,14 +151,24 @@ export function Markdown({ text }: { text: string }): ReactNode {
       const info = line.trim().slice(3).trim();
       const code: string[] = [];
       i += 1;
-      while (i < lines.length && !(lines[i] ?? "").trim().startsWith("```")) {
+      // Track whether we actually hit the closing fence. If we run off the end of
+      // the text without one, the block is still streaming in.
+      let closed = false;
+      while (i < lines.length) {
+        if ((lines[i] ?? "").trim().startsWith("```")) { closed = true; break; }
         code.push(lines[i] ?? "");
         i += 1;
       }
       i += 1;
       const file = parseFileFence(info, code.join("\n"));
       if (file) {
-        blocks.push(<FileBlock key={`k${key++}`} name={file.name} ext={file.ext} content={code.join("\n")} />);
+        // Only offer the download once the file has fully arrived. While it is
+        // still being written, show the preparing card instead.
+        blocks.push(
+          closed
+            ? <FileBlock key={`k${key++}`} name={file.name} ext={file.ext} content={code.join("\n")} />
+            : <FilePending key={`k${key++}`} name={file.name} ext={file.ext} />
+        );
       } else {
         blocks.push(<pre key={`k${key++}`} className="md-pre"><code>{code.join("\n")}</code></pre>);
       }

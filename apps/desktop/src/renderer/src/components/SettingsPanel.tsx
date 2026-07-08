@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { SUPPORT_EMAIL } from "@workcrew/contracts";
+import { getTheme, setTheme, type Theme } from "../lib/theme";
 import { PanelShell } from "./PanelShell";
 
 // Settings shows app information and software updates. The backend address is
@@ -42,6 +43,12 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
   // Once the user changes the toggle, ignore a late-arriving initial read so it
   // cannot overwrite the newer choice with the stale stored value.
   const optOutTouchedRef = useRef(false);
+  // Appearance: dark (default) or light, stored per device and applied instantly.
+  const [theme, setThemeState] = useState<Theme>(() => getTheme());
+  function chooseTheme(next: Theme) {
+    setThemeState(next);
+    setTheme(next);
+  }
   // Token-spend mode: "economy" (default) does much more per plan; "privacy" keeps
   // everything on the most private engine and spends more. Exactly one is active.
   const [modelMode, setModelMode] = useState<"economy" | "privacy">("economy");
@@ -137,6 +144,46 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
           )}
         </div>
         {update && <p className="notice">{describeUpdate(update)}</p>}
+      </div>
+
+      <div className="save-form update-section">
+        <label className="field-label">Appearance</label>
+        <p className="field-hint">Choose how WorkCrew looks on this computer.</p>
+        <div
+          className="theme-picker"
+          role="radiogroup"
+          aria-label="Appearance"
+          onKeyDown={(event) => {
+            // Arrow keys move between options, matching the radiogroup convention.
+            if (["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
+              event.preventDefault();
+              chooseTheme(theme === "dark" ? "light" : "dark");
+            }
+          }}
+        >
+          <button
+            type="button"
+            className={`theme-option ${theme === "dark" ? "theme-option-active" : ""}`}
+            role="radio"
+            aria-checked={theme === "dark"}
+            tabIndex={theme === "dark" ? 0 : -1}
+            onClick={() => chooseTheme("dark")}
+          >
+            <span className="theme-swatch theme-swatch-dark" aria-hidden="true" />
+            Dark
+          </button>
+          <button
+            type="button"
+            className={`theme-option ${theme === "light" ? "theme-option-active" : ""}`}
+            role="radio"
+            aria-checked={theme === "light"}
+            tabIndex={theme === "light" ? 0 : -1}
+            onClick={() => chooseTheme("light")}
+          >
+            <span className="theme-swatch theme-swatch-light" aria-hidden="true" />
+            Light
+          </button>
+        </div>
       </div>
 
       <div className="save-form update-section">
