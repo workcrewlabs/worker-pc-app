@@ -98,7 +98,49 @@ INTERACTABLE_CONTROL_TYPES = frozenset({
     "DataItem",
     "HeaderItem",
     "Custom",
+    # Legacy business apps (VB6/Delphi and the like) draw their own buttons as
+    # Group or Pane containers rather than real Buttons. These are only kept when
+    # they look like a command (see build_inspect), so ordinary layout containers
+    # are still filtered out.
+    "Group",
+    "Pane",
 })
+
+# Static text that is the caption of one of those custom buttons ("Exit Accounts
+# Suite" drawn over a Group named cmd_exit). Used only to LABEL a button with the
+# words the user actually sees; it is never itself an actionable control.
+LABEL_CONTROL_TYPES = frozenset({"Text", "Static"})
+
+# A control whose name is an internal identifier (cmd_exit, btnSave, Command1)
+# rather than a human caption. When a custom button has one of these AND a visible
+# text caption sits on top of it, the caption is shown to the model instead.
+_INTERNAL_NAME_RE = re.compile(r"^(cmd|btn|button|command)[ _-]?", re.IGNORECASE)
+_NO_SPACE_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _looks_internal(name: str) -> bool:
+    return bool(_INTERNAL_NAME_RE.match(name) or (_NO_SPACE_TOKEN_RE.match(name) and "_" in name))
+
+
+def _rect_of(info: dict[str, Any]) -> list[int] | None:
+    rect = info.get("rect")
+    if isinstance(rect, (list, tuple)) and len(rect) == 4:
+        try:
+            return [int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _caption_over(rect: list[int], labels: list[tuple[str, list[int]]]) -> str:
+    """The visible text whose center sits inside the given control rectangle, i.e.
+    the caption drawn on a custom button. Empty when there is none."""
+    for text, lr in labels:
+        cx = (lr[0] + lr[2]) / 2
+        cy = (lr[1] + lr[3]) / 2
+        if rect[0] <= cx <= rect[2] and rect[1] <= cy <= rect[3]:
+            return text
+    return ""
 
 # Most interactable controls the model needs in one window. Bounds the snapshot
 # size; the rare window with more controls is still navigable because the model
@@ -238,17 +280,79 @@ def list_windows() -> str:
     return json.dumps(windows[:100], ensure_ascii=True)
 
 
+def normalize_window_title(value: str) -> str:
+    """Collapse whitespace runs and casing so titles compare the way a person
+    reads them. Real window titles carry double spaces and trailing blanks (the
+    VB6-era apps this exists for are the worst offenders), and the model
+    round-trips titles through text where that spacing does not survive."""
+    return re.sub(r"\s+", " ", value).strip().lower()
+
+
+def score_window_title(requested: str, actual: str) -> int:
+    """How well an open window's title matches the requested one. 3 exact after
+    normalization, 2 when one contains the other (a greeting title grows a
+    suffix, or the model sends just the app name), 1 when every requested word
+    appears in the title, 0 no match. Pure so it is unit testable."""
+    wanted = normalize_window_title(requested)
+    have = normalize_window_title(actual)
+    if not wanted or not have:
+        return 0
+    if wanted == have:
+        return 3
+    if wanted in have or have in wanted:
+        return 2
+    have_words = set(have.split(" "))
+    if all(word in have_words for word in wanted.split(" ")):
+        return 1
+    return 0
+
+
+def resolve_window(requested: str) -> Any:
+    """Find the best open window for a requested title. Exact matching is a trap
+    here: titles drift (spacing, status suffixes) between list-windows and the
+    connect that follows, so the lookup is normalized and fuzzy, preferring the
+    strongest then shortest match."""
+    _, Desktop = _load_pywinauto()
+    best = None
+    best_rank: tuple[int, int] | None = None
+    for window in Desktop(backend="uia").windows():
+        try:
+            title = window.window_text()
+            if not title or not title.strip() or not window.is_visible():
+                continue
+            score = score_window_title(requested, title)
+            if score == 0:
+                continue
+            rank = (-score, len(title))
+            if best_rank is None or rank < best_rank:
+                best = window
+                best_rank = rank
+        except Exception:
+            continue
+    if best is None:
+        raise ValueError(
+            f'No open window matches "{requested}". Use list-windows to see the open windows and connect with one of those titles.'
+        )
+    return best
+
+
 def connect_window(title: str) -> str:
     Application, _ = _load_pywinauto()
     with STATE.lock:
-        application = Application(backend="uia").connect(title=title, timeout=10)
-        window = application.window(title=title)
+        # Resolve the title fuzzily, then attach by window HANDLE: the handle
+        # identifies exactly the window that matched, no second title lookup
+        # that could miss (or hit a different window with a similar name).
+        resolved = resolve_window(title)
+        handle = resolved.handle
+        application = Application(backend="uia").connect(handle=handle, timeout=10)
+        window = application.window(handle=handle)
         window.wait("exists visible ready", timeout=10)
         STATE.application = application
         STATE.window = window
         # A new window invalidates any numbered controls from a prior inspect.
         STATE.elements = {}
-    return f"Connected to {title}"
+        actual = resolved.window_text().strip()[:200]
+    return f"Connected to {actual}"
 
 
 def require_window() -> Any:
@@ -306,9 +410,22 @@ def build_inspect(infos: list[dict[str, str]]) -> tuple[str, dict[str, dict[str,
 
     Pure and side-effect free so it can be unit tested without pywinauto. Each
     kept control becomes one line like ``12 Button "Save & Close"``; decorative
-    and unnamed nodes are dropped. The returned map lets find_control turn the
-    number back into auto_id/title criteria.
+    and unnamed nodes are dropped. Custom-drawn buttons (Group/Pane containers)
+    are labeled with the visible caption text sitting on top of them, so a button
+    the user calls "Exit Accounts Suite" is shown by that name even though its
+    real control name is an internal identifier like cmd_exit. The returned map
+    lets find_control turn the number back into auto_id/title criteria, using the
+    REAL identifier (never the cosmetic caption).
     """
+    # Visible text captions with a rectangle, used to name custom buttons.
+    labels: list[tuple[str, list[int]]] = []
+    for info in infos:
+        if (info.get("control_type") or "").strip() in LABEL_CONTROL_TYPES:
+            text = (info.get("name") or "").strip()
+            rect = _rect_of(info)
+            if text and rect:
+                labels.append((text[:200], rect))
+
     elements: dict[str, dict[str, str]] = {}
     lines: list[str] = []
     next_id = 1
@@ -318,15 +435,24 @@ def build_inspect(infos: list[dict[str, str]]) -> tuple[str, dict[str, dict[str,
         auto_id = (info.get("auto_id") or "").strip()
         if control_type not in INTERACTABLE_CONTROL_TYPES:
             continue
-        # A genuinely actionable control almost always has a name or an
-        # automation id; requiring one filters out anonymous filler that shares
-        # an interactable type (blank custom panes, unlabeled list rows).
-        if not name and not auto_id:
+        rect = _rect_of(info)
+        caption = _caption_over(rect, labels) if rect else ""
+        # Group/Pane are only real controls when they behave like a button: a
+        # caption drawn on them, or an internal command name (cmd_exit, btnSave).
+        # This keeps ordinary layout containers out of the snapshot.
+        if control_type in {"Group", "Pane"}:
+            if not caption and not (name and _looks_internal(name)):
+                continue
+        elif not name and not auto_id:
+            # Other interactable controls almost always carry a name or auto id;
+            # requiring one filters anonymous filler (blank rows, spacer custom).
             continue
+        # Show the human caption when the control's own name is an internal token;
+        # otherwise the real name is already what the user sees.
+        display = caption if (caption and (not name or _looks_internal(name))) else (name or auto_id)
         identifier = str(next_id)
-        elements[identifier] = {"auto_id": auto_id, "title": name, "control_type": control_type}
-        label = name or auto_id
-        lines.append(f'{identifier} {control_type} "{label[:200]}"')
+        elements[identifier] = {"auto_id": auto_id, "title": name, "control_type": control_type, "rect": rect or []}
+        lines.append(f'{identifier} {control_type} "{display[:200]}"')
         next_id += 1
         if next_id > MAX_INSPECT_CONTROLS:
             break
@@ -342,6 +468,29 @@ def _cursor_point() -> tuple[int, int]:
     point = _POINT()
     ctypes.windll.user32.GetCursorPos(ctypes.byref(point))  # type: ignore[attr-defined]
     return int(point.x), int(point.y)
+
+
+def _stored_click_point(selector: str) -> tuple[int, int] | None:
+    """The center of the rectangle recorded for a numbered control in the last
+    inspect, used as a positional fallback when the control will not resolve by
+    name. None when there is no usable rectangle."""
+    stored = STATE.elements.get(selector) if selector.isdigit() else None
+    if not stored:
+        return None
+    rect = stored.get("rect")
+    if isinstance(rect, (list, tuple)) and len(rect) == 4:
+        left, top, right, bottom = rect
+        if right > left and bottom > top:
+            return (int((left + right) / 2), int((top + bottom) / 2))
+    return None
+
+
+def _click_at(x: int, y: int) -> None:
+    """Move the mouse to a screen point and left click there via pywinauto's
+    input backend, so a custom-drawn button that ignores UIA still responds."""
+    from pywinauto import mouse
+
+    mouse.click(button="left", coords=(x, y))
 
 
 def _foreground_window_title() -> str:
@@ -570,15 +719,21 @@ def build_record_trace(events: list[dict[str, Any]], ignore_window: str = "") ->
 
 def inspect_window() -> str:
     window = require_window()
-    infos: list[dict[str, str]] = []
-    for control in window.descendants()[:500]:
+    infos: list[dict[str, Any]] = []
+    for control in window.descendants()[:800]:
         try:
             info = control.element_info
-            infos.append({
+            entry: dict[str, Any] = {
                 "name": str(info.name or "")[:500],
                 "auto_id": str(info.automation_id or "")[:500],
                 "control_type": str(info.control_type or "")[:100],
-            })
+            }
+            try:
+                rect = info.rectangle
+                entry["rect"] = [rect.left, rect.top, rect.right, rect.bottom]
+            except Exception:
+                pass
+            infos.append(entry)
         except Exception:
             # Skip any descendant that cannot be read instead of failing inspect.
             continue
@@ -619,7 +774,14 @@ def execute_action(action: dict[str, Any]) -> str:
         if command == "inspect":
             return inspect_window()
         if command == "screenshot":
-            image = require_window().capture_as_image()
+            # With a connected window, capture just that window; before any
+            # connect, capture the whole screen instead of erroring out.
+            if STATE.window is not None:
+                image = STATE.window.capture_as_image()
+            else:
+                from PIL import ImageGrab
+
+                image = ImageGrab.grab()
             output = Path(tempfile.gettempdir()) / f"workcrew-window-{os.getpid()}.png"
             image.save(output)
             return str(output)
@@ -643,10 +805,24 @@ def execute_action(action: dict[str, Any]) -> str:
             return "Typed text"
 
         selector = require_text(action.get("control"), "control")
-        control = find_control(selector)
         if command == "click":
-            control.click_input()
-            return f"Clicked control {selector}"
+            # Click by the control when it resolves, but always fall back to a real
+            # mouse click at its recorded rectangle center. Custom-drawn buttons
+            # (the Group/Pane controls in legacy business apps) often refuse a UIA
+            # invoke or fail to re-resolve by name, yet a positional click on their
+            # center always works, which is what the user sees themselves do.
+            try:
+                control = find_control(selector)
+                control.click_input()
+                return f"Clicked control {selector}"
+            except Exception:
+                point = _stored_click_point(selector)
+                if point is None:
+                    raise
+                _click_at(*point)
+                return f"Clicked control {selector}"
+
+        control = find_control(selector)
         if command == "set-text":
             value = optional_text(action.get("value"), MAX_TEXT_LENGTH) or ""
             control.set_edit_text(value)

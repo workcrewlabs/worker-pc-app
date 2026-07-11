@@ -282,8 +282,37 @@ class BuildInspectTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertEqual(lines[0], '1 Button "Save"')
         self.assertEqual(lines[1], '2 ComboBox "Customer"')
-        self.assertEqual(elements["1"], {"auto_id": "btnSave", "title": "Save", "control_type": "Button"})
+        self.assertEqual(elements["1"]["auto_id"], "btnSave")
+        self.assertEqual(elements["1"]["title"], "Save")
+        self.assertEqual(elements["1"]["control_type"], "Button")
         self.assertEqual(elements["2"]["auto_id"], "cmbCust")
+
+    def test_custom_button_group_is_labeled_by_its_caption(self):
+        # The exact Adminsoft shape: a Group named cmd_exit with the visible text
+        # "Exit Accounts Suite" drawn on top of it. The button must appear, be
+        # labeled by the caption the user sees, but resolve by its real name.
+        infos = [
+            {"name": "cmd_exit", "auto_id": "", "control_type": "Group", "rect": [1431, 638, 1594, 707]},
+            {"name": "Exit Accounts Suite", "auto_id": "", "control_type": "Text", "rect": [1494, 643, 1582, 699]},
+            {"name": "cmd_select", "auto_id": "", "control_type": "Group", "rect": [1431, 555, 1594, 624]},
+            {"name": "Select Comp./Org.", "auto_id": "", "control_type": "Text", "rect": [1500, 569, 1581, 608]},
+        ]
+        text, elements = agent.build_inspect(infos)
+        lines = text.splitlines()
+        self.assertIn('1 Group "Exit Accounts Suite"', lines)
+        self.assertIn('2 Group "Select Comp./Org."', lines)
+        # Resolution still uses the real control name, not the cosmetic caption.
+        self.assertEqual(elements["1"]["title"], "cmd_exit")
+        self.assertEqual(elements["1"]["rect"], [1431, 638, 1594, 707])
+
+    def test_layout_group_without_caption_or_command_name_is_dropped(self):
+        infos = [
+            {"name": "MainLayoutPanel", "auto_id": "", "control_type": "Group", "rect": [0, 0, 100, 100]},
+            {"name": "", "auto_id": "", "control_type": "Pane", "rect": [0, 0, 50, 50]},
+        ]
+        text, elements = agent.build_inspect(infos)
+        self.assertEqual(elements, {})
+        self.assertIn("no interactable controls", text)
 
     def test_numbers_are_sequential_and_stringified(self):
         infos = [{"name": f"B{i}", "auto_id": f"b{i}", "control_type": "Button"} for i in range(5)]
@@ -305,6 +334,15 @@ class BuildInspectTests(unittest.TestCase):
         text, elements = agent.build_inspect(infos)
         self.assertEqual(elements, {})
         self.assertIn("no interactable controls", text)
+
+    def test_stored_click_point_is_rect_center(self):
+        agent.STATE.elements = {"1": {"auto_id": "", "title": "cmd_exit", "control_type": "Group", "rect": [1431, 638, 1594, 707]}}
+        try:
+            self.assertEqual(agent._stored_click_point("1"), (1512, 672))
+            self.assertIsNone(agent._stored_click_point("2"))
+            self.assertIsNone(agent._stored_click_point("save"))
+        finally:
+            agent.STATE.elements = {}
 
 
 # A fake window/control pair so find_control can be exercised without pywinauto.
@@ -441,6 +479,30 @@ class BuildRecordTraceTests(unittest.TestCase):
 
     def test_empty_input_yields_no_trace(self):
         self.assertEqual(agent.build_record_trace([]), [])
+
+
+class WindowTitleMatchTests(unittest.TestCase):
+    # The exact failure this guards against: a VB6 accounting app titled
+    # "Good afternoon First.  User ID: FIRST" (double space) that the model
+    # requests with single spaces. Exact matching made every connect fail.
+    def test_normalization_collapses_whitespace_and_case(self):
+        self.assertEqual(agent.normalize_window_title("Good afternoon First.  User ID: FIRST "), "good afternoon first. user id: first")
+
+    def test_exact_after_normalization_scores_highest(self):
+        self.assertEqual(agent.score_window_title("Good afternoon First. User ID: FIRST", "Good afternoon First.  User ID: FIRST"), 3)
+        self.assertEqual(agent.score_window_title("book1 - excel", "Book1 - Excel"), 3)
+
+    def test_substring_matches_either_direction(self):
+        self.assertEqual(agent.score_window_title("Good afternoon", "Good afternoon First.  User ID: FIRST"), 2)
+        self.assertEqual(agent.score_window_title("Good afternoon First.  User ID: FIRST extra", "Good afternoon First. User ID: FIRST"), 2)
+
+    def test_all_words_present_scores_low(self):
+        self.assertEqual(agent.score_window_title("FIRST afternoon", "Good afternoon First.  User ID: FIRST"), 1)
+
+    def test_unrelated_titles_do_not_match(self):
+        self.assertEqual(agent.score_window_title("Adminsoft Accounts", "Book1 - Excel"), 0)
+        self.assertEqual(agent.score_window_title("", "Book1 - Excel"), 0)
+        self.assertEqual(agent.score_window_title("Book1", ""), 0)
 
 
 class SafeKeysTests(unittest.TestCase):

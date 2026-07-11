@@ -87,11 +87,18 @@ export class WindowsAgent {
         if (target && !(await this.pathExists(target))) {
           throw new Error(`The shortcut at ${raw} points to a program that no longer exists. Ask the user where the app is installed now.`);
         }
-        return this.openShortcut(raw, basename(raw).replace(/\.lnk$/i, ""), target);
+        const label = basename(raw).replace(/\.lnk$/i, "");
+        if (target && (await this.alreadyRunning(target))) {
+          return `${label} is already open, so I did not open it again. Use list-windows and connect to work in it.`;
+        }
+        return this.openShortcut(raw, label, target);
       }
       const exePath = /\.exe$/i.test(raw) ? raw : `${raw}.exe`;
       if (!(await this.pathExists(exePath))) {
         throw new Error(`No program was found at ${exePath}. Check the path and try again.`);
+      }
+      if (await this.alreadyRunning(exePath)) {
+        return `${basename(exePath)} is already open, so I did not open it again. Use list-windows and connect to work in it.`;
       }
       const child = spawn(exePath, [], { cwd: dirname(exePath), windowsHide: false, detached: true, stdio: "ignore", shell: false });
       child.unref();
@@ -110,6 +117,12 @@ export class WindowsAgent {
         // A shortcut whose recorded program is gone would hang the launch on a
         // Windows "problem with shortcut" dialog, so skip it and try the next.
         if (candidateTarget && !(await this.pathExists(candidateTarget))) continue;
+        // Never open a second copy of an app that is already running: business
+        // apps are single-instance and a duplicate confuses the user (and the
+        // task). Tell the model to connect to the open window instead.
+        if (candidateTarget && (await this.alreadyRunning(candidateTarget))) {
+          return `${candidate.name} is already open, so I did not open it again. Use list-windows and connect to work in it.`;
+        }
         return this.openShortcut(candidate.path, candidate.name, candidateTarget);
       }
     }
@@ -193,6 +206,20 @@ export class WindowsAgent {
       return stdout.toLowerCase().includes(image.toLowerCase());
     } catch {
       return true; // tasklist trouble must never fail a launch Windows accepted
+    }
+  }
+
+  // Whether the program at exePath is already running, used to avoid opening a
+  // second copy. Unlike processRunning (whose unknown answer must not block a
+  // launch), an uncertain result here returns false so the app still opens.
+  private async alreadyRunning(exePath: string): Promise<boolean> {
+    const image = basename(exePath);
+    if (!/\.exe$/i.test(image)) return false;
+    try {
+      const { stdout } = await execFileAsync("tasklist", ["/FI", `IMAGENAME eq ${image}`, "/FO", "CSV", "/NH"], { windowsHide: true, timeout: 5_000 });
+      return stdout.toLowerCase().includes(image.toLowerCase());
+    } catch {
+      return false;
     }
   }
 
