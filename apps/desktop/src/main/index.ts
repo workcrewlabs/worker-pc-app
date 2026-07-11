@@ -698,11 +698,17 @@ function registerIpc(): void {
     const events: RecordedEvent[] = [];
     if (target === "windows") {
       // The Windows helper returns clicks as { kind: "click", window, control,
-      // controlType } and typing as { kind: "type", window, text }. Normalize each
-      // into a descriptive event, clamping to the contract limits so a long name
-      // is kept (truncated) rather than failing validation and dropping the event.
+      // controlType, screenshotPath? } and typing as { kind: "type", window,
+      // text }. Normalize each into a descriptive event, clamping to the contract
+      // limits so a long name is kept (truncated) rather than failing validation
+      // and dropping the event. The first few clicks carry a small screenshot so
+      // the summarizing model can SEE the button that was pressed; the temp file
+      // is read once, attached as base64, and deleted.
+      const MAX_ATTACHED_SHOTS = 6;
+      let attachedShots = 0;
+      const fs = await import("node:fs/promises");
       for (const item of await windowsAgent.recordStop()) {
-        const it = item as { kind?: unknown; window?: unknown; control?: unknown; controlType?: unknown; text?: unknown };
+        const it = item as { kind?: unknown; window?: unknown; control?: unknown; controlType?: unknown; text?: unknown; screenshotPath?: unknown };
         const window = typeof it.window === "string" ? it.window.slice(0, 300) : undefined;
         if (it.kind === "type") {
           const parsed = recordedEventSchema.safeParse({
@@ -713,11 +719,28 @@ function registerIpc(): void {
           if (parsed.success && parsed.data.value) events.push(parsed.data);
           continue;
         }
+        let screenshot: string | undefined;
+        if (typeof it.screenshotPath === "string" && it.screenshotPath) {
+          try {
+            if (attachedShots < MAX_ATTACHED_SHOTS) {
+              const data = (await fs.readFile(it.screenshotPath)).toString("base64");
+              // The contract bounds each image; skip an unexpectedly large one.
+              if (data.length > 0 && data.length <= 90_000) {
+                screenshot = data;
+                attachedShots += 1;
+              }
+            }
+          } catch {
+            // A missing or unreadable crop never drops the click itself.
+          }
+          await fs.rm(it.screenshotPath, { force: true }).catch(() => {});
+        }
         const parsed = recordedEventSchema.safeParse({
           kind: "click",
           window,
           target: typeof it.control === "string" ? it.control.slice(0, 300) : undefined,
-          role: typeof it.controlType === "string" && it.controlType ? it.controlType.slice(0, 80) : undefined
+          role: typeof it.controlType === "string" && it.controlType ? it.controlType.slice(0, 80) : undefined,
+          ...(screenshot ? { screenshot } : {})
         });
         if (parsed.success && parsed.data.target) events.push(parsed.data);
       }
@@ -734,7 +757,16 @@ function registerIpc(): void {
   // Turn a recorded trace into one reusable instruction via the backend model.
   ipcMain.handle("recorder:summarize", async (_event, payload: unknown) => {
     const body = summarizeRecordingRequestSchema.parse(payload);
-    return api.request<{ task: string }>("/v1/recordings/summarize", { method: "POST", body });
+    try {
+      return await api.request<{ task: string }>("/v1/recordings/summarize", { method: "POST", body });
+    } catch (error) {
+      // A backend that predates click screenshots rejects the unknown field.
+      // Retry once without them so recording keeps working across versions.
+      const hadScreenshots = body.events.some((event) => "screenshot" in event && event.screenshot);
+      if (!hadScreenshots) throw error;
+      const stripped = { ...body, events: body.events.map(({ screenshot: _screenshot, ...rest }) => rest) };
+      return api.request<{ task: string }>("/v1/recordings/summarize", { method: "POST", body: stripped });
+    }
   });
 }
 

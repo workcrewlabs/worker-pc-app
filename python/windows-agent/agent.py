@@ -480,58 +480,89 @@ _OVERLAY_TITLES = frozenset({
     "discord overlay",
 })
 
-# Window title that is really the desktop itself; a click here is opening an icon.
-DESKTOP_WINDOW_TITLES = frozenset({"program manager"})
-
-
 def _is_overlay_title(title: str) -> bool:
     return (title or "").strip().lower() in _OVERLAY_TITLES
 
 
-_GW_HWNDNEXT = 2
-_GWL_EXSTYLE = -20
-_WS_EX_TRANSPARENT = 0x00000020
+# Per-click screenshot crops. A small image around each click is attached to the
+# recording so the model that writes the instruction SEES the button the person
+# pressed, exactly like reviewing a screen capture, instead of trusting control
+# names alone. Small crops keep the token cost of each image low.
+RECORD_SHOT_WIDTH = 480
+RECORD_SHOT_HEIGHT = 360
+RECORD_MAX_SHOTS = 16
+_SM_XVIRTUALSCREEN, _SM_YVIRTUALSCREEN = 76, 77
+_SM_CXVIRTUALSCREEN, _SM_CYVIRTUALSCREEN = 78, 79
+
+
+def _capture_click_shot(x: int, y: int, index: int) -> str | None:
+    """Save a small screenshot centered on a click (clamped to the virtual
+    screen, so multi-monitor setups work) and return its file path, or None when
+    capture fails. Never raises: a recording must survive a failed screenshot."""
+    try:
+        from PIL import ImageGrab
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        vx = int(user32.GetSystemMetrics(_SM_XVIRTUALSCREEN))
+        vy = int(user32.GetSystemMetrics(_SM_YVIRTUALSCREEN))
+        vw = int(user32.GetSystemMetrics(_SM_CXVIRTUALSCREEN))
+        vh = int(user32.GetSystemMetrics(_SM_CYVIRTUALSCREEN))
+        left = max(vx, min(x - RECORD_SHOT_WIDTH // 2, vx + vw - RECORD_SHOT_WIDTH))
+        top = max(vy, min(y - RECORD_SHOT_HEIGHT // 2, vy + vh - RECORD_SHOT_HEIGHT))
+        image = ImageGrab.grab(bbox=(left, top, left + RECORD_SHOT_WIDTH, top + RECORD_SHOT_HEIGHT), all_screens=True)
+        # JPEG keeps each crop small (usually under 30 KB) so several fit in one
+        # summarize request without blowing the API body limit.
+        output = Path(tempfile.gettempdir()) / f"workcrew-rec-{os.getpid()}-{index}.jpg"
+        image.convert("RGB").save(output, "JPEG", quality=80)
+        return str(output)
+    except Exception:
+        return None
+
+
+_GA_ROOT = 2
+
+
+def _window_title_of(hwnd: int) -> str:
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    length = int(user32.GetWindowTextLengthW(hwnd))
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buffer, length + 1)
+    return str(buffer.value or "")
 
 
 def _real_window_at(x: int, y: int) -> tuple[int | None, str]:
-    """The real top-level window under a screen point, in z-order, skipping
-    click-through overlays (which a click passes through). Returns (hwnd, title),
-    or (None, "") when nothing suitable is found, so the caller falls back to the
-    raw element under the point."""
+    """The top-level window that would actually RECEIVE a click at a screen
+    point, per the OS's own hit testing (WindowFromPoint). This is the ground
+    truth for recording: it skips click-through overlays, hidden windows, and
+    windows parked on other virtual desktops, all of which fooled bookkeeping
+    approaches (a recording once attributed every click to "NVIDIA GeForce
+    Overlay", and another to invisible browser windows). Returns (hwnd, title)
+    or (None, "")."""
     try:
         from ctypes import wintypes
 
-        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-        user32.GetTopWindow.restype = wintypes.HWND
-        user32.GetTopWindow.argtypes = [wintypes.HWND]
-        user32.GetWindow.restype = wintypes.HWND
-        user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
-        user32.GetWindowLongW.restype = wintypes.LONG
-        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        class _PT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
-        hwnd = user32.GetTopWindow(None)
-        guard = 0
-        while hwnd and guard < 1000:
-            guard += 1
-            try:
-                if user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd):
-                    rect = wintypes.RECT()
-                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)) and \
-                            rect.left <= x <= rect.right and rect.top <= y <= rect.bottom:
-                        length = int(user32.GetWindowTextLengthW(hwnd))
-                        buffer = ctypes.create_unicode_buffer(length + 1)
-                        user32.GetWindowTextW(hwnd, buffer, length + 1)
-                        title = str(buffer.value or "")
-                        ex_style = int(user32.GetWindowLongW(hwnd, _GWL_EXSTYLE))
-                        click_through = bool(ex_style & _WS_EX_TRANSPARENT)
-                        if title.strip() and not click_through and not _is_overlay_title(title):
-                            return int(hwnd), title
-            except Exception:
-                pass
-            hwnd = user32.GetWindow(hwnd, _GW_HWNDNEXT)
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        user32.WindowFromPoint.restype = wintypes.HWND
+        user32.WindowFromPoint.argtypes = [_PT]
+        user32.GetAncestor.restype = wintypes.HWND
+        user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+
+        hwnd = user32.WindowFromPoint(_PT(x, y))
+        if not hwnd:
+            return None, ""
+        root = user32.GetAncestor(hwnd, _GA_ROOT) or hwnd
+        title = _window_title_of(int(root))
+        # An overlay can still be hit while it is interactive; in that case the
+        # click really did go to it, but it is never the app the person is
+        # working in, so report no window and let the caller fall back.
+        if not title.strip() or _is_overlay_title(title):
+            return None, ""
+        return int(root), title
     except Exception:
-        pass
-    return None, ""
+        return None, ""
 
 
 def _stored_click_point(selector: str) -> tuple[int, int] | None:
@@ -790,16 +821,26 @@ class ClickRecorder:
 
     def _resolve_loop(self) -> None:
         # Drain queued clicks, resolving each element off the poll thread and
-        # filling the placeholder in place. Exits on the None sentinel.
+        # filling the placeholder in place. Exits on the None sentinel. The
+        # screenshot is taken first, before the screen changes in response to
+        # the click, then the element is resolved (a slower UIA round trip).
+        shot_count = 0
         while True:
             item = self._queue.get()
             if item is None:
                 return
             event, x, y = item
+            shot = None
+            if shot_count < RECORD_MAX_SHOTS:
+                shot = _capture_click_shot(x, y, shot_count)
+                if shot is not None:
+                    shot_count += 1
             resolved = _resolve_element(x, y)
-            if resolved:
-                with self._lock:
+            with self._lock:
+                if resolved:
                     event.update(resolved)
+                if shot is not None:
+                    event["screenshot_path"] = shot
 
     def _on_key(self, vk: int, shift: bool, caps: bool, ctrl: bool = False, alt: bool = False) -> None:
         # A held Ctrl or Alt means a hotkey (Ctrl+S, Alt+Tab), not text, so it is
@@ -890,9 +931,14 @@ def build_record_trace(events: list[dict[str, Any]], ignore_window: str = "") ->
         control = name or auto_id
         if not control:
             continue
-        entry = {"kind": "click", "window": window, "control": control, "controlType": (event.get("control_type") or "").strip()}
-        if trace and trace[-1] == entry:
+        entry: dict[str, Any] = {"kind": "click", "window": window, "control": control, "controlType": (event.get("control_type") or "").strip()}
+        # Consecutive identical clicks collapse (a double-click is one action);
+        # comparison ignores the screenshot, which differs per click.
+        if trace and {k: v for k, v in trace[-1].items() if k != "screenshotPath"} == entry:
             continue
+        shot = (event.get("screenshot_path") or "").strip()
+        if shot:
+            entry["screenshotPath"] = shot
         trace.append(entry)
     return trace
 

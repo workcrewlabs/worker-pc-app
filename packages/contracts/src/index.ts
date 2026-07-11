@@ -209,7 +209,12 @@ export const recordedEventSchema = z.object({
   // while recording, since field-type detection is not available there.
   value: z.string().max(2_000).optional(),
   // The desktop window title (Windows recordings).
-  window: z.string().max(300).optional()
+  window: z.string().max(300).optional(),
+  // A small JPEG screenshot around the click (base64, no data: prefix) so the
+  // summarizing model can SEE the button that was pressed, which is far more
+  // reliable than control names in apps that draw their own buttons. Optional
+  // and bounded; the desktop attaches it to only the first few clicks.
+  screenshot: z.string().max(90_000).optional()
 }).strict();
 export type RecordedEvent = z.infer<typeof recordedEventSchema>;
 

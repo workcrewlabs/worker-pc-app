@@ -480,6 +480,21 @@ class BuildRecordTraceTests(unittest.TestCase):
     def test_empty_input_yields_no_trace(self):
         self.assertEqual(agent.build_record_trace([]), [])
 
+    def test_click_screenshot_path_passes_through(self):
+        events = [
+            {"kind": "click", "window": "App", "name": "Help", "auto_id": "", "control_type": "Group", "screenshot_path": r"C:\tmp\shot1.jpg"},
+        ]
+        trace = agent.build_record_trace(events)
+        self.assertEqual(trace[0]["screenshotPath"], r"C:\tmp\shot1.jpg")
+
+    def test_double_click_collapses_even_with_different_screenshots(self):
+        events = [
+            {"kind": "click", "window": "App", "name": "Help", "auto_id": "", "control_type": "Group", "screenshot_path": "a.jpg"},
+            {"kind": "click", "window": "App", "name": "Help", "auto_id": "", "control_type": "Group", "screenshot_path": "b.jpg"},
+        ]
+        trace = agent.build_record_trace(events)
+        self.assertEqual(len(trace), 1)
+
 
 class ChooseClickLabelTests(unittest.TestCase):
     # The exact failing recording: a click on the Help button resolved to the
