@@ -481,6 +481,51 @@ class BuildRecordTraceTests(unittest.TestCase):
         self.assertEqual(agent.build_record_trace([]), [])
 
 
+class ChooseClickLabelTests(unittest.TestCase):
+    # The exact failing recording: a click on the Help button resolved to the
+    # decorative "button_front" image over a Group "cmd_help", with the visible
+    # caption "Help" as a separate small text node. The label must be "Help".
+    def test_help_button_click_labels_by_caption(self):
+        candidates = [
+            {"name": "Good afternoon First.", "auto_id": "", "control_type": "Pane", "area": 700_000},
+            {"name": "background_mask", "auto_id": "", "control_type": "Image", "area": 690_000},
+            {"name": "cmd_help", "auto_id": "", "control_type": "Group", "area": 11_000},
+            {"name": "button_front", "auto_id": "", "control_type": "Image", "area": 11_000},
+            {"name": "Help", "auto_id": "", "control_type": "Text", "area": 1_800},
+        ]
+        chosen = agent.choose_click_label(candidates)
+        self.assertEqual(chosen["name"], "Help")
+        self.assertEqual(chosen["control_type"], "Group")
+
+    def test_exit_button_click_labels_by_caption(self):
+        candidates = [
+            {"name": "cmd_exit", "auto_id": "", "control_type": "Group", "area": 11_000},
+            {"name": "button_image", "auto_id": "", "control_type": "Image", "area": 2_000},
+            {"name": "Exit Accounts Suite", "auto_id": "", "control_type": "Text", "area": 4_900},
+        ]
+        chosen = agent.choose_click_label(candidates)
+        self.assertEqual(chosen["name"], "Exit Accounts Suite")
+
+    def test_standard_button_without_caption_uses_its_name(self):
+        candidates = [
+            {"name": "Save", "auto_id": "btnSave", "control_type": "Button", "area": 3_000},
+        ]
+        self.assertEqual(agent.choose_click_label(candidates)["name"], "Save")
+
+    def test_decorative_only_click_yields_no_label(self):
+        candidates = [
+            {"name": "background_mask", "auto_id": "", "control_type": "Image", "area": 690_000},
+            {"name": "Shape1", "auto_id": "", "control_type": "Image", "area": 5_000},
+        ]
+        self.assertIsNone(agent.choose_click_label(candidates))
+
+    def test_is_decorative_name(self):
+        for name in ("background_mask", "button_front", "button_border_high", "Shape1", "Image3", ""):
+            self.assertTrue(agent._is_decorative_name(name))
+        for name in ("Help", "cmd_exit", "Save", "Exit Accounts Suite"):
+            self.assertFalse(agent._is_decorative_name(name))
+
+
 class WindowTitleMatchTests(unittest.TestCase):
     # The exact failure this guards against: a VB6 accounting app titled
     # "Good afternoon First.  User ID: FIRST" (double space) that the model

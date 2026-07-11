@@ -509,24 +509,119 @@ def _foreground_window_title() -> str:
         return ""
 
 
+# Names of the decorative image layers legacy apps stack to draw one button
+# (background, borders, the icon, a front overlay). A click resolves to whichever
+# of these is on top, so recording must look past them to the real button.
+_DECORATIVE_NAME_RE = re.compile(
+    r"^(background_mask|button_(background|border_\w+|front|image)|shape\d*|image\d*|picture\d*|label\d*)$",
+    re.IGNORECASE,
+)
+
+
+def _is_decorative_name(name: str) -> bool:
+    return not name or bool(_DECORATIVE_NAME_RE.match(name.strip()))
+
+
+def choose_click_label(candidates: list[dict[str, Any]]) -> dict[str, str] | None:
+    """Pick the human label for a click from the controls whose rectangle contains
+    the clicked point. Prefers the visible caption text over an internal button id,
+    and the smallest containing control over a big background. Pure so it can be
+    unit tested. Each candidate: {name, auto_id, control_type, area}."""
+    contained = [c for c in candidates if (c.get("area") or 0) > 0]
+    captions = sorted(
+        [c for c in contained
+         if (c.get("control_type") or "") in LABEL_CONTROL_TYPES and (c.get("name") or "").strip()],
+        key=lambda c: c["area"],
+    )
+    buttons = sorted(
+        [c for c in contained
+         if (c.get("control_type") or "") in INTERACTABLE_CONTROL_TYPES
+         and (c.get("control_type") or "") != "Window"
+         and not _is_decorative_name((c.get("name") or ""))
+         and ((c.get("name") or "").strip() or (c.get("auto_id") or "").strip())],
+        key=lambda c: c["area"],
+    )
+    caption = captions[0]["name"].strip() if captions else ""
+    if buttons:
+        button = buttons[0]
+        label = caption or (button.get("name") or "").strip() or (button.get("auto_id") or "").strip()
+        return {"name": label[:500], "auto_id": (button.get("auto_id") or "")[:500], "control_type": (button.get("control_type") or "")[:100]}
+    if caption:
+        return {"name": caption[:500], "auto_id": "", "control_type": "Text"}
+    return None
+
+
+def _label_at_point(top: Any, x: int, y: int) -> dict[str, str] | None:
+    """Scan a top-level window's controls for the ones whose rectangle contains the
+    click point and choose the best human label. Controls covering most of the
+    window (backgrounds, the window itself) are skipped so a real button wins."""
+    try:
+        top_rect = top.rectangle()
+        win_area = max(1, (top_rect.right - top_rect.left) * (top_rect.bottom - top_rect.top))
+    except Exception:
+        win_area = None
+    candidates: list[dict[str, Any]] = []
+    try:
+        descendants = top.descendants()[:1200]
+    except Exception:
+        return None
+    for control in descendants:
+        try:
+            info = control.element_info
+            rect = info.rectangle
+            if not (rect.left <= x <= rect.right and rect.top <= y <= rect.bottom):
+                continue
+            area = max(1, (rect.right - rect.left) * (rect.bottom - rect.top))
+            # A control that fills most of the window is a background/container, not
+            # the button the person meant to click.
+            if win_area is not None and area >= 0.7 * win_area:
+                continue
+            candidates.append({
+                "name": str(info.name or ""),
+                "auto_id": str(info.automation_id or ""),
+                "control_type": str(info.control_type or ""),
+                "area": area,
+            })
+        except Exception:
+            continue
+    return choose_click_label(candidates)
+
+
 def _resolve_element(x: int, y: int) -> dict[str, str] | None:
     """Resolve the UI Automation element under a screen point to a stable
     description (window title, control name, automation id, control type). Returns
     None if nothing usable is there, so an unresolved click is simply dropped from
-    the recording rather than recorded as a fragile coordinate."""
+    the recording rather than recorded as a fragile coordinate.
+
+    Custom-drawn buttons resolve to a decorative image layer at the click point, so
+    when the raw element has no useful name the surrounding window is searched for
+    the real button and its visible caption (the same idea inspect uses)."""
     try:
         _, Desktop = _load_pywinauto()
         element = Desktop(backend="uia").from_point(x, y)
         info = element.element_info
         try:
-            window = str(element.top_level_parent().window_text() or "")
+            top = element.top_level_parent()
+            window = str(top.window_text() or "")
         except Exception:
+            top = None
             window = ""
+        name = str(info.name or "")
+        auto_id = str(info.automation_id or "")
+        control_type = str(info.control_type or "")
+        # If the click landed on a decorative layer or an unnamed node, find the
+        # real labeled button at that point instead.
+        if top is not None and (_is_decorative_name(name) or control_type not in INTERACTABLE_CONTROL_TYPES):
+            better = _label_at_point(top, x, y)
+            if better is not None:
+                name = better["name"]
+                auto_id = better["auto_id"]
+                control_type = better["control_type"]
         return {
             "window": window[:500],
-            "name": str(info.name or "")[:500],
-            "auto_id": str(info.automation_id or "")[:500],
-            "control_type": str(info.control_type or "")[:100],
+            "name": name[:500],
+            "auto_id": auto_id[:500],
+            "control_type": control_type[:100],
         }
     except Exception:
         return None
