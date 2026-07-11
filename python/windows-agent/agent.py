@@ -470,6 +470,70 @@ def _cursor_point() -> tuple[int, int]:
     return int(point.x), int(point.y)
 
 
+# Full-screen, click-through overlays sit visually on top of every app but pass
+# clicks through to whatever is beneath them. A click lands in the real app, but a
+# naive point lookup returns the overlay, so recordings get attributed to it (for
+# example "NVIDIA GeForce Overlay") instead of the app the person actually used.
+_OVERLAY_TITLES = frozenset({
+    "nvidia geforce overlay",
+    "geforce overlay",
+    "discord overlay",
+})
+
+# Window title that is really the desktop itself; a click here is opening an icon.
+DESKTOP_WINDOW_TITLES = frozenset({"program manager"})
+
+
+def _is_overlay_title(title: str) -> bool:
+    return (title or "").strip().lower() in _OVERLAY_TITLES
+
+
+_GW_HWNDNEXT = 2
+_GWL_EXSTYLE = -20
+_WS_EX_TRANSPARENT = 0x00000020
+
+
+def _real_window_at(x: int, y: int) -> tuple[int | None, str]:
+    """The real top-level window under a screen point, in z-order, skipping
+    click-through overlays (which a click passes through). Returns (hwnd, title),
+    or (None, "") when nothing suitable is found, so the caller falls back to the
+    raw element under the point."""
+    try:
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        user32.GetTopWindow.restype = wintypes.HWND
+        user32.GetTopWindow.argtypes = [wintypes.HWND]
+        user32.GetWindow.restype = wintypes.HWND
+        user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+        user32.GetWindowLongW.restype = wintypes.LONG
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+
+        hwnd = user32.GetTopWindow(None)
+        guard = 0
+        while hwnd and guard < 1000:
+            guard += 1
+            try:
+                if user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd):
+                    rect = wintypes.RECT()
+                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)) and \
+                            rect.left <= x <= rect.right and rect.top <= y <= rect.bottom:
+                        length = int(user32.GetWindowTextLengthW(hwnd))
+                        buffer = ctypes.create_unicode_buffer(length + 1)
+                        user32.GetWindowTextW(hwnd, buffer, length + 1)
+                        title = str(buffer.value or "")
+                        ex_style = int(user32.GetWindowLongW(hwnd, _GWL_EXSTYLE))
+                        click_through = bool(ex_style & _WS_EX_TRANSPARENT)
+                        if title.strip() and not click_through and not _is_overlay_title(title):
+                            return int(hwnd), title
+            except Exception:
+                pass
+            hwnd = user32.GetWindow(hwnd, _GW_HWNDNEXT)
+    except Exception:
+        pass
+    return None, ""
+
+
 def _stored_click_point(selector: str) -> tuple[int, int] | None:
     """The center of the rectangle recorded for a numbered control in the last
     inspect, used as a positional fallback when the control will not resolve by
@@ -593,30 +657,51 @@ def _resolve_element(x: int, y: int) -> dict[str, str] | None:
     None if nothing usable is there, so an unresolved click is simply dropped from
     the recording rather than recorded as a fragile coordinate.
 
-    Custom-drawn buttons resolve to a decorative image layer at the click point, so
-    when the raw element has no useful name the surrounding window is searched for
-    the real button and its visible caption (the same idea inspect uses)."""
+    Two traps in real apps are handled: a click-through overlay (a gaming or chat
+    overlay) covers every window, so the REAL window under the point is found in
+    z-order first; and custom-drawn buttons resolve to a decorative image layer, so
+    the window is searched for the real button and its visible caption."""
     try:
         _, Desktop = _load_pywinauto()
-        element = Desktop(backend="uia").from_point(x, y)
-        info = element.element_info
-        try:
-            top = element.top_level_parent()
-            window = str(top.window_text() or "")
-        except Exception:
-            top = None
-            window = ""
-        name = str(info.name or "")
-        auto_id = str(info.automation_id or "")
-        control_type = str(info.control_type or "")
-        # If the click landed on a decorative layer or an unnamed node, find the
-        # real labeled button at that point instead.
-        if top is not None and (_is_decorative_name(name) or control_type not in INTERACTABLE_CONTROL_TYPES):
+
+        # Prefer the real window under the point (past click-through overlays).
+        window = ""
+        top = None
+        hwnd, real_title = _real_window_at(x, y)
+        if hwnd is not None:
+            window = real_title
+            try:
+                top = Desktop(backend="uia").window(handle=hwnd)
+            except Exception:
+                top = None
+
+        name = auto_id = control_type = ""
+        if top is None:
+            # Fall back to the raw element the OS reports under the point.
+            element = Desktop(backend="uia").from_point(x, y)
+            info = element.element_info
+            name = str(info.name or "")
+            auto_id = str(info.automation_id or "")
+            control_type = str(info.control_type or "")
+            try:
+                top = element.top_level_parent()
+                if not window:
+                    window = str(top.window_text() or "")
+            except Exception:
+                top = None
+
+        # Find the real labeled control at the point (skips decorative layers and
+        # names custom buttons by their visible caption). Keep the raw element only
+        # when nothing better is found.
+        if top is not None and (not name or _is_decorative_name(name) or control_type not in INTERACTABLE_CONTROL_TYPES):
             better = _label_at_point(top, x, y)
             if better is not None:
                 name = better["name"]
                 auto_id = better["auto_id"]
                 control_type = better["control_type"]
+
+        if not window and not name and not auto_id:
+            return None
         return {
             "window": window[:500],
             "name": name[:500],

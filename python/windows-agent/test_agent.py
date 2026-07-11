@@ -525,6 +525,12 @@ class ChooseClickLabelTests(unittest.TestCase):
         for name in ("Help", "cmd_exit", "Save", "Exit Accounts Suite"):
             self.assertFalse(agent._is_decorative_name(name))
 
+    def test_is_overlay_title(self):
+        for title in ("NVIDIA GeForce Overlay", "nvidia geforce overlay ", "Discord Overlay"):
+            self.assertTrue(agent._is_overlay_title(title))
+        for title in ("Good afternoon First.  User ID: FIRST", "Adminsoft Accounts", "Program Manager", ""):
+            self.assertFalse(agent._is_overlay_title(title))
+
 
 class WindowTitleMatchTests(unittest.TestCase):
     # The exact failure this guards against: a VB6 accounting app titled
