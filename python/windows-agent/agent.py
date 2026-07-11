@@ -682,25 +682,28 @@ def _label_at_point(top: Any, x: int, y: int) -> dict[str, str] | None:
     return choose_click_label(candidates)
 
 
-def _resolve_element(x: int, y: int) -> dict[str, str] | None:
+def _resolve_element(x: int, y: int, hwnd: int | None = None, window_title: str = "") -> dict[str, str] | None:
     """Resolve the UI Automation element under a screen point to a stable
     description (window title, control name, automation id, control type). Returns
     None if nothing usable is there, so an unresolved click is simply dropped from
     the recording rather than recorded as a fragile coordinate.
 
-    Two traps in real apps are handled: a click-through overlay (a gaming or chat
-    overlay) covers every window, so the REAL window under the point is found in
-    z-order first; and custom-drawn buttons resolve to a decorative image layer, so
-    the window is searched for the real button and its visible caption."""
+    When the recorder passes the window it hit-tested AT CLICK TIME (hwnd and
+    title), that window is authoritative: this may run seconds after the click,
+    by which time a newly opened window can cover the clicked spot, and a fresh
+    lookup would blame the wrong app. Without a handle, the OS hit test runs now.
+    Custom-drawn buttons resolve to a decorative image layer, so the window is
+    searched for the real button and its visible caption."""
     try:
         _, Desktop = _load_pywinauto()
 
-        # Prefer the real window under the point (past click-through overlays).
-        window = ""
+        window = window_title or ""
         top = None
-        hwnd, real_title = _real_window_at(x, y)
+        if hwnd is None:
+            hwnd, real_title = _real_window_at(x, y)
+            if hwnd is not None:
+                window = real_title
         if hwnd is not None:
-            window = real_title
             try:
                 top = Desktop(backend="uia").window(handle=hwnd)
             except Exception:
@@ -767,8 +770,11 @@ class ClickRecorder:
         # thread so it never stalls keyboard/mouse sampling on the poll loop. The
         # poll loop appends a placeholder click immediately and queues it here.
         self._resolver: threading.Thread | None = None
-        self._queue: "queue.Queue[tuple[dict[str, Any], int, int] | None]" = queue.Queue()
+        self._queue: "queue.Queue[tuple[dict[str, Any], int, int, int | None, str] | None]" = queue.Queue()
         self._lock = threading.Lock()
+        # Screenshots taken so far this recording (bounded by RECORD_MAX_SHOTS).
+        # Touched only on the poll thread, so no lock is needed.
+        self._shot_count = 0
         # Typed characters accumulate here with the window they were typed in, then
         # flush to one "type" event on the next click, Enter/Tab, or stop.
         self._typed: list[str] = []
@@ -784,11 +790,13 @@ class ClickRecorder:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=3)
-        # The poll loop has stopped, so no more clicks will be queued. Let the
-        # resolver finish the ones already queued, then exit on the sentinel.
+        # The poll loop has stopped, so no more clicks will be queued. Give the
+        # resolver real time to finish the queued tail: the LAST clicks of a
+        # recording are usually the point of it, and a short timeout here once
+        # silently dropped them.
         self._queue.put(None)
         if self._resolver is not None:
-            self._resolver.join(timeout=3)
+            self._resolver.join(timeout=20)
         with self._lock:
             self._flush_typed_locked()
             return list(self._events)
@@ -820,27 +828,19 @@ class ClickRecorder:
             time.sleep(RECORD_POLL_SECONDS)
 
     def _resolve_loop(self) -> None:
-        # Drain queued clicks, resolving each element off the poll thread and
-        # filling the placeholder in place. Exits on the None sentinel. The
-        # screenshot is taken first, before the screen changes in response to
-        # the click, then the element is resolved (a slower UIA round trip).
-        shot_count = 0
+        # Drain queued clicks, filling in the slow part (the control's name via a
+        # UI Automation round trip) off the poll thread. The window and screenshot
+        # were already captured at click time, so the lookup runs against the
+        # window that was really clicked even if the screen has since changed.
         while True:
             item = self._queue.get()
             if item is None:
                 return
-            event, x, y = item
-            shot = None
-            if shot_count < RECORD_MAX_SHOTS:
-                shot = _capture_click_shot(x, y, shot_count)
-                if shot is not None:
-                    shot_count += 1
-            resolved = _resolve_element(x, y)
-            with self._lock:
-                if resolved:
+            event, x, y, hwnd, title = item
+            resolved = _resolve_element(x, y, hwnd, title)
+            if resolved:
+                with self._lock:
                     event.update(resolved)
-                if shot is not None:
-                    event["screenshot_path"] = shot
 
     def _on_key(self, vk: int, shift: bool, caps: bool, ctrl: bool = False, alt: bool = False) -> None:
         # A held Ctrl or Alt means a hotkey (Ctrl+S, Alt+Tab), not text, so it is
@@ -890,15 +890,30 @@ class ClickRecorder:
             self._events.append({"kind": "type", "window": window[:500], "text": text[:RECORD_MAX_TYPED]})
 
     def _capture(self, x: int, y: int) -> None:
-        # A click ends the current typing run so events stay in order. The click is
-        # appended immediately as a placeholder and resolved off-thread.
+        # A click ends the current typing run so events stay in order. The two
+        # time-critical facts are captured RIGHT NOW, before the screen reacts to
+        # the click: which window received it (the OS hit test, instant) and a
+        # small screenshot around it. Only the slow control-name lookup is
+        # deferred to the resolver thread, pinned to the window captured here.
+        hwnd, title = _real_window_at(x, y)
+        # Never record clicks in WorkCrew itself (starting/stopping the recording).
+        if self._ignore_lower and title.strip().lower().startswith(self._ignore_lower):
+            return
         with self._lock:
             self._flush_typed_locked()
             if len(self._events) >= RECORD_MAX_EVENTS:
                 return
             event: dict[str, Any] = {"kind": "click", "x": x, "y": y}
+            if title.strip():
+                event["window"] = title[:500]
+            shot = None
+            if self._shot_count < RECORD_MAX_SHOTS:
+                shot = _capture_click_shot(x, y, self._shot_count)
+                if shot is not None:
+                    self._shot_count += 1
+                    event["screenshot_path"] = shot
             self._events.append(event)
-        self._queue.put((event, x, y))
+        self._queue.put((event, x, y, hwnd, title))
 
 
 def build_record_trace(events: list[dict[str, Any]], ignore_window: str = "") -> list[dict[str, Any]]:
@@ -928,15 +943,29 @@ def build_record_trace(events: list[dict[str, Any]], ignore_window: str = "") ->
             continue
         name = (event.get("name") or "").strip()
         auto_id = (event.get("auto_id") or "").strip()
-        control = name or auto_id
-        if not control:
-            continue
-        entry: dict[str, Any] = {"kind": "click", "window": window, "control": control, "controlType": (event.get("control_type") or "").strip()}
-        # Consecutive identical clicks collapse (a double-click is one action);
-        # comparison ignores the screenshot, which differs per click.
-        if trace and {k: v for k, v in trace[-1].items() if k != "screenshotPath"} == entry:
-            continue
         shot = (event.get("screenshot_path") or "").strip()
+        control = name or auto_id
+        # A click whose control never got a name is still a real step when we
+        # know where it happened or have its screenshot; only a click with no
+        # name, no window, AND no image is unusable noise.
+        if not control:
+            if not shot and not window:
+                continue
+            control = "(unlabeled control)"
+        entry: dict[str, Any] = {"kind": "click", "window": window, "control": control, "controlType": (event.get("control_type") or "").strip()}
+        # Collapse a consecutive repeat of the SAME named control (a double-click
+        # is one action). Never collapse unlabeled clicks: two different buttons
+        # that both failed to resolve to a name would otherwise merge and a real
+        # step would be lost, so those are always kept (their screenshots tell the
+        # model they differ).
+        prev = trace[-1] if trace else None
+        is_named_repeat = (
+            prev is not None
+            and control != "(unlabeled control)"
+            and {k: v for k, v in prev.items() if k != "screenshotPath"} == entry
+        )
+        if is_named_repeat:
+            continue
         if shot:
             entry["screenshotPath"] = shot
         trace.append(entry)

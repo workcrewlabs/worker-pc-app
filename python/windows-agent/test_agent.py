@@ -415,14 +415,44 @@ class BuildRecordTraceTests(unittest.TestCase):
         trace = agent.build_record_trace(events)
         self.assertEqual([(t["window"], t["control"]) for t in trace], [("Excel", "A"), ("Word", "C")])
 
-    def test_drops_unresolved_clicks(self):
+    def test_drops_clicks_with_no_name_window_or_screenshot(self):
         events = [
             {"x": 5, "y": 5},
-            {"window": "Excel", "name": "", "auto_id": "", "control_type": "Pane"},
             {"window": "Excel", "name": "Ok", "auto_id": "", "control_type": "Button"},
         ]
         trace = agent.build_record_trace(events)
         self.assertEqual(trace, [{"kind": "click", "window": "Excel", "control": "Ok", "controlType": "Button"}])
+
+    def test_keeps_unnamed_clicks_that_have_a_window_or_screenshot(self):
+        # The LAST click of a recording often cannot be re-resolved (its dialog
+        # closed); the window and screenshot captured at click time keep it real.
+        events = [
+            {"window": "Help dialog", "name": "", "auto_id": "", "control_type": ""},
+            {"x": 5, "y": 5, "name": "", "auto_id": "", "screenshot_path": "c.jpg"},
+        ]
+        trace = agent.build_record_trace(events)
+        self.assertEqual(trace[0]["control"], "(unlabeled control)")
+        self.assertEqual(trace[0]["window"], "Help dialog")
+        self.assertEqual(trace[1]["control"], "(unlabeled control)")
+        self.assertEqual(trace[1]["screenshotPath"], "c.jpg")
+
+    def test_two_unlabeled_clicks_in_same_window_are_not_merged(self):
+        # Two distinct buttons that both failed to resolve must stay two steps.
+        events = [
+            {"window": "App", "name": "", "auto_id": "", "control_type": "", "screenshot_path": "a.jpg"},
+            {"window": "App", "name": "", "auto_id": "", "control_type": "", "screenshot_path": "b.jpg"},
+        ]
+        trace = agent.build_record_trace(events)
+        self.assertEqual(len(trace), 2)
+        self.assertEqual(trace[0]["screenshotPath"], "a.jpg")
+        self.assertEqual(trace[1]["screenshotPath"], "b.jpg")
+
+    def test_named_double_click_still_collapses(self):
+        events = [
+            {"window": "App", "name": "Save", "auto_id": "", "control_type": "Button"},
+            {"window": "App", "name": "Save", "auto_id": "", "control_type": "Button"},
+        ]
+        self.assertEqual(len(agent.build_record_trace(events)), 1)
 
     def test_collapses_identical_consecutive_clicks(self):
         events = [
