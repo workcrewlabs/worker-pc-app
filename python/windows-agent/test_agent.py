@@ -532,11 +532,11 @@ class ChooseClickLabelTests(unittest.TestCase):
     # caption "Help" as a separate small text node. The label must be "Help".
     def test_help_button_click_labels_by_caption(self):
         candidates = [
-            {"name": "Good afternoon First.", "auto_id": "", "control_type": "Pane", "area": 700_000},
-            {"name": "background_mask", "auto_id": "", "control_type": "Image", "area": 690_000},
-            {"name": "cmd_help", "auto_id": "", "control_type": "Group", "area": 11_000},
-            {"name": "button_front", "auto_id": "", "control_type": "Image", "area": 11_000},
-            {"name": "Help", "auto_id": "", "control_type": "Text", "area": 1_800},
+            {"name": "Good afternoon First.", "auto_id": "", "control_type": "Pane", "area": 700_000, "rect": (0, 0, 900, 800)},
+            {"name": "background_mask", "auto_id": "", "control_type": "Image", "area": 690_000, "rect": (0, 0, 900, 780)},
+            {"name": "cmd_help", "auto_id": "", "control_type": "Group", "area": 11_000, "rect": (750, 700, 918, 774)},
+            {"name": "button_front", "auto_id": "", "control_type": "Image", "area": 11_000, "rect": (750, 700, 918, 774)},
+            {"name": "Help", "auto_id": "", "control_type": "Text", "area": 1_800, "rect": (824, 726, 899, 751)},
         ]
         chosen = agent.choose_click_label(candidates)
         self.assertEqual(chosen["name"], "Help")
@@ -544,23 +544,44 @@ class ChooseClickLabelTests(unittest.TestCase):
 
     def test_exit_button_click_labels_by_caption(self):
         candidates = [
-            {"name": "cmd_exit", "auto_id": "", "control_type": "Group", "area": 11_000},
-            {"name": "button_image", "auto_id": "", "control_type": "Image", "area": 2_000},
-            {"name": "Exit Accounts Suite", "auto_id": "", "control_type": "Text", "area": 4_900},
+            {"name": "cmd_exit", "auto_id": "", "control_type": "Group", "area": 11_000, "rect": (1431, 638, 1594, 707)},
+            {"name": "button_image", "auto_id": "", "control_type": "Image", "area": 2_000, "rect": (1440, 645, 1490, 695)},
+            {"name": "Exit Accounts Suite", "auto_id": "", "control_type": "Text", "area": 4_900, "rect": (1494, 643, 1582, 699)},
         ]
         chosen = agent.choose_click_label(candidates)
         self.assertEqual(chosen["name"], "Exit Accounts Suite")
 
+    def test_caption_from_another_control_does_not_hijack_the_button(self):
+        # The reported bug: a Cancel button, with a hidden tab's "Stock/Inventory
+        # Control" label overlapping the same point. Its rect is NOT inside the
+        # Cancel button, so it must never be chosen; the on-button caption wins.
+        candidates = [
+            {"name": "cmd_cancel", "auto_id": "", "control_type": "Group", "area": 12_000, "rect": (150, 500, 280, 570)},
+            {"name": "Cancel", "auto_id": "", "control_type": "Text", "area": 1_500, "rect": (190, 520, 250, 550)},
+            {"name": "Stock/Inventory Control", "auto_id": "", "control_type": "Text", "area": 900, "rect": (150, 505, 400, 525)},
+        ]
+        chosen = agent.choose_click_label(candidates)
+        self.assertEqual(chosen["name"], "Cancel")
+
+    def test_button_with_no_on_button_caption_uses_its_own_name(self):
+        # Only an off-button label is present, so it is ignored and the button's
+        # own (real, non-decorative) name is used instead of the stray caption.
+        candidates = [
+            {"name": "Save Draft", "auto_id": "", "control_type": "Button", "area": 8_000, "rect": (10, 10, 120, 60)},
+            {"name": "Unrelated Menu Item", "auto_id": "", "control_type": "Text", "area": 700, "rect": (0, 0, 300, 20)},
+        ]
+        self.assertEqual(agent.choose_click_label(candidates)["name"], "Save Draft")
+
     def test_standard_button_without_caption_uses_its_name(self):
         candidates = [
-            {"name": "Save", "auto_id": "btnSave", "control_type": "Button", "area": 3_000},
+            {"name": "Save", "auto_id": "btnSave", "control_type": "Button", "area": 3_000, "rect": (0, 0, 60, 30)},
         ]
         self.assertEqual(agent.choose_click_label(candidates)["name"], "Save")
 
     def test_decorative_only_click_yields_no_label(self):
         candidates = [
-            {"name": "background_mask", "auto_id": "", "control_type": "Image", "area": 690_000},
-            {"name": "Shape1", "auto_id": "", "control_type": "Image", "area": 5_000},
+            {"name": "background_mask", "auto_id": "", "control_type": "Image", "area": 690_000, "rect": (0, 0, 900, 780)},
+            {"name": "Shape1", "auto_id": "", "control_type": "Image", "area": 5_000, "rect": (10, 10, 80, 80)},
         ]
         self.assertIsNone(agent.choose_click_label(candidates))
 

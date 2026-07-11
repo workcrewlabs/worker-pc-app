@@ -617,11 +617,26 @@ def _is_decorative_name(name: str) -> bool:
     return not name or bool(_DECORATIVE_NAME_RE.match(name.strip()))
 
 
+def _rect_mostly_inside(inner: tuple[int, int, int, int] | None, outer: tuple[int, int, int, int] | None, frac: float = 0.7) -> bool:
+    """Whether at least `frac` of the inner rectangle's area lies within the outer
+    one. A button's own caption is mostly inside it; a wider label that merely
+    clips the same point (a hidden menu item, a neighbouring field) is not."""
+    if not inner or not outer:
+        return False
+    ix = max(0, min(inner[2], outer[2]) - max(inner[0], outer[0]))
+    iy = max(0, min(inner[3], outer[3]) - max(inner[1], outer[1]))
+    inter = ix * iy
+    inner_area = max(1, (inner[2] - inner[0]) * (inner[3] - inner[1]))
+    return inter / inner_area >= frac
+
+
 def choose_click_label(candidates: list[dict[str, Any]]) -> dict[str, str] | None:
     """Pick the human label for a click from the controls whose rectangle contains
-    the clicked point. Prefers the visible caption text over an internal button id,
-    and the smallest containing control over a big background. Pure so it can be
-    unit tested. Each candidate: {name, auto_id, control_type, area}."""
+    the clicked point. The click's button is the SMALLEST interactable control at
+    the point; its label is a caption drawn ON that button (a text node whose
+    center lies inside the button's rectangle), never a stray label elsewhere in
+    the window. Pure so it can be unit tested. Each candidate carries {name,
+    auto_id, control_type, area, rect}."""
     contained = [c for c in candidates if (c.get("area") or 0) > 0]
     captions = sorted(
         [c for c in contained
@@ -636,20 +651,28 @@ def choose_click_label(candidates: list[dict[str, Any]]) -> dict[str, str] | Non
          and ((c.get("name") or "").strip() or (c.get("auto_id") or "").strip())],
         key=lambda c: c["area"],
     )
-    caption = captions[0]["name"].strip() if captions else ""
     if buttons:
         button = buttons[0]
+        # A caption for THIS button must sit mostly within the button's own
+        # rectangle, so a hidden or neighbouring label (a menu item from another
+        # tab, say) that only clips the same point can never win.
+        on_button = [c for c in captions if _rect_mostly_inside(c.get("rect"), button.get("rect"))]
+        caption = on_button[0]["name"].strip() if on_button else ""
         label = caption or (button.get("name") or "").strip() or (button.get("auto_id") or "").strip()
         return {"name": label[:500], "auto_id": (button.get("auto_id") or "")[:500], "control_type": (button.get("control_type") or "")[:100]}
-    if caption:
-        return {"name": caption[:500], "auto_id": "", "control_type": "Text"}
+    if captions:
+        # No interactable control at the point: fall back to the smallest visible
+        # caption there (a plain clickable label or link).
+        return {"name": captions[0]["name"].strip()[:500], "auto_id": "", "control_type": "Text"}
     return None
 
 
 def _label_at_point(top: Any, x: int, y: int) -> dict[str, str] | None:
-    """Scan a top-level window's controls for the ones whose rectangle contains the
-    click point and choose the best human label. Controls covering most of the
-    window (backgrounds, the window itself) are skipped so a real button wins."""
+    """Find the best human label for a click by looking only at controls that are
+    actually VISIBLE at the click point. Hidden content (a tab that is not on top,
+    an off-screen list) keeps its geometry in the accessibility tree and used to
+    hijack labels; filtering by visibility and constraining the caption to the
+    clicked button removes that whole class of error."""
     try:
         top_rect = top.rectangle()
         win_area = max(1, (top_rect.right - top_rect.left) * (top_rect.bottom - top_rect.top))
@@ -657,7 +680,7 @@ def _label_at_point(top: Any, x: int, y: int) -> dict[str, str] | None:
         win_area = None
     candidates: list[dict[str, Any]] = []
     try:
-        descendants = top.descendants()[:1200]
+        descendants = top.descendants()[:1500]
     except Exception:
         return None
     for control in descendants:
@@ -671,11 +694,20 @@ def _label_at_point(top: Any, x: int, y: int) -> dict[str, str] | None:
             # the button the person meant to click.
             if win_area is not None and area >= 0.7 * win_area:
                 continue
+            # Skip controls that are not really shown: a hidden tab's labels still
+            # contain the point geometrically but are off-screen, and picking one
+            # is exactly the bug this guards against.
+            try:
+                if not control.is_visible():
+                    continue
+            except Exception:
+                pass
             candidates.append({
                 "name": str(info.name or ""),
                 "auto_id": str(info.automation_id or ""),
                 "control_type": str(info.control_type or ""),
                 "area": area,
+                "rect": (rect.left, rect.top, rect.right, rect.bottom),
             })
         except Exception:
             continue
