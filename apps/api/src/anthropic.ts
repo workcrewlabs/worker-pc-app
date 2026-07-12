@@ -393,6 +393,10 @@ Output only the instruction text, with no preamble, quotes, or commentary.`;
  * model. Pure and bounded so it can be unit tested and never blows up the
  * prompt: at most the first 120 events, each on its own line.
  */
+// Windows shells where a click opens an app rather than acting inside one: the
+// desktop, the taskbar, and the Start menu. A click here names the app to open.
+const SHELL_SURFACE_TITLES = new Set(["program manager", "taskbar", "start", "start menu", "search"]);
+
 export function describeRecording(surface: "browser" | "windows", events: RecordedEvent[]): string {
   const place = surface === "browser" ? "web browser" : "Windows desktop app";
   const lines: string[] = [];
@@ -405,6 +409,13 @@ export function describeRecording(surface: "browser" | "windows", events: Record
       if (where) lines.push(`Opened ${where}`);
     } else if (event.kind === "click") {
       const win = (event.window ?? "").trim();
+      // A click on a desktop/taskbar/Start icon is opening an app: render it as an
+      // explicit open of that app's name, so the summary starts with the right
+      // application instead of a window title the app happens to show first.
+      if (target && SHELL_SURFACE_TITLES.has(win.toLowerCase())) {
+        lines.push(`Opened the app "${target}"`);
+        continue;
+      }
       const prefix = win ? `In ${win}, clicked` : "Clicked";
       lines.push(`${prefix} ${target || "an element"}${role ? ` (${role})` : ""}`.trim());
     } else if (event.kind === "type") {
