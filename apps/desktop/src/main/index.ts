@@ -719,10 +719,18 @@ function registerIpc(): void {
           if (parsed.success && parsed.data.value) events.push(parsed.data);
           continue;
         }
+        const control = typeof it.control === "string" ? it.control.slice(0, 300) : undefined;
+        // The helper reads each button's text locally from the Windows
+        // accessibility tree for free. A screenshot is only attached, for the AI
+        // to read as a last resort, when that local read produced no usable label
+        // (a custom-drawn or icon-only button). So a normal recording carries no
+        // images and summarizes as a cheap text-only call; only the rare
+        // unreadable click costs a vision read.
+        const unlabeled = !control || control === "(unlabeled control)";
         let screenshot: string | undefined;
         if (typeof it.screenshotPath === "string" && it.screenshotPath) {
           try {
-            if (attachedShots < MAX_ATTACHED_SHOTS) {
+            if (unlabeled && attachedShots < MAX_ATTACHED_SHOTS) {
               const data = (await fs.readFile(it.screenshotPath)).toString("base64");
               // The contract bounds each image; skip an unexpectedly large one.
               if (data.length > 0 && data.length <= 90_000) {
@@ -738,7 +746,7 @@ function registerIpc(): void {
         const parsed = recordedEventSchema.safeParse({
           kind: "click",
           window,
-          target: typeof it.control === "string" ? it.control.slice(0, 300) : undefined,
+          target: control,
           role: typeof it.controlType === "string" && it.controlType ? it.controlType.slice(0, 80) : undefined,
           ...(screenshot ? { screenshot } : {})
         });
