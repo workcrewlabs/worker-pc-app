@@ -195,6 +195,11 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
     if (width > (columnWidths[colIndex] ?? 0)) columnWidths[colIndex] = width;
   };
 
+  // The display style seen for typed numbers in each column, so a formula added
+  // in that column (a total under a currency column, say) inherits its format
+  // and shows as currency rather than a bare number.
+  const columnNumericStyle: number[] = [];
+
   const sheetRows: string[] = [];
   rows.forEach((cells, rowIndex) => {
     const isHeader = rowIndex === 0 && rows.length > 1;
@@ -208,6 +213,17 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
         cellXml.push(`<c r="${ref}" s="1" t="s"><v>${internString(value)}</v></c>`);
         return;
       }
+      // A leading "=" marks a real Excel formula (=SUM(B2:B10), =B2*C2). Excel
+      // computes it on open, so the model lays out the structure and lets the
+      // spreadsheet do the arithmetic, instead of typing a number it worked out
+      // in its head (the main source of wrong AI spreadsheets). The formula
+      // inherits the column's number format when one is known.
+      if (value.length > 1 && value.startsWith("=")) {
+        const style = columnNumericStyle[colIndex];
+        const styleAttr = style ? ` s="${style}"` : "";
+        cellXml.push(`<c r="${ref}"${styleAttr}><f>${escapeXml(value.slice(1).trim())}</f></c>`);
+        return;
+      }
       if (isNumeric(value)) {
         cellXml.push(`<c r="${ref}"><v>${value}</v></c>`);
         return;
@@ -217,6 +233,7 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
       // like a hand-made spreadsheet instead of reading as plain text.
       const typed = numericCell(value);
       if (typed) {
+        if (typed.style !== 3) columnNumericStyle[colIndex] = typed.style; // remember money/percent/thousands, not dates
         cellXml.push(`<c r="${ref}" s="${typed.style}"><v>${typed.value}</v></c>`);
       } else {
         cellXml.push(`<c r="${ref}" t="s"><v>${internString(value)}</v></c>`);
@@ -242,7 +259,10 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
   const workbook =
     `${header}<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
     `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-    `<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>`;
+    `<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>` +
+    // Recompute every formula when the file is opened, since the builder writes
+    // formulas without a cached result.
+    `<calcPr fullCalcOnLoad="1"/></workbook>`;
   const workbookRels =
     `${header}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
     `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>` +
