@@ -495,10 +495,26 @@ _SM_XVIRTUALSCREEN, _SM_YVIRTUALSCREEN = 76, 77
 _SM_CXVIRTUALSCREEN, _SM_CYVIRTUALSCREEN = 78, 79
 
 
+def _draw_click_marker(image: Any, cx: int, cy: int) -> None:
+    """Draw a red target ring at (cx, cy) on the crop so the model sees EXACTLY
+    where the person clicked, the way the Claude browser extension marks a click.
+    A white halo around the red keeps it visible on any background."""
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(image)
+    radius = 26
+    # White outer ring first (contrast), then the red ring on top of it.
+    draw.ellipse((cx - radius - 2, cy - radius - 2, cx + radius + 2, cy + radius + 2), outline=(255, 255, 255), width=6)
+    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(255, 0, 0), width=4)
+    # A small solid dot at the exact click point.
+    draw.ellipse((cx - 4, cy - 4, cx + 4, cy + 4), fill=(255, 0, 0), outline=(255, 255, 255))
+
+
 def _capture_click_shot(x: int, y: int, index: int) -> str | None:
-    """Save a small screenshot centered on a click (clamped to the virtual
-    screen, so multi-monitor setups work) and return its file path, or None when
-    capture fails. Never raises: a recording must survive a failed screenshot."""
+    """Save a small screenshot around a click, marked with a red circle at the
+    exact click point (clamped to the virtual screen, so multi-monitor setups
+    work), and return its file path, or None when capture fails. Never raises: a
+    recording must survive a failed screenshot."""
     try:
         from PIL import ImageGrab
 
@@ -509,11 +525,14 @@ def _capture_click_shot(x: int, y: int, index: int) -> str | None:
         vh = int(user32.GetSystemMetrics(_SM_CYVIRTUALSCREEN))
         left = max(vx, min(x - RECORD_SHOT_WIDTH // 2, vx + vw - RECORD_SHOT_WIDTH))
         top = max(vy, min(y - RECORD_SHOT_HEIGHT // 2, vy + vh - RECORD_SHOT_HEIGHT))
-        image = ImageGrab.grab(bbox=(left, top, left + RECORD_SHOT_WIDTH, top + RECORD_SHOT_HEIGHT), all_screens=True)
+        image = ImageGrab.grab(bbox=(left, top, left + RECORD_SHOT_WIDTH, top + RECORD_SHOT_HEIGHT), all_screens=True).convert("RGB")
+        # Mark the click at its real position within the crop (near an edge the
+        # crop is clamped, so the click is not always the exact centre).
+        _draw_click_marker(image, x - left, y - top)
         # JPEG keeps each crop small (usually under 30 KB) so several fit in one
         # summarize request without blowing the API body limit.
         output = Path(tempfile.gettempdir()) / f"workcrew-rec-{os.getpid()}-{index}.jpg"
-        image.convert("RGB").save(output, "JPEG", quality=80)
+        image.save(output, "JPEG", quality=80)
         return str(output)
     except Exception:
         return None

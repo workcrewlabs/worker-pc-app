@@ -51,11 +51,11 @@ describe("buildRecordingContent", () => {
     expect(content[0]?.type).toBe("text");
   });
 
-  it("appends one labeled image block per screenshot, in order", () => {
+  it("appends one red-circle image block per screenshot, in order", () => {
     const content = buildRecordingContent("windows", [click("Adminsoft Accounts", "aaa"), click("Help", "bbb")]) as { type: string; text?: string; source?: { data?: string } }[];
     expect(content.map((b) => b.type)).toEqual(["text", "text", "image", "text", "image"]);
-    expect(content[1]?.text).toContain("click 1");
-    expect(content[1]?.text).toContain("Adminsoft Accounts");
+    expect(content[1]?.text).toContain("Step 1");
+    expect(content[1]?.text).toContain("RED CIRCLE");
     expect(content[2]?.source?.data).toBe("aaa");
     expect(content[4]?.source?.data).toBe("bbb");
   });
