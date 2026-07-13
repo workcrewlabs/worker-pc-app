@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   PLAN_CATALOG,
   REFERRAL_BONUS_MICRODOLLARS,
-  type AttachmentRef,
   type BillingInterval,
   type ConversationSummary,
   type ModelTier,
@@ -11,20 +10,17 @@ import {
 } from "@workcrew/contracts";
 import { formatTokens } from "./lib/storage";
 import { identifyUser, track } from "./lib/analytics";
-import { DEFAULT_CHAT_MODEL, turnsFromMessages } from "./lib/chat";
-import { useChatStream } from "./hooks/useChatStream";
-import { ChatView } from "./components/ChatView";
+import { DEFAULT_CHAT_MODEL, localId, turnsFromMessages, type ChatTurn } from "./lib/chat";
+import { ConversationPane, type PaneStatus } from "./components/ConversationPane";
 import { RoutinesPanel } from "./components/RoutinesPanel";
 import { PermissionsPanel } from "./components/PermissionsPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { AccountDialog } from "./components/AccountDialog";
 import { InviteDialog } from "./components/InviteDialog";
 import { RecorderDialog } from "./components/RecorderDialog";
-import { ApprovalModal } from "./components/ApprovalModal";
 import { UsageBanner } from "./components/UsageBanner";
 import { UsageBoostBanner } from "./components/UsageBoostBanner";
 import { usageStatus } from "./lib/usage";
-import { useAutomationRunner } from "./hooks/useAutomationRunner";
 import {
   loadPermissions,
   loadRoutines,
@@ -68,73 +64,6 @@ function isEntitlement(value: unknown): value is SubscriptionState {
 //   "Error invoking remote method 'channel': Error: <real message>"
 // so we strip that wrapper and any leading "SomethingError:", then translate the
 // few technical cases (network, timeout, server fault) into friendly language.
-// Decide whether a typed message is a request to DO something on the user's
-// computer (drive the browser or a Windows app) versus a question to answer in
-// chat. Action requests are routed to the automation engine, which itself picks
-// the browser (Playwright) or Windows (the Windows helper) tools as needed. The
-// check is deliberately conservative: clear questions and writing requests stay
-// in chat, and only imperative "do this on my machine" phrasing automates.
-function looksLikeAutomation(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  if (t.length < 4) return false;
-  // Plainly a question, or a writing/explaining request: keep it in chat.
-  if (/^(how|what|whats|what's|why|when|who|where|which|is |are |do |does |can i|can you|can u|could you|would you|explain|tell me|write|draft|compose|summari|translate|define|describe|give me|list|brainstorm|suggest|recommend|help me (write|understand|learn|decide|with)|teach me|show me how)\b/.test(t)) {
-    return false;
-  }
-  // Explicit machine or browser context always automates.
-  if (/\b(in (my|the) browser|on (my|the) (computer|pc|laptop|desktop|machine)|on my screen)\b/.test(t)) return true;
-  // Imperative automation verbs at the start: the user is telling WorkCrew to act.
-  if (/^(open|launch|start|go to|navigate to|visit|sign ?in|log ?in|log into|search for|download|upload|play|pause|click|fill|select|book|order|buy|reserve|post|publish|reply to|forward|organi[sz]e|tidy|sort|rename|move|copy|scroll|browse|add to cart|check out)\b/.test(t)) {
-    return true;
-  }
-  // A known app or site paired with an action verb anywhere in the sentence.
-  if (
-    /\b(tiktok|youtube|gmail|outlook|excel|word|powerpoint|spotify|whatsapp|instagram|twitter|amazon|netflix|linkedin|facebook|reddit|notion|slack|discord)\b/.test(t) &&
-    /\b(open|play|search|post|message|send|go|sign|log|find|watch|download|like|follow|comment)\b/.test(t)
-  ) {
-    return true;
-  }
-  // Clear coding actions (inherently imperative).
-  if (/\b(clone|ffmpeg|run (the |a )?(script|command|tool))\b/.test(t)) return true;
-  // git/github/repo only when paired with an action verb, so "my git is confusing"
-  // stays in chat while "git pull the latest" or "set up the repo" automates.
-  if (/\bgit\w*\b|\brepo\w*\b/.test(t) && /\b(clone|pull|push|commit|checkout|merge|rebase|init|fetch|set ?up|build|open|create|fix|run)\b/.test(t)) return true;
-  // Media editing on a real media target near the verb (not the bare word "file").
-  if (/\b(edit|crop|resize|trim|compress|rotate|convert|render|encode)\b(?:\s+\S+){0,4}\s+\b(image|images|photo|photos|picture|pictures|video|videos|clip|clips|gif)\b/.test(t)) return true;
-  return false;
-}
-
-// A plain question or a writing request, as opposed to an instruction to redo a
-// task. Used while iterating on an automation: a question is answered in chat,
-// anything else is treated as a correction that re-runs the task.
-function isQuestionLike(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  return /^(how|what|whats|what's|why|when|who|where|which|is |are |do |does |can i|can you|can u|could you|would you|explain|tell me|write|draft|compose|summari|translate|define|describe|give me|list|brainstorm|suggest|recommend|help me|teach me|show me how)\b/.test(t);
-}
-
-// Decide whether the user is asking WorkCrew to MAKE a file and hand it back to
-// download (the Claude cowork style: "make me an excel file", "create a CSV",
-// "give me a Word doc", "build a report"). This is always a chat request: the
-// model generates the file's content and the chat shows a Download button. It
-// must never seize the computer, even while a chat is in automation mode, so a
-// file ask is checked before any automation routing. Asking to control an app
-// ("open Excel and...", "in Excel", "on my computer") is the opposite and is
-// left to the automation engine.
-function looksLikeFileRequest(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  if (t.length < 5) return false;
-  // Controlling an app or the machine is automation, not a file hand-off.
-  if (/\b(open|launch|in|inside|using|control|automate)\s+(my\s+|the\s+)?(excel|word|powerpoint|sheets?|docs?)\b/.test(t)) return false;
-  if (/\b(in (my|the) browser|on (my|the) (computer|pc|laptop|desktop|machine|screen))\b/.test(t)) return false;
-  // A "produce and give me" verb paired with a file or document noun.
-  const wants = /\b(make|create|build|generate|produce|prepare|put together|export|draft|write|give me|send me|i (?:need|want)|can you (?:make|create|build|generate|write|prepare))\b/;
-  // Specific document nouns only. Bare "file" and "table" are deliberately left
-  // out: paired with "i need"/"rename"/"sort" they would steal real automation
-  // requests like "rename this file" or "sort this table" into the chat path.
-  const fileNoun = /\b(excel|spreadsheet|spread sheet|workbook|csv|xlsx|word (?:doc\w*|file)|docx|document|report|text file|\.txt|markdown|\.md|json file|html file)\b/;
-  return wants.test(t) && fileNoun.test(t);
-}
-
 function errorMessage(error: unknown): string {
   let message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   message = message
@@ -490,13 +419,23 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   const [recentMenuId, setRecentMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  // The task of the automation currently shown inline in the chat (running or
-  // just finished), used as the heading of the inline run activity.
-  const [automationTask, setAutomationTask] = useState("");
-  // Once a task has run in this chat, the chat is in "automation mode": typed
-  // follow-ups that are not plain questions re-run the task (with the correction
-  // added) so the user can refine and re-run repeatedly before saving a routine.
-  const [automationMode, setAutomationMode] = useState(false);
+  // Open conversation panes. Each stays mounted so its chat keeps streaming in the
+  // background; only the active pane is on screen. A brand-new chat starts as one
+  // blank pane.
+  const firstKey = useRef(localId());
+  const [panes, setPanes] = useState<{ key: string; conversationId?: string; initialTurns?: ChatTurn[]; initialAutomation?: { task: string; label: string } }[]>(
+    () => [{ key: firstKey.current }]
+  );
+  const [activeKey, setActiveKey] = useState<string>(firstKey.current);
+  // The status each pane reports up (streaming, computer-task phase, unread), used
+  // for the sidebar indicators and to tell when the machine is busy. Mirrored into
+  // a ref so the pruning and scheduler logic can read the latest without re-binding.
+  const [paneStatuses, setPaneStatuses] = useState<Record<string, PaneStatus>>({});
+  const statusesRef = useRef(paneStatuses);
+  statusesRef.current = paneStatuses;
+  // Conversation ids already folded into the recents list, so a pane earning its id
+  // refreshes recents exactly once.
+  const knownConvIds = useRef<Set<string>>(new Set());
   // Text to drop into the chat composer (for example a just-recorded task), with a
   // nonce so the same text can be sent into the composer more than once.
   const [composerSeed, setComposerSeed] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
@@ -518,55 +457,63 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
     try { localStorage.setItem("workcrew.alwaysAllow", value ? "1" : "0"); } catch { /* storage unavailable */ }
   }
 
-  const chat = useChatStream();
-  const runner = useAutomationRunner();
-  const { conversationId, usedTokens } = chat;
+  // Fold a pane's reported status into the map, and refresh recents the first time
+  // a pane earns a conversation id, so a brand-new chat appears in the sidebar.
+  function handlePaneStatus(key: string, status: PaneStatus): void {
+    setPaneStatuses((prev) => ({ ...prev, [key]: status }));
+    if (status.conversationId && !knownConvIds.current.has(status.conversationId)) {
+      knownConvIds.current.add(status.conversationId);
+      setPanes((list) => list.map((pane) => (pane.key === key ? { ...pane, conversationId: status.conversationId } : pane)));
+      void refreshRecents();
+    }
+  }
 
-  // When a chat turn or an automation run finishes it has consumed budget, so
-  // re-fetch the entitlement to update the rolling daily figure (and the daily
-  // ring). The monthly "tokens left" already updates live from the turn's done
-  // frame; this keeps the daily window honest right away instead of waiting for
-  // the next window focus.
-  const wasStreaming = useRef(false);
-  useEffect(() => {
-    if (wasStreaming.current && !chat.streaming) onRefreshEntitlement();
-    wasStreaming.current = chat.streaming;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat.streaming]);
-  const wasRunning = useRef(false);
-  useEffect(() => {
-    if (wasRunning.current && !runner.running) onRefreshEntitlement();
-    wasRunning.current = runner.running;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runner.running]);
+  // Whether any pane has a computer task running or paused (the machine is in use),
+  // which blocks starting another one.
+  const machineBusy = Object.values(paneStatuses).some((s) => s.automation === "running" || s.automation === "paused");
 
-  // Scheduler: while the app is open, check every 30 seconds for a routine that
-  // is due, and run it through the shared runner when nothing else is running.
-  // Held in a ref so the interval always sees the latest routines and run state.
-  const schedulerState = useRef({ routines, running: runner.running });
-  schedulerState.current = { routines, running: runner.running };
+  // Drop empty, idle, background panes so opening new chats does not pile them up.
+  // Only ever called alongside setting a new active pane.
+  function prunePanes(list: typeof panes): typeof panes {
+    return list.filter((pane) => {
+      const st = statusesRef.current[pane.key];
+      return Boolean(pane.conversationId) || Boolean(st?.hasConversation) || Boolean(st?.busy);
+    });
+  }
+
+  // Open a fresh pane that runs a task immediately (a routine, run now or on a
+  // schedule), and focus it since a computer task needs the mouse and screen.
+  function runTaskInNewPane(task: string, label: string): void {
+    if (task.trim().length < 3) return;
+    const key = localId();
+    setPanes((list) => [{ key, initialAutomation: { task, label } }, ...prunePanes(list)]);
+    setActiveKey(key);
+    setView("chat");
+    setAccountOpen(false);
+  }
+
+  // Scheduler: while the app is open, check every 30 seconds for a due routine and,
+  // when no computer task is already using the machine, run it in its own pane.
+  // Held in a ref so the interval always sees the latest routines and pane statuses.
+  const schedulerState = useRef({ routines, statuses: paneStatuses });
+  schedulerState.current = { routines, statuses: paneStatuses };
   useEffect(() => {
     const timer = setInterval(() => {
-      const { routines: current, running } = schedulerState.current;
-      if (running) return;
+      const { routines: current, statuses } = schedulerState.current;
+      const busy = Object.values(statuses).some((s) => s.automation === "running" || s.automation === "paused");
+      if (busy) return;
       const due = nextDueRoutine(current, Date.now());
       if (!due) return;
-      // Live guard: if a run started since the last state sync (e.g. the user
-      // just sent a task), do not start the routine and do not mark it ran, so
-      // it stays due and fires on the next free tick instead of silently being
-      // skipped. No await separates this check from run(), so it is atomic.
-      if (runner.isBusy()) return;
       setRoutines(markRoutineRan(due.id, Date.now()));
-      void runner.run(due.task, model, due.name);
+      runTaskInNewPane(due.task, due.name);
     }, 30_000);
     return () => clearInterval(timer);
-    // runner.run and model are stable enough; the ref carries live state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Usage shown in the header. It starts from the entitlement and updates to the
-  // latest value reported by a completed chat turn (done frame usage).
-  const usage = usedTokens ?? entitlement.usedMicrodollars;
+  // Usage shown in the header, from the entitlement (refreshed each time a pane's
+  // run finishes).
+  const usage = entitlement.usedMicrodollars;
   const percent = Math.min(100, ((usage + entitlement.reservedMicrodollars) / entitlement.budgetMicrodollars) * 100 || 0);
   // The daily rolling-window meter, shown as its own bar next to the monthly one so
   // the two are never confused. Percent of the daily cap used in the last 24 hours.
@@ -635,6 +582,18 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
     }
   }
 
+  // The conversation on screen (the active pane), for the header title and the
+  // active row highlight.
+  const activePane = panes.find((pane) => pane.key === activeKey);
+  const activeConversationId = paneStatuses[activeKey]?.conversationId ?? activePane?.conversationId;
+  // The live status of a saved conversation (matched by id), so its sidebar row can
+  // show a running bar, a pause glyph (a backgrounded computer task), or a purple
+  // dot (finished while you were elsewhere).
+  function statusForConversation(id: string): PaneStatus | undefined {
+    const pane = panes.find((entry) => entry.conversationId === id);
+    return pane ? paneStatuses[pane.key] : undefined;
+  }
+
   // One Recents row: opens on click, shows a three-dots menu (Rename, Pin/Unpin)
   // like Claude Code, and swaps to an inline text field while renaming.
   function renderRecent(item: ConversationSummary) {
@@ -656,10 +615,14 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
         </div>
       );
     }
+    const st = statusForConversation(item.id);
+    const running = Boolean(st?.streaming) || st?.automation === "running";
+    const paused = st?.automation === "paused";
+    const unread = Boolean(st?.unread) && item.id !== activeConversationId;
     return (
       <div
         key={item.id}
-        className={`recent-item${item.id === conversationId ? " recent-active" : ""}${recentMenuId === item.id ? " recent-menu-open" : ""}`}
+        className={`recent-item${item.id === activeConversationId ? " recent-active" : ""}${running ? " is-running" : ""}${paused ? " is-paused" : ""}${unread ? " is-unread" : ""}${recentMenuId === item.id ? " recent-menu-open" : ""}`}
       >
         <button className="recent-open" onClick={() => void openConversation(item.id)} title={item.title}>
           {item.pinnedAtMs != null && (
@@ -668,6 +631,13 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
             </svg>
           )}
           <span className="recent-title">{item.title || "New conversation"}</span>
+          {paused ? (
+            <span className="recent-status recent-pause" aria-label="Paused, open to resume" title="Paused, open to resume">
+              <svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
+            </span>
+          ) : unread ? (
+            <span className="recent-status recent-dot" aria-label="Finished" title="Finished" />
+          ) : null}
         </button>
         <button
           className="recent-menu-trigger"
@@ -702,52 +672,22 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
     return off;
   }, []);
 
-  // Keep the runner's auto-approve in sync with the persisted setting.
-  useEffect(() => {
-    runner.setAutoApprove(alwaysAllow);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alwaysAllow]);
-
-  // Keep the runner's per-category permissions in sync, so turning a category off
-  // makes it ask again even while "Always allow" is on.
-  useEffect(() => {
-    runner.setPermissions(permissions);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [permissions]);
-
-  // Refresh Recents after a conversation finishes its first turn so a brand new
-  // chat appears in the sidebar.
-  useEffect(() => {
-    if (conversationId) void refreshRecents();
-  }, [conversationId]);
-
   function startNewChat() {
-    chat.reset();
-    runner.clear();
-    setAutomationTask("");
-    setAutomationMode(false);
+    // Reuse an open blank pane if one exists; otherwise add a fresh pane and prune
+    // any abandoned empty ones. Existing panes keep running in the background.
+    const blank = panes.find((pane) => {
+      const st = paneStatuses[pane.key];
+      return !pane.conversationId && !st?.hasConversation && !st?.busy;
+    });
+    if (blank) {
+      setActiveKey(blank.key);
+    } else {
+      const key = localId();
+      setPanes((list) => [{ key }, ...prunePanes(list)]);
+      setActiveKey(key);
+    }
     setView("chat");
     setAccountOpen(false);
-  }
-
-  // Run an automation inline in the chat (from a typed task or an example chip).
-  // The task auto-runs as soon as it is recognised; there is no separate "run"
-  // button. The shared runner drives the steps and the chat shows them in place.
-  // Running a task puts the chat in automation mode so follow-ups can re-run it.
-  function runAutomation(task: string, label = "Task") {
-    const trimmed = task.trim();
-    if (trimmed.length < 3 || runner.isBusy()) return;
-    setView("chat");
-    setAccountOpen(false);
-    setAutomationTask(trimmed);
-    setAutomationMode(true);
-    void runner.run(trimmed, model, label);
-  }
-
-  // Run the current task again unchanged (the "Run again" button on a finished
-  // run), so the user can retry after fixing something on screen.
-  function rerunAutomation() {
-    if (automationTask.trim().length >= 3) runAutomation(automationTask, "Task");
   }
 
   // Carry a task into the Routines form so it can be named and scheduled.
@@ -757,75 +697,31 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
     setAccountOpen(false);
   }
 
-  // Save whatever the current chat is doing as a routine: prefer the automation
-  // task in progress, otherwise the most recent thing the user asked. The
-  // Routines form then lets the user name and schedule it.
-  function saveCurrentAsRoutine() {
-    const lastUser = [...chat.turns].reverse().find((turn) => turn.role === "user");
-    const task = (automationTask || lastUser?.text || "").trim();
-    if (task.length < 3) return;
-    saveAsRoutine(task);
-  }
-
-  // Load a saved conversation into the transcript.
+  // Open a saved conversation. If it is already open in a pane, focus it (its
+  // background run, if any, resumes); otherwise load its transcript into a new pane.
   async function openConversation(id: string) {
+    const open = panes.find((pane) => pane.conversationId === id);
+    if (open) {
+      setActiveKey(open.key);
+      setView("chat");
+      setAccountOpen(false);
+      return;
+    }
     if (loadingId) return;
     setLoadingId(id);
     setView("chat");
     setAccountOpen(false);
-    runner.clear();
-    setAutomationTask("");
-    setAutomationMode(false);
     try {
       const detail = await window.workcrew.conversations.get(id);
-      chat.reset(turnsFromMessages(detail.messages), detail.id);
+      const key = `conv:${id}`;
+      knownConvIds.current.add(id);
+      setPanes((list) => [{ key, conversationId: id, initialTurns: turnsFromMessages(detail.messages) }, ...prunePanes(list)]);
+      setActiveKey(key);
     } catch {
-      // Leave the current transcript in place if the load fails.
+      // Leave the current panes in place if the load fails.
     } finally {
       setLoadingId(null);
     }
-  }
-
-  function send(text: string, attachments: AttachmentRef[], localPaths: string[] = []) {
-    // A request to be handed a file ("make me an excel file", "give me a CSV")
-    // is always a chat request: WorkCrew generates the file and shows a Download
-    // button. It must never seize the computer, so it is checked first and wins
-    // over automation, even while this chat is in automation mode.
-    const fileRequest = looksLikeFileRequest(text);
-    if (!runner.running && !fileRequest) {
-      // Files attached with a request to act on them (for example "crop this
-      // image" or "clean up this spreadsheet") run as an automation that works on
-      // the real files on the computer, by passing their local paths to the model
-      // so it can edit the originals with its tools rather than only the copy.
-      if (localPaths.length > 0 && looksLikeAutomation(text)) {
-        const list = localPaths.map((path) => `"${path}"`).join(", ");
-        runAutomation(`${text}\n\nWork on these local files directly on the computer: ${list}`, "Task");
-        return;
-      }
-      if (attachments.length === 0) {
-        // While iterating on a task in this chat, a follow-up that is not a plain
-        // question is treated as a correction: re-run the task with the fix added
-        // so the user can keep refining and re-running before saving a routine.
-        if (automationMode && !isQuestionLike(text)) {
-          const combined = `${automationTask}\n\nThe last attempt was not right. Correction from the user: ${text}\nPlease do the whole task again with this fix.`;
-          runAutomation(combined, "Task");
-          return;
-        }
-        // A fresh request to act on the computer starts an inline automation.
-        if (!automationMode && looksLikeAutomation(text)) {
-          runAutomation(text, "Task");
-          return;
-        }
-      }
-    }
-    // Otherwise answer in chat. A normal chat message (with no in-flight run)
-    // clears any finished automation activity so the conversation stays tidy.
-    if (!runner.running) {
-      runner.clear();
-      setAutomationTask("");
-      setAutomationMode(false);
-    }
-    void chat.send({ text, model, attachments });
   }
 
   async function handleUpgrade() {
@@ -846,7 +742,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   const planLabel = entitlement.plan ? PLAN_CATALOG[entitlement.plan].name : "No plan";
   // The header shows the current conversation's auto-generated title, and stays
   // empty on a new chat (no duplicate brand logo).
-  const chatTitle = conversationId ? (recents.find((item) => item.id === conversationId)?.title ?? "") : "";
+  const chatTitle = activeConversationId ? (recents.find((item) => item.id === activeConversationId)?.title ?? "") : "";
 
   // The app checks for updates on its own when it opens (see the effect above),
   // downloads any new version in the background, and only then surfaces a single
@@ -995,23 +891,29 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
             canUpgrade={!isUltra}
           />
         )}
-        <ChatView
-          turns={chat.turns}
-          streaming={chat.streaming}
-          model={model}
-          onModelChange={setModel}
-          onSend={send}
-          onStop={chat.stop}
-          onAutomate={(task) => runAutomation(task, "Task")}
-          onRecord={() => setRecorderOpen(true)}
-          runner={runner}
-          automationTask={automationTask}
-          alwaysAllow={alwaysAllow}
-          onAlwaysAllowChange={setAlwaysAllow}
-          onSaveRoutine={saveCurrentAsRoutine}
-          onRerun={rerunAutomation}
-          composerSeed={composerSeed}
-        />
+        <div className="panes">
+          {panes.map((pane) => (
+            <div key={pane.key} className={`pane${pane.key === activeKey ? " pane-active" : ""}`}>
+              <ConversationPane
+                paneKey={pane.key}
+                active={pane.key === activeKey}
+                model={model}
+                onModelChange={setModel}
+                alwaysAllow={alwaysAllow}
+                onAlwaysAllowChange={setAlwaysAllow}
+                permissions={permissions}
+                initialTurns={pane.initialTurns}
+                initialConversationId={pane.conversationId}
+                initialAutomation={pane.initialAutomation}
+                composerSeed={pane.key === activeKey ? composerSeed : undefined}
+                onStatus={handlePaneStatus}
+                onRefreshEntitlement={onRefreshEntitlement}
+                onSaveRoutine={saveAsRoutine}
+                onRecord={() => setRecorderOpen(true)}
+              />
+            </div>
+          ))}
+        </div>
         <footer>WorkCrew can make mistakes. Check important details.</footer>
       </section>
 
@@ -1023,17 +925,9 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
         />
       )}
       {view === "routines" && (
-        <RoutinesPanel runner={runner} model={model} routines={routines} initialTask={routineSeed} onChange={setRoutines} onClose={() => setView("chat")} />
+        <RoutinesPanel onRun={(task, label) => runTaskInNewPane(task, label)} busy={machineBusy} routines={routines} initialTask={routineSeed} onChange={setRoutines} onClose={() => setView("chat")} />
       )}
       {view === "settings" && <SettingsPanel info={info} onClose={() => setView("chat")} />}
-      {runner.pending && (
-        <ApprovalModal
-          action={runner.pending.action}
-          label={runner.pending.label}
-          onDecide={runner.decide}
-          onAllowAlways={() => { setAlwaysAllow(true); runner.setAutoApprove(true); runner.decide(true); }}
-        />
-      )}
       {accountOpen && (
         <AccountDialog
           entitlement={entitlement}
