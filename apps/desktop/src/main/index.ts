@@ -28,6 +28,7 @@ import { transcribeSamples } from "./transcription.js";
 import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
 import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
 import { extractOfficeText } from "./office.js";
+import { extractPdfText, looksLikeText } from "./pdf-text.js";
 import { EXPORT_EXTENSIONS, generateExport, sanitizeExportName, type ExportExtension } from "./file-export.js";
 import { runShellCommand } from "./shell-cli.js";
 import { WindowsAgent } from "./windows-agent.js";
@@ -184,9 +185,15 @@ const pickedFilesSchema = z.array(z.object({
   size: z.number().int().min(0)
 }).strict()).max(20);
 
-// Largest file the desktop will read and upload, mirroring the backend limit so
-// an oversized file is rejected with a clear message before any network call.
+// Largest set of bytes the desktop will upload to the backend, mirroring the
+// backend limit. This bounds only the paths that send bytes (images, and scanned
+// PDFs with no text layer); documents read locally send just their text.
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+// Largest file the desktop will read from disk at all. Higher than the upload
+// limit because a big Word/Excel/PDF still reduces to a small amount of text; the
+// cap only guards against loading an absurd file into memory.
+const MAX_READ_BYTES = 64 * 1024 * 1024;
 
 // A small extension to mime-type guess. The backend classifies primarily by
 // extension, so this is a friendly hint rather than the source of truth.
@@ -519,19 +526,46 @@ function registerIpc(): void {
         if (!stat || !stat.isFile()) {
           throw new Error(`${file.name} could not be read.`);
         }
-        const buffer = await fs.readFile(resolved);
-        if (buffer.byteLength > MAX_UPLOAD_BYTES) {
-          throw new Error(`${file.name} is too large. The limit is 10 MB per file.`);
+        if (stat.size > MAX_READ_BYTES) {
+          throw new Error(`${file.name} is too large. The limit is 64 MB per file.`);
         }
+        const buffer = await fs.readFile(resolved);
         const ext = (file.name.split(".").pop() ?? "").toLowerCase();
+        const asText = (name: string, text: string) => ({
+          filename: name,
+          mimeType: "text/plain",
+          base64: Buffer.from(text, "utf8").toString("base64")
+        });
+        const asBytes = () => {
+          if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+            throw new Error(`${file.name} is too large. The limit is 10 MB per file.`);
+          }
+          return { filename: file.name, mimeType: guessMimeType(file.name), base64: buffer.toString("base64") };
+        };
         let body: { filename: string; mimeType: string; base64: string };
         if (OFFICE_EXTENSIONS.has(ext)) {
+          // Word/Excel/PowerPoint: read locally, send only the text (no upload cap,
+          // since a large document still reduces to a small amount of text).
           let text = "";
           try { text = await extractOfficeText(ext, buffer); } catch { text = ""; }
           if (!text.trim()) throw new Error(`${file.name} could not be read, or it has no text.`);
-          body = { filename: file.name, mimeType: "text/plain", base64: Buffer.from(text, "utf8").toString("base64") };
+          body = asText(file.name, text);
+        } else if (ext === "pdf") {
+          // A PDF is read on the machine too: send its text when it has a text layer
+          // (instant, no upload, and not bound by the 10 MB cap), and fall back to
+          // sending the bytes only for a scan with no readable text so the model can
+          // still read it natively.
+          let text = "";
+          try { text = await extractPdfText(buffer); } catch { text = ""; }
+          if (looksLikeText(text)) {
+            // Name it .txt so the backend treats the extracted text as text instead
+            // of routing it back through its whole-file PDF path.
+            body = asText(`${file.name.replace(/\.pdf$/i, "")}.txt`, text);
+          } else {
+            body = asBytes();
+          }
         } else {
-          body = { filename: file.name, mimeType: guessMimeType(file.name), base64: buffer.toString("base64") };
+          body = asBytes();
         }
         const ref = await api.request("/v1/attachments", { method: "POST", body });
         refs.push(ref);

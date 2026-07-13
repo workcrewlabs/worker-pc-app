@@ -20,6 +20,7 @@
     "dotenv": "latest",
     "electron-updater": "^6.8.9",
     "jszip": "^3.10.1",
+    "pdfjs-dist": "3.11.174",
     "playwright-core": "^1.61.0",
     "react": "latest",
     "react-dom": "latest",
@@ -49,7 +50,8 @@
     "asarUnpack": [
       "node_modules/playwright-core/**/*",
       "node_modules/onnxruntime-node/**/*",
-      "node_modules/@huggingface/transformers/**/*"
+      "node_modules/@huggingface/transformers/**/*",
+      "node_modules/pdfjs-dist/**/*"
     ],
     "extraResources": [
       {
