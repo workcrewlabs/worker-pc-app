@@ -167,10 +167,17 @@ function numericCell(value: string): { value: string; style: number } | null {
 }
 
 /**
- * Build a real, polished .xlsx workbook from a grid of cells: a bold frozen header
- * row, columns sized to their content, and currency/thousands/percent/date values
- * written as real numbers with the matching display format (not left-aligned
- * text). Strings go through the shared-strings table. Returns the packaged bytes.
+ * Build a real, polished .xlsx workbook from a grid of cells. Produces a colored
+ * bold frozen header, columns sized to their content, and currency / thousands /
+ * percent / date values written as real numbers with the matching display format.
+ * Formula cells (a leading "=") are written as real Excel formulas and inherit the
+ * number format of their column, which is learned from the column's typed values,
+ * from its header (a "%" header makes the whole column a percentage), or, for a
+ * column that is only formulas, from the currency of the cells its formulas
+ * reference (so a "Total" column that only sums money columns is money too). A
+ * first row that is a single cell above a multi-column table becomes a merged
+ * title, and a row whose first cell is "Total" or "Grand Total" is emphasized.
+ * Strings go through the shared-strings table. Returns the packaged bytes.
  */
 export async function buildXlsx(rows: string[][]): Promise<Buffer> {
   // Shared strings, de-duplicated in first-seen order.
@@ -187,45 +194,138 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
     return index;
   };
 
+  const nonEmpty = (cells: string[] | undefined): number =>
+    (cells ?? []).filter((c) => c.trim() !== "").length;
+
+  // A single-cell first row sitting above a real (multi-column) table is a title,
+  // not a header. When present it occupies row 1, the header moves to row 2, and
+  // the first data row is row 3 (the model is told to number its formulas to match).
+  const hasTitle = rows.length >= 3 && nonEmpty(rows[0]) === 1 && nonEmpty(rows[1]) >= 2;
+  const headerRowIndex = hasTitle ? 1 : 0;
+  const firstDataRowIndex = headerRowIndex + 1;
+  const hasHeaderRow = rows.length > firstDataRowIndex;
+
+  // Column count across the header and data rows (the title spans them, so it is
+  // excluded from the count and from the column widths).
+  let colCount = 0;
+  rows.forEach((cells, rowIndex) => {
+    if (hasTitle && rowIndex === 0) return;
+    colCount = Math.max(colCount, cells.length);
+  });
+
+  // Convert spreadsheet column letters to a zero-based index (A -> 0, AA -> 26).
+  const columnLetterToIndex = (letters: string): number => {
+    let n = 0;
+    for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+    return n - 1;
+  };
+
+  // Per-column number-format style (2 currency, 4 thousands, 5 percent), used both
+  // for the column's own typed values and for any formula written into it. Learned
+  // in three steps, most explicit first, so an all-formula column still formats.
+  const columnNumericStyle: number[] = [];
+  const headerRow = rows[headerRowIndex] ?? [];
+  // 1) A header naming a percentage makes the whole column a percentage, so a ratio
+  //    formula like =B3/B8 shows as 42.8% instead of a bare 0.428.
+  const PERCENT_HEADER = /%|\bpercent\b|\bpct\b/i;
+  headerRow.forEach((text, colIndex) => {
+    if (PERCENT_HEADER.test(text)) columnNumericStyle[colIndex] = 5;
+  });
+  // 2) A typed currency / thousands / percent value fixes the column's format.
+  for (let r = firstDataRowIndex; r < rows.length; r += 1) {
+    (rows[r] ?? []).forEach((value, colIndex) => {
+      if (columnNumericStyle[colIndex]) return;
+      const v = value.trim();
+      if (v === "" || v.startsWith("=")) return;
+      const typed = numericCell(v);
+      if (typed && typed.style !== 3) columnNumericStyle[colIndex] = typed.style;
+    });
+  }
+  // 3) A column that is only formulas takes the currency of the cells it references,
+  //    so a "Total" column that sums money columns shows as money. Skipped when a
+  //    referenced column is a percentage (the ratio is ambiguous) or the column
+  //    already has a format from step 1 or 2.
+  for (let c = 0; c < colCount; c += 1) {
+    if (columnNumericStyle[c]) continue;
+    let sawFormula = false;
+    let sawCurrency = false;
+    let conflict = false;
+    for (let r = firstDataRowIndex; r < rows.length; r += 1) {
+      const value = ((rows[r] ?? [])[c] ?? "").trim();
+      if (!value.startsWith("=")) continue;
+      sawFormula = true;
+      const refs = value.match(/\$?[A-Z]{1,3}\$?\d+/g) ?? [];
+      for (const refText of refs) {
+        const letters = /[A-Z]{1,3}/.exec(refText)?.[0] ?? "";
+        const refCol = columnLetterToIndex(letters);
+        if (refCol === c) continue; // ignore the column referencing itself
+        const refStyle = columnNumericStyle[refCol];
+        if (refStyle === 2) sawCurrency = true;
+        else if (refStyle === 5) conflict = true;
+      }
+    }
+    if (sawFormula && sawCurrency && !conflict) columnNumericStyle[c] = 2;
+  }
+
+  // The emphasized (bold, shaded) style for a totals-row cell that carries a given
+  // base number format; dates keep their own format rather than being shaded.
+  const totalVariant = (base: number): number => {
+    if (base === 2) return 7;
+    if (base === 4) return 8;
+    if (base === 5) return 9;
+    if (base === 3) return 3;
+    return 10;
+  };
+  const TOTAL_LABEL = /^(grand\s+)?totals?$/i;
+
   // Per-column display width, from the longest content seen (header included),
-  // clamped so one long cell cannot blow a column out.
+  // clamped so one long cell cannot blow a column out. The title is excluded.
   const columnWidths: number[] = [];
   const noteWidth = (colIndex: number, text: string): void => {
     const width = Math.min(48, Math.max(9, text.length + 2.5));
     if (width > (columnWidths[colIndex] ?? 0)) columnWidths[colIndex] = width;
   };
 
-  // The display style seen for typed numbers in each column, so a formula added
-  // in that column (a total under a currency column, say) inherits its format
-  // and shows as currency rather than a bare number.
-  const columnNumericStyle: number[] = [];
-
   const sheetRows: string[] = [];
   rows.forEach((cells, rowIndex) => {
-    const isHeader = rowIndex === 0 && rows.length > 1;
+    const isTitle = hasTitle && rowIndex === 0;
+    const isHeader = rowIndex === headerRowIndex && hasHeaderRow;
+    // A totals row is one whose first non-empty cell reads exactly Total/Totals/
+    // Grand Total; its numbers stay currency/percent but turn bold and shaded.
+    const firstText = (cells.find((c) => c.trim() !== "") ?? "").trim();
+    const isTotal = !isTitle && !isHeader && TOTAL_LABEL.test(firstText);
     const cellXml: string[] = [];
     cells.forEach((value, colIndex) => {
       const ref = `${columnName(colIndex)}${rowIndex + 1}`;
-      if (value === "") return; // empty cell: omit entirely
+      if (value.trim() === "") return; // empty cell: omit entirely
+      if (isTitle) {
+        // The title spans the table (merged below); do not let it widen column A.
+        cellXml.push(`<c r="${ref}" s="11" t="s"><v>${internString(value)}</v></c>`);
+        return;
+      }
       noteWidth(colIndex, value);
       if (isHeader) {
-        // The first row is the column headers: always text, always bold (style 1).
+        // The header row is always text, always the colored bold style (1).
         cellXml.push(`<c r="${ref}" s="1" t="s"><v>${internString(value)}</v></c>`);
         return;
       }
+      const colStyle = columnNumericStyle[colIndex] ?? 0;
       // A leading "=" marks a real Excel formula (=SUM(B2:B10), =B2*C2). Excel
       // computes it on open, so the model lays out the structure and lets the
       // spreadsheet do the arithmetic, instead of typing a number it worked out
       // in its head (the main source of wrong AI spreadsheets). The formula
-      // inherits the column's number format when one is known.
+      // inherits the column's number format, emphasized on a totals row.
       if (value.length > 1 && value.startsWith("=")) {
-        const style = columnNumericStyle[colIndex];
+        const style = isTotal ? totalVariant(colStyle) : colStyle;
         const styleAttr = style ? ` s="${style}"` : "";
         cellXml.push(`<c r="${ref}"${styleAttr}><f>${escapeXml(value.slice(1).trim())}</f></c>`);
         return;
       }
       if (isNumeric(value)) {
-        cellXml.push(`<c r="${ref}"><v>${value}</v></c>`);
+        // A plain number inherits its column's number format (and totals shading).
+        const style = isTotal ? totalVariant(colStyle) : colStyle;
+        const styleAttr = style ? ` s="${style}"` : "";
+        cellXml.push(`<c r="${ref}"${styleAttr}><v>${value}</v></c>`);
         return;
       }
       // Currency, grouped numbers, percentages, and dates become real typed
@@ -233,10 +333,11 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
       // like a hand-made spreadsheet instead of reading as plain text.
       const typed = numericCell(value);
       if (typed) {
-        if (typed.style !== 3) columnNumericStyle[colIndex] = typed.style; // remember money/percent/thousands, not dates
-        cellXml.push(`<c r="${ref}" s="${typed.style}"><v>${typed.value}</v></c>`);
+        const style = isTotal ? totalVariant(typed.style) : typed.style;
+        cellXml.push(`<c r="${ref}" s="${style}"><v>${typed.value}</v></c>`);
       } else {
-        cellXml.push(`<c r="${ref}" t="s"><v>${internString(value)}</v></c>`);
+        const styleAttr = isTotal ? ` s="6"` : "";
+        cellXml.push(`<c r="${ref}"${styleAttr} t="s"><v>${internString(value)}</v></c>`);
       }
     });
     sheetRows.push(`<row r="${rowIndex + 1}">${cellXml.join("")}</row>`);
@@ -269,35 +370,59 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
     `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>` +
     `<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
     `</Relationships>`;
-  // Freeze the header row (when there is one) and size each column to fit. OOXML
-  // requires child order: sheetViews, then cols, then sheetData.
-  const hasHeader = rows.length > 1;
-  const frozenPane = hasHeader
-    ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" state="frozen" activePane="bottomLeft"/></sheetView></sheetViews>`
+  // Freeze the rows above the data (the header, plus the title when present) and
+  // size each column to fit. OOXML requires child order: sheetViews, cols,
+  // sheetData, then mergeCells (used to span the title across the table).
+  const frozenTop = hasTitle ? 2 : 1;
+  const frozenPane = hasHeaderRow
+    ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="${frozenTop}" topLeftCell="A${frozenTop + 1}" state="frozen" activePane="bottomLeft"/></sheetView></sheetViews>`
     : "";
   const cols = columnWidths.length > 0
-    ? `<cols>${columnWidths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join("")}</cols>`
+    ? `<cols>${columnWidths
+        .map((width, index) => (width ? `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>` : ""))
+        .join("")}</cols>`
+    : "";
+  const titleMerge = hasTitle && colCount > 1
+    ? `<mergeCells count="1"><mergeCell ref="A1:${columnName(colCount - 1)}1"/></mergeCells>`
     : "";
   const sheet =
     `${header}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
-    `${frozenPane}${cols}<sheetData>${sheetRows.join("")}</sheetData></worksheet>`;
-  // The style table behind the s= indexes used above: 0 default, 1 bold header,
-  // 2 currency, 3 date, 4 thousands-grouped number, 5 percent. Number formats use
-  // Excel's builtin ids so every spreadsheet app renders them natively.
+    `${frozenPane}${cols}<sheetData>${sheetRows.join("")}</sheetData>${titleMerge}</worksheet>`;
+  // The style table behind the s= indexes used above. Base cells: 0 default,
+  // 1 header (white bold on navy), 2 currency, 3 date, 4 thousands-grouped number,
+  // 5 percent. Totals-row cells (bold on a light-blue fill): 6 text, 7 currency,
+  // 8 thousands, 9 percent, 10 plain number. 11 title (large bold). Number formats
+  // use Excel's builtin ids (plus one custom currency) so every app renders them.
   const styles =
     `${header}<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
     `<numFmts count="1"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00"/></numFmts>` +
-    `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>` +
-    `<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>` +
+    `<fonts count="4">` +
+    `<font><sz val="11"/><name val="Calibri"/></font>` +
+    `<font><b/><sz val="11"/><name val="Calibri"/></font>` +
+    `<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>` +
+    `<font><b/><sz val="14"/><name val="Calibri"/></font>` +
+    `</fonts>` +
+    `<fills count="4">` +
+    `<fill><patternFill patternType="none"/></fill>` +
+    `<fill><patternFill patternType="gray125"/></fill>` +
+    `<fill><patternFill patternType="solid"><fgColor rgb="FF1F4E79"/></patternFill></fill>` +
+    `<fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/></patternFill></fill>` +
+    `</fills>` +
     `<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>` +
     `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
-    `<cellXfs count="6">` +
+    `<cellXfs count="12">` +
     `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>` +
-    `<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>` +
+    `<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>` +
     `<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
     `<xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
     `<xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
     `<xf numFmtId="10" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
+    `<xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>` +
+    `<xf numFmtId="164" fontId="1" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/>` +
+    `<xf numFmtId="3" fontId="1" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/>` +
+    `<xf numFmtId="10" fontId="1" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/>` +
+    `<xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>` +
+    `<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>` +
     `</cellXfs></styleSheet>`;
   const sharedStrings =
     `${header}<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
