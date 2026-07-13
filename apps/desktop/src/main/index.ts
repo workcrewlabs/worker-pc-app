@@ -28,6 +28,7 @@ import { transcribeSamples } from "./transcription.js";
 import { checkForUpdates, installUpdate, startupUpdateCheck } from "./updater.js";
 import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
 import { extractOfficeText } from "./office.js";
+import { extractPdfText, looksLikeText } from "./pdf-text.js";
 import { EXPORT_EXTENSIONS, generateExport, sanitizeExportName, type ExportExtension } from "./file-export.js";
 import { runShellCommand } from "./shell-cli.js";
 import { WindowsAgent } from "./windows-agent.js";
@@ -184,9 +185,15 @@ const pickedFilesSchema = z.array(z.object({
   size: z.number().int().min(0)
 }).strict()).max(20);
 
-// Largest file the desktop will read and upload, mirroring the backend limit so
-// an oversized file is rejected with a clear message before any network call.
+// Largest set of bytes the desktop will upload to the backend, mirroring the
+// backend limit. This bounds only the paths that send bytes (images, and scanned
+// PDFs with no text layer); documents read locally send just their text.
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+// Largest file the desktop will read from disk at all. Higher than the upload
+// limit because a big Word/Excel/PDF still reduces to a small amount of text; the
+// cap only guards against loading an absurd file into memory.
+const MAX_READ_BYTES = 64 * 1024 * 1024;
 
 // A small extension to mime-type guess. The backend classifies primarily by
 // extension, so this is a friendly hint rather than the source of truth.
@@ -519,19 +526,46 @@ function registerIpc(): void {
         if (!stat || !stat.isFile()) {
           throw new Error(`${file.name} could not be read.`);
         }
-        const buffer = await fs.readFile(resolved);
-        if (buffer.byteLength > MAX_UPLOAD_BYTES) {
-          throw new Error(`${file.name} is too large. The limit is 10 MB per file.`);
+        if (stat.size > MAX_READ_BYTES) {
+          throw new Error(`${file.name} is too large. The limit is 64 MB per file.`);
         }
+        const buffer = await fs.readFile(resolved);
         const ext = (file.name.split(".").pop() ?? "").toLowerCase();
+        const asText = (name: string, text: string) => ({
+          filename: name,
+          mimeType: "text/plain",
+          base64: Buffer.from(text, "utf8").toString("base64")
+        });
+        const asBytes = () => {
+          if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+            throw new Error(`${file.name} is too large. The limit is 10 MB per file.`);
+          }
+          return { filename: file.name, mimeType: guessMimeType(file.name), base64: buffer.toString("base64") };
+        };
         let body: { filename: string; mimeType: string; base64: string };
         if (OFFICE_EXTENSIONS.has(ext)) {
+          // Word/Excel/PowerPoint: read locally, send only the text (no upload cap,
+          // since a large document still reduces to a small amount of text).
           let text = "";
           try { text = await extractOfficeText(ext, buffer); } catch { text = ""; }
           if (!text.trim()) throw new Error(`${file.name} could not be read, or it has no text.`);
-          body = { filename: file.name, mimeType: "text/plain", base64: Buffer.from(text, "utf8").toString("base64") };
+          body = asText(file.name, text);
+        } else if (ext === "pdf") {
+          // A PDF is read on the machine too: send its text when it has a text layer
+          // (instant, no upload, and not bound by the 10 MB cap), and fall back to
+          // sending the bytes only for a scan with no readable text so the model can
+          // still read it natively.
+          let text = "";
+          try { text = await extractPdfText(buffer); } catch { text = ""; }
+          if (looksLikeText(text)) {
+            // Name it .txt so the backend treats the extracted text as text instead
+            // of routing it back through its whole-file PDF path.
+            body = asText(`${file.name.replace(/\.pdf$/i, "")}.txt`, text);
+          } else {
+            body = asBytes();
+          }
         } else {
-          body = { filename: file.name, mimeType: guessMimeType(file.name), base64: buffer.toString("base64") };
+          body = asBytes();
         }
         const ref = await api.request("/v1/attachments", { method: "POST", body });
         refs.push(ref);
@@ -698,11 +732,17 @@ function registerIpc(): void {
     const events: RecordedEvent[] = [];
     if (target === "windows") {
       // The Windows helper returns clicks as { kind: "click", window, control,
-      // controlType } and typing as { kind: "type", window, text }. Normalize each
-      // into a descriptive event, clamping to the contract limits so a long name
-      // is kept (truncated) rather than failing validation and dropping the event.
+      // controlType, screenshotPath? } and typing as { kind: "type", window,
+      // text }. Normalize each into a descriptive event, clamping to the contract
+      // limits so a long name is kept (truncated) rather than failing validation
+      // and dropping the event. The first few clicks carry a small screenshot so
+      // the summarizing model can SEE the button that was pressed; the temp file
+      // is read once, attached as base64, and deleted.
+      const MAX_ATTACHED_SHOTS = 6;
+      let attachedShots = 0;
+      const fs = await import("node:fs/promises");
       for (const item of await windowsAgent.recordStop()) {
-        const it = item as { kind?: unknown; window?: unknown; control?: unknown; controlType?: unknown; text?: unknown };
+        const it = item as { kind?: unknown; window?: unknown; control?: unknown; controlType?: unknown; text?: unknown; screenshotPath?: unknown };
         const window = typeof it.window === "string" ? it.window.slice(0, 300) : undefined;
         if (it.kind === "type") {
           const parsed = recordedEventSchema.safeParse({
@@ -713,11 +753,36 @@ function registerIpc(): void {
           if (parsed.success && parsed.data.value) events.push(parsed.data);
           continue;
         }
+        const control = typeof it.control === "string" ? it.control.slice(0, 300) : undefined;
+        // The helper reads each button's text locally from the Windows
+        // accessibility tree for free. A screenshot is only attached, for the AI
+        // to read as a last resort, when that local read produced no usable label
+        // (a custom-drawn or icon-only button). So a normal recording carries no
+        // images and summarizes as a cheap text-only call; only the rare
+        // unreadable click costs a vision read.
+        const unlabeled = !control || control === "(unlabeled control)";
+        let screenshot: string | undefined;
+        if (typeof it.screenshotPath === "string" && it.screenshotPath) {
+          try {
+            if (unlabeled && attachedShots < MAX_ATTACHED_SHOTS) {
+              const data = (await fs.readFile(it.screenshotPath)).toString("base64");
+              // The contract bounds each image; skip an unexpectedly large one.
+              if (data.length > 0 && data.length <= 90_000) {
+                screenshot = data;
+                attachedShots += 1;
+              }
+            }
+          } catch {
+            // A missing or unreadable crop never drops the click itself.
+          }
+          await fs.rm(it.screenshotPath, { force: true }).catch(() => {});
+        }
         const parsed = recordedEventSchema.safeParse({
           kind: "click",
           window,
-          target: typeof it.control === "string" ? it.control.slice(0, 300) : undefined,
-          role: typeof it.controlType === "string" && it.controlType ? it.controlType.slice(0, 80) : undefined
+          target: control,
+          role: typeof it.controlType === "string" && it.controlType ? it.controlType.slice(0, 80) : undefined,
+          ...(screenshot ? { screenshot } : {})
         });
         if (parsed.success && parsed.data.target) events.push(parsed.data);
       }
@@ -734,7 +799,16 @@ function registerIpc(): void {
   // Turn a recorded trace into one reusable instruction via the backend model.
   ipcMain.handle("recorder:summarize", async (_event, payload: unknown) => {
     const body = summarizeRecordingRequestSchema.parse(payload);
-    return api.request<{ task: string }>("/v1/recordings/summarize", { method: "POST", body });
+    try {
+      return await api.request<{ task: string }>("/v1/recordings/summarize", { method: "POST", body });
+    } catch (error) {
+      // A backend that predates click screenshots rejects the unknown field.
+      // Retry once without them so recording keeps working across versions.
+      const hadScreenshots = body.events.some((event) => "screenshot" in event && event.screenshot);
+      if (!hadScreenshots) throw error;
+      const stripped = { ...body, events: body.events.map(({ screenshot: _screenshot, ...rest }) => rest) };
+      return api.request<{ task: string }>("/v1/recordings/summarize", { method: "POST", body: stripped });
+    }
   });
 }
 

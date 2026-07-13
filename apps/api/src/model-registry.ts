@@ -100,10 +100,17 @@ export function routeAutomationTier(opts: { mode: ModelMode; escalated: boolean;
 
 /**
  * Pick the engine for a chat turn. Economy mode runs chats on the cost-efficient
- * engine; Privacy mode (or an unconfigured engine) uses the normal capability and
- * length aware Claude routing.
+ * engine to keep everyday cost low, with ONE deliberate exception: when the user
+ * picks High effort (opus), that turn goes to top-quality Claude. This is the
+ * on-demand escape for hard work such as a complex spreadsheet, where the cheap
+ * engine is not good enough, without making ordinary chat expensive. It only
+ * applies when a Claude key is configured; otherwise the turn stays on the cheap
+ * engine rather than failing. Privacy mode uses the normal Claude routing.
  */
 export function routeChatTier(opts: { mode: ModelMode; requested: ModelTier; task: string }): ConcreteModelTier {
-  if (opts.mode === "economy" && economyEngineAvailable()) return "glm";
+  if (opts.mode === "economy" && economyEngineAvailable()) {
+    if (opts.requested === "opus" && Boolean(config.anthropicApiKey)) return "opus";
+    return "glm";
+  }
   return chooseModel(opts.requested, opts.task);
 }

@@ -282,8 +282,37 @@ class BuildInspectTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertEqual(lines[0], '1 Button "Save"')
         self.assertEqual(lines[1], '2 ComboBox "Customer"')
-        self.assertEqual(elements["1"], {"auto_id": "btnSave", "title": "Save", "control_type": "Button"})
+        self.assertEqual(elements["1"]["auto_id"], "btnSave")
+        self.assertEqual(elements["1"]["title"], "Save")
+        self.assertEqual(elements["1"]["control_type"], "Button")
         self.assertEqual(elements["2"]["auto_id"], "cmbCust")
+
+    def test_custom_button_group_is_labeled_by_its_caption(self):
+        # The exact Adminsoft shape: a Group named cmd_exit with the visible text
+        # "Exit Accounts Suite" drawn on top of it. The button must appear, be
+        # labeled by the caption the user sees, but resolve by its real name.
+        infos = [
+            {"name": "cmd_exit", "auto_id": "", "control_type": "Group", "rect": [1431, 638, 1594, 707]},
+            {"name": "Exit Accounts Suite", "auto_id": "", "control_type": "Text", "rect": [1494, 643, 1582, 699]},
+            {"name": "cmd_select", "auto_id": "", "control_type": "Group", "rect": [1431, 555, 1594, 624]},
+            {"name": "Select Comp./Org.", "auto_id": "", "control_type": "Text", "rect": [1500, 569, 1581, 608]},
+        ]
+        text, elements = agent.build_inspect(infos)
+        lines = text.splitlines()
+        self.assertIn('1 Group "Exit Accounts Suite"', lines)
+        self.assertIn('2 Group "Select Comp./Org."', lines)
+        # Resolution still uses the real control name, not the cosmetic caption.
+        self.assertEqual(elements["1"]["title"], "cmd_exit")
+        self.assertEqual(elements["1"]["rect"], [1431, 638, 1594, 707])
+
+    def test_layout_group_without_caption_or_command_name_is_dropped(self):
+        infos = [
+            {"name": "MainLayoutPanel", "auto_id": "", "control_type": "Group", "rect": [0, 0, 100, 100]},
+            {"name": "", "auto_id": "", "control_type": "Pane", "rect": [0, 0, 50, 50]},
+        ]
+        text, elements = agent.build_inspect(infos)
+        self.assertEqual(elements, {})
+        self.assertIn("no interactable controls", text)
 
     def test_numbers_are_sequential_and_stringified(self):
         infos = [{"name": f"B{i}", "auto_id": f"b{i}", "control_type": "Button"} for i in range(5)]
@@ -305,6 +334,15 @@ class BuildInspectTests(unittest.TestCase):
         text, elements = agent.build_inspect(infos)
         self.assertEqual(elements, {})
         self.assertIn("no interactable controls", text)
+
+    def test_stored_click_point_is_rect_center(self):
+        agent.STATE.elements = {"1": {"auto_id": "", "title": "cmd_exit", "control_type": "Group", "rect": [1431, 638, 1594, 707]}}
+        try:
+            self.assertEqual(agent._stored_click_point("1"), (1512, 672))
+            self.assertIsNone(agent._stored_click_point("2"))
+            self.assertIsNone(agent._stored_click_point("save"))
+        finally:
+            agent.STATE.elements = {}
 
 
 # A fake window/control pair so find_control can be exercised without pywinauto.
@@ -377,14 +415,44 @@ class BuildRecordTraceTests(unittest.TestCase):
         trace = agent.build_record_trace(events)
         self.assertEqual([(t["window"], t["control"]) for t in trace], [("Excel", "A"), ("Word", "C")])
 
-    def test_drops_unresolved_clicks(self):
+    def test_drops_clicks_with_no_name_window_or_screenshot(self):
         events = [
             {"x": 5, "y": 5},
-            {"window": "Excel", "name": "", "auto_id": "", "control_type": "Pane"},
             {"window": "Excel", "name": "Ok", "auto_id": "", "control_type": "Button"},
         ]
         trace = agent.build_record_trace(events)
         self.assertEqual(trace, [{"kind": "click", "window": "Excel", "control": "Ok", "controlType": "Button"}])
+
+    def test_keeps_unnamed_clicks_that_have_a_window_or_screenshot(self):
+        # The LAST click of a recording often cannot be re-resolved (its dialog
+        # closed); the window and screenshot captured at click time keep it real.
+        events = [
+            {"window": "Help dialog", "name": "", "auto_id": "", "control_type": ""},
+            {"x": 5, "y": 5, "name": "", "auto_id": "", "screenshot_path": "c.jpg"},
+        ]
+        trace = agent.build_record_trace(events)
+        self.assertEqual(trace[0]["control"], "(unlabeled control)")
+        self.assertEqual(trace[0]["window"], "Help dialog")
+        self.assertEqual(trace[1]["control"], "(unlabeled control)")
+        self.assertEqual(trace[1]["screenshotPath"], "c.jpg")
+
+    def test_two_unlabeled_clicks_in_same_window_are_not_merged(self):
+        # Two distinct buttons that both failed to resolve must stay two steps.
+        events = [
+            {"window": "App", "name": "", "auto_id": "", "control_type": "", "screenshot_path": "a.jpg"},
+            {"window": "App", "name": "", "auto_id": "", "control_type": "", "screenshot_path": "b.jpg"},
+        ]
+        trace = agent.build_record_trace(events)
+        self.assertEqual(len(trace), 2)
+        self.assertEqual(trace[0]["screenshotPath"], "a.jpg")
+        self.assertEqual(trace[1]["screenshotPath"], "b.jpg")
+
+    def test_named_double_click_still_collapses(self):
+        events = [
+            {"window": "App", "name": "Save", "auto_id": "", "control_type": "Button"},
+            {"window": "App", "name": "Save", "auto_id": "", "control_type": "Button"},
+        ]
+        self.assertEqual(len(agent.build_record_trace(events)), 1)
 
     def test_collapses_identical_consecutive_clicks(self):
         events = [
@@ -441,6 +509,117 @@ class BuildRecordTraceTests(unittest.TestCase):
 
     def test_empty_input_yields_no_trace(self):
         self.assertEqual(agent.build_record_trace([]), [])
+
+    def test_click_screenshot_path_passes_through(self):
+        events = [
+            {"kind": "click", "window": "App", "name": "Help", "auto_id": "", "control_type": "Group", "screenshot_path": r"C:\tmp\shot1.jpg"},
+        ]
+        trace = agent.build_record_trace(events)
+        self.assertEqual(trace[0]["screenshotPath"], r"C:\tmp\shot1.jpg")
+
+    def test_double_click_collapses_even_with_different_screenshots(self):
+        events = [
+            {"kind": "click", "window": "App", "name": "Help", "auto_id": "", "control_type": "Group", "screenshot_path": "a.jpg"},
+            {"kind": "click", "window": "App", "name": "Help", "auto_id": "", "control_type": "Group", "screenshot_path": "b.jpg"},
+        ]
+        trace = agent.build_record_trace(events)
+        self.assertEqual(len(trace), 1)
+
+
+class ChooseClickLabelTests(unittest.TestCase):
+    # The exact failing recording: a click on the Help button resolved to the
+    # decorative "button_front" image over a Group "cmd_help", with the visible
+    # caption "Help" as a separate small text node. The label must be "Help".
+    def test_help_button_click_labels_by_caption(self):
+        candidates = [
+            {"name": "Good afternoon First.", "auto_id": "", "control_type": "Pane", "area": 700_000, "rect": (0, 0, 900, 800)},
+            {"name": "background_mask", "auto_id": "", "control_type": "Image", "area": 690_000, "rect": (0, 0, 900, 780)},
+            {"name": "cmd_help", "auto_id": "", "control_type": "Group", "area": 11_000, "rect": (750, 700, 918, 774)},
+            {"name": "button_front", "auto_id": "", "control_type": "Image", "area": 11_000, "rect": (750, 700, 918, 774)},
+            {"name": "Help", "auto_id": "", "control_type": "Text", "area": 1_800, "rect": (824, 726, 899, 751)},
+        ]
+        chosen = agent.choose_click_label(candidates)
+        self.assertEqual(chosen["name"], "Help")
+        self.assertEqual(chosen["control_type"], "Group")
+
+    def test_exit_button_click_labels_by_caption(self):
+        candidates = [
+            {"name": "cmd_exit", "auto_id": "", "control_type": "Group", "area": 11_000, "rect": (1431, 638, 1594, 707)},
+            {"name": "button_image", "auto_id": "", "control_type": "Image", "area": 2_000, "rect": (1440, 645, 1490, 695)},
+            {"name": "Exit Accounts Suite", "auto_id": "", "control_type": "Text", "area": 4_900, "rect": (1494, 643, 1582, 699)},
+        ]
+        chosen = agent.choose_click_label(candidates)
+        self.assertEqual(chosen["name"], "Exit Accounts Suite")
+
+    def test_caption_from_another_control_does_not_hijack_the_button(self):
+        # The reported bug: a Cancel button, with a hidden tab's "Stock/Inventory
+        # Control" label overlapping the same point. Its rect is NOT inside the
+        # Cancel button, so it must never be chosen; the on-button caption wins.
+        candidates = [
+            {"name": "cmd_cancel", "auto_id": "", "control_type": "Group", "area": 12_000, "rect": (150, 500, 280, 570)},
+            {"name": "Cancel", "auto_id": "", "control_type": "Text", "area": 1_500, "rect": (190, 520, 250, 550)},
+            {"name": "Stock/Inventory Control", "auto_id": "", "control_type": "Text", "area": 900, "rect": (150, 505, 400, 525)},
+        ]
+        chosen = agent.choose_click_label(candidates)
+        self.assertEqual(chosen["name"], "Cancel")
+
+    def test_button_with_no_on_button_caption_uses_its_own_name(self):
+        # Only an off-button label is present, so it is ignored and the button's
+        # own (real, non-decorative) name is used instead of the stray caption.
+        candidates = [
+            {"name": "Save Draft", "auto_id": "", "control_type": "Button", "area": 8_000, "rect": (10, 10, 120, 60)},
+            {"name": "Unrelated Menu Item", "auto_id": "", "control_type": "Text", "area": 700, "rect": (0, 0, 300, 20)},
+        ]
+        self.assertEqual(agent.choose_click_label(candidates)["name"], "Save Draft")
+
+    def test_standard_button_without_caption_uses_its_name(self):
+        candidates = [
+            {"name": "Save", "auto_id": "btnSave", "control_type": "Button", "area": 3_000, "rect": (0, 0, 60, 30)},
+        ]
+        self.assertEqual(agent.choose_click_label(candidates)["name"], "Save")
+
+    def test_decorative_only_click_yields_no_label(self):
+        candidates = [
+            {"name": "background_mask", "auto_id": "", "control_type": "Image", "area": 690_000, "rect": (0, 0, 900, 780)},
+            {"name": "Shape1", "auto_id": "", "control_type": "Image", "area": 5_000, "rect": (10, 10, 80, 80)},
+        ]
+        self.assertIsNone(agent.choose_click_label(candidates))
+
+    def test_is_decorative_name(self):
+        for name in ("background_mask", "button_front", "button_border_high", "Shape1", "Image3", ""):
+            self.assertTrue(agent._is_decorative_name(name))
+        for name in ("Help", "cmd_exit", "Save", "Exit Accounts Suite"):
+            self.assertFalse(agent._is_decorative_name(name))
+
+    def test_is_overlay_title(self):
+        for title in ("NVIDIA GeForce Overlay", "nvidia geforce overlay ", "Discord Overlay"):
+            self.assertTrue(agent._is_overlay_title(title))
+        for title in ("Good afternoon First.  User ID: FIRST", "Adminsoft Accounts", "Program Manager", ""):
+            self.assertFalse(agent._is_overlay_title(title))
+
+
+class WindowTitleMatchTests(unittest.TestCase):
+    # The exact failure this guards against: a VB6 accounting app titled
+    # "Good afternoon First.  User ID: FIRST" (double space) that the model
+    # requests with single spaces. Exact matching made every connect fail.
+    def test_normalization_collapses_whitespace_and_case(self):
+        self.assertEqual(agent.normalize_window_title("Good afternoon First.  User ID: FIRST "), "good afternoon first. user id: first")
+
+    def test_exact_after_normalization_scores_highest(self):
+        self.assertEqual(agent.score_window_title("Good afternoon First. User ID: FIRST", "Good afternoon First.  User ID: FIRST"), 3)
+        self.assertEqual(agent.score_window_title("book1 - excel", "Book1 - Excel"), 3)
+
+    def test_substring_matches_either_direction(self):
+        self.assertEqual(agent.score_window_title("Good afternoon", "Good afternoon First.  User ID: FIRST"), 2)
+        self.assertEqual(agent.score_window_title("Good afternoon First.  User ID: FIRST extra", "Good afternoon First. User ID: FIRST"), 2)
+
+    def test_all_words_present_scores_low(self):
+        self.assertEqual(agent.score_window_title("FIRST afternoon", "Good afternoon First.  User ID: FIRST"), 1)
+
+    def test_unrelated_titles_do_not_match(self):
+        self.assertEqual(agent.score_window_title("Adminsoft Accounts", "Book1 - Excel"), 0)
+        self.assertEqual(agent.score_window_title("", "Book1 - Excel"), 0)
+        self.assertEqual(agent.score_window_title("Book1", ""), 0)
 
 
 class SafeKeysTests(unittest.TestCase):

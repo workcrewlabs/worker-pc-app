@@ -98,7 +98,49 @@ INTERACTABLE_CONTROL_TYPES = frozenset({
     "DataItem",
     "HeaderItem",
     "Custom",
+    # Legacy business apps (VB6/Delphi and the like) draw their own buttons as
+    # Group or Pane containers rather than real Buttons. These are only kept when
+    # they look like a command (see build_inspect), so ordinary layout containers
+    # are still filtered out.
+    "Group",
+    "Pane",
 })
+
+# Static text that is the caption of one of those custom buttons ("Exit Accounts
+# Suite" drawn over a Group named cmd_exit). Used only to LABEL a button with the
+# words the user actually sees; it is never itself an actionable control.
+LABEL_CONTROL_TYPES = frozenset({"Text", "Static"})
+
+# A control whose name is an internal identifier (cmd_exit, btnSave, Command1)
+# rather than a human caption. When a custom button has one of these AND a visible
+# text caption sits on top of it, the caption is shown to the model instead.
+_INTERNAL_NAME_RE = re.compile(r"^(cmd|btn|button|command)[ _-]?", re.IGNORECASE)
+_NO_SPACE_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _looks_internal(name: str) -> bool:
+    return bool(_INTERNAL_NAME_RE.match(name) or (_NO_SPACE_TOKEN_RE.match(name) and "_" in name))
+
+
+def _rect_of(info: dict[str, Any]) -> list[int] | None:
+    rect = info.get("rect")
+    if isinstance(rect, (list, tuple)) and len(rect) == 4:
+        try:
+            return [int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _caption_over(rect: list[int], labels: list[tuple[str, list[int]]]) -> str:
+    """The visible text whose center sits inside the given control rectangle, i.e.
+    the caption drawn on a custom button. Empty when there is none."""
+    for text, lr in labels:
+        cx = (lr[0] + lr[2]) / 2
+        cy = (lr[1] + lr[3]) / 2
+        if rect[0] <= cx <= rect[2] and rect[1] <= cy <= rect[3]:
+            return text
+    return ""
 
 # Most interactable controls the model needs in one window. Bounds the snapshot
 # size; the rare window with more controls is still navigable because the model
@@ -238,17 +280,79 @@ def list_windows() -> str:
     return json.dumps(windows[:100], ensure_ascii=True)
 
 
+def normalize_window_title(value: str) -> str:
+    """Collapse whitespace runs and casing so titles compare the way a person
+    reads them. Real window titles carry double spaces and trailing blanks (the
+    VB6-era apps this exists for are the worst offenders), and the model
+    round-trips titles through text where that spacing does not survive."""
+    return re.sub(r"\s+", " ", value).strip().lower()
+
+
+def score_window_title(requested: str, actual: str) -> int:
+    """How well an open window's title matches the requested one. 3 exact after
+    normalization, 2 when one contains the other (a greeting title grows a
+    suffix, or the model sends just the app name), 1 when every requested word
+    appears in the title, 0 no match. Pure so it is unit testable."""
+    wanted = normalize_window_title(requested)
+    have = normalize_window_title(actual)
+    if not wanted or not have:
+        return 0
+    if wanted == have:
+        return 3
+    if wanted in have or have in wanted:
+        return 2
+    have_words = set(have.split(" "))
+    if all(word in have_words for word in wanted.split(" ")):
+        return 1
+    return 0
+
+
+def resolve_window(requested: str) -> Any:
+    """Find the best open window for a requested title. Exact matching is a trap
+    here: titles drift (spacing, status suffixes) between list-windows and the
+    connect that follows, so the lookup is normalized and fuzzy, preferring the
+    strongest then shortest match."""
+    _, Desktop = _load_pywinauto()
+    best = None
+    best_rank: tuple[int, int] | None = None
+    for window in Desktop(backend="uia").windows():
+        try:
+            title = window.window_text()
+            if not title or not title.strip() or not window.is_visible():
+                continue
+            score = score_window_title(requested, title)
+            if score == 0:
+                continue
+            rank = (-score, len(title))
+            if best_rank is None or rank < best_rank:
+                best = window
+                best_rank = rank
+        except Exception:
+            continue
+    if best is None:
+        raise ValueError(
+            f'No open window matches "{requested}". Use list-windows to see the open windows and connect with one of those titles.'
+        )
+    return best
+
+
 def connect_window(title: str) -> str:
     Application, _ = _load_pywinauto()
     with STATE.lock:
-        application = Application(backend="uia").connect(title=title, timeout=10)
-        window = application.window(title=title)
+        # Resolve the title fuzzily, then attach by window HANDLE: the handle
+        # identifies exactly the window that matched, no second title lookup
+        # that could miss (or hit a different window with a similar name).
+        resolved = resolve_window(title)
+        handle = resolved.handle
+        application = Application(backend="uia").connect(handle=handle, timeout=10)
+        window = application.window(handle=handle)
         window.wait("exists visible ready", timeout=10)
         STATE.application = application
         STATE.window = window
         # A new window invalidates any numbered controls from a prior inspect.
         STATE.elements = {}
-    return f"Connected to {title}"
+        actual = resolved.window_text().strip()[:200]
+    return f"Connected to {actual}"
 
 
 def require_window() -> Any:
@@ -306,9 +410,22 @@ def build_inspect(infos: list[dict[str, str]]) -> tuple[str, dict[str, dict[str,
 
     Pure and side-effect free so it can be unit tested without pywinauto. Each
     kept control becomes one line like ``12 Button "Save & Close"``; decorative
-    and unnamed nodes are dropped. The returned map lets find_control turn the
-    number back into auto_id/title criteria.
+    and unnamed nodes are dropped. Custom-drawn buttons (Group/Pane containers)
+    are labeled with the visible caption text sitting on top of them, so a button
+    the user calls "Exit Accounts Suite" is shown by that name even though its
+    real control name is an internal identifier like cmd_exit. The returned map
+    lets find_control turn the number back into auto_id/title criteria, using the
+    REAL identifier (never the cosmetic caption).
     """
+    # Visible text captions with a rectangle, used to name custom buttons.
+    labels: list[tuple[str, list[int]]] = []
+    for info in infos:
+        if (info.get("control_type") or "").strip() in LABEL_CONTROL_TYPES:
+            text = (info.get("name") or "").strip()
+            rect = _rect_of(info)
+            if text and rect:
+                labels.append((text[:200], rect))
+
     elements: dict[str, dict[str, str]] = {}
     lines: list[str] = []
     next_id = 1
@@ -318,15 +435,24 @@ def build_inspect(infos: list[dict[str, str]]) -> tuple[str, dict[str, dict[str,
         auto_id = (info.get("auto_id") or "").strip()
         if control_type not in INTERACTABLE_CONTROL_TYPES:
             continue
-        # A genuinely actionable control almost always has a name or an
-        # automation id; requiring one filters out anonymous filler that shares
-        # an interactable type (blank custom panes, unlabeled list rows).
-        if not name and not auto_id:
+        rect = _rect_of(info)
+        caption = _caption_over(rect, labels) if rect else ""
+        # Group/Pane are only real controls when they behave like a button: a
+        # caption drawn on them, or an internal command name (cmd_exit, btnSave).
+        # This keeps ordinary layout containers out of the snapshot.
+        if control_type in {"Group", "Pane"}:
+            if not caption and not (name and _looks_internal(name)):
+                continue
+        elif not name and not auto_id:
+            # Other interactable controls almost always carry a name or auto id;
+            # requiring one filters anonymous filler (blank rows, spacer custom).
             continue
+        # Show the human caption when the control's own name is an internal token;
+        # otherwise the real name is already what the user sees.
+        display = caption if (caption and (not name or _looks_internal(name))) else (name or auto_id)
         identifier = str(next_id)
-        elements[identifier] = {"auto_id": auto_id, "title": name, "control_type": control_type}
-        label = name or auto_id
-        lines.append(f'{identifier} {control_type} "{label[:200]}"')
+        elements[identifier] = {"auto_id": auto_id, "title": name, "control_type": control_type, "rect": rect or []}
+        lines.append(f'{identifier} {control_type} "{display[:200]}"')
         next_id += 1
         if next_id > MAX_INSPECT_CONTROLS:
             break
@@ -342,6 +468,143 @@ def _cursor_point() -> tuple[int, int]:
     point = _POINT()
     ctypes.windll.user32.GetCursorPos(ctypes.byref(point))  # type: ignore[attr-defined]
     return int(point.x), int(point.y)
+
+
+# Full-screen, click-through overlays sit visually on top of every app but pass
+# clicks through to whatever is beneath them. A click lands in the real app, but a
+# naive point lookup returns the overlay, so recordings get attributed to it (for
+# example "NVIDIA GeForce Overlay") instead of the app the person actually used.
+_OVERLAY_TITLES = frozenset({
+    "nvidia geforce overlay",
+    "geforce overlay",
+    "discord overlay",
+})
+
+def _is_overlay_title(title: str) -> bool:
+    return (title or "").strip().lower() in _OVERLAY_TITLES
+
+
+# Per-click screenshot crops. A small image around each click is attached to the
+# recording so the model that writes the instruction SEES the button the person
+# pressed, exactly like reviewing a screen capture, instead of trusting control
+# names alone. Small crops keep the token cost of each image low.
+RECORD_SHOT_WIDTH = 480
+RECORD_SHOT_HEIGHT = 360
+RECORD_MAX_SHOTS = 16
+_SM_XVIRTUALSCREEN, _SM_YVIRTUALSCREEN = 76, 77
+_SM_CXVIRTUALSCREEN, _SM_CYVIRTUALSCREEN = 78, 79
+
+
+def _draw_click_marker(image: Any, cx: int, cy: int) -> None:
+    """Draw a red target ring at (cx, cy) on the crop so the model sees EXACTLY
+    where the person clicked, the way the Claude browser extension marks a click.
+    A white halo around the red keeps it visible on any background."""
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(image)
+    radius = 26
+    # White outer ring first (contrast), then the red ring on top of it.
+    draw.ellipse((cx - radius - 2, cy - radius - 2, cx + radius + 2, cy + radius + 2), outline=(255, 255, 255), width=6)
+    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(255, 0, 0), width=4)
+    # A small solid dot at the exact click point.
+    draw.ellipse((cx - 4, cy - 4, cx + 4, cy + 4), fill=(255, 0, 0), outline=(255, 255, 255))
+
+
+def _capture_click_shot(x: int, y: int, index: int) -> str | None:
+    """Save a small screenshot around a click, marked with a red circle at the
+    exact click point (clamped to the virtual screen, so multi-monitor setups
+    work), and return its file path, or None when capture fails. Never raises: a
+    recording must survive a failed screenshot."""
+    try:
+        from PIL import ImageGrab
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        vx = int(user32.GetSystemMetrics(_SM_XVIRTUALSCREEN))
+        vy = int(user32.GetSystemMetrics(_SM_YVIRTUALSCREEN))
+        vw = int(user32.GetSystemMetrics(_SM_CXVIRTUALSCREEN))
+        vh = int(user32.GetSystemMetrics(_SM_CYVIRTUALSCREEN))
+        left = max(vx, min(x - RECORD_SHOT_WIDTH // 2, vx + vw - RECORD_SHOT_WIDTH))
+        top = max(vy, min(y - RECORD_SHOT_HEIGHT // 2, vy + vh - RECORD_SHOT_HEIGHT))
+        image = ImageGrab.grab(bbox=(left, top, left + RECORD_SHOT_WIDTH, top + RECORD_SHOT_HEIGHT), all_screens=True).convert("RGB")
+        # Mark the click at its real position within the crop (near an edge the
+        # crop is clamped, so the click is not always the exact centre).
+        _draw_click_marker(image, x - left, y - top)
+        # JPEG keeps each crop small (usually under 30 KB) so several fit in one
+        # summarize request without blowing the API body limit.
+        output = Path(tempfile.gettempdir()) / f"workcrew-rec-{os.getpid()}-{index}.jpg"
+        image.save(output, "JPEG", quality=80)
+        return str(output)
+    except Exception:
+        return None
+
+
+_GA_ROOT = 2
+
+
+def _window_title_of(hwnd: int) -> str:
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    length = int(user32.GetWindowTextLengthW(hwnd))
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buffer, length + 1)
+    return str(buffer.value or "")
+
+
+def _real_window_at(x: int, y: int) -> tuple[int | None, str]:
+    """The top-level window that would actually RECEIVE a click at a screen
+    point, per the OS's own hit testing (WindowFromPoint). This is the ground
+    truth for recording: it skips click-through overlays, hidden windows, and
+    windows parked on other virtual desktops, all of which fooled bookkeeping
+    approaches (a recording once attributed every click to "NVIDIA GeForce
+    Overlay", and another to invisible browser windows). Returns (hwnd, title)
+    or (None, "")."""
+    try:
+        from ctypes import wintypes
+
+        class _PT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        user32.WindowFromPoint.restype = wintypes.HWND
+        user32.WindowFromPoint.argtypes = [_PT]
+        user32.GetAncestor.restype = wintypes.HWND
+        user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+
+        hwnd = user32.WindowFromPoint(_PT(x, y))
+        if not hwnd:
+            return None, ""
+        root = user32.GetAncestor(hwnd, _GA_ROOT) or hwnd
+        title = _window_title_of(int(root))
+        # An overlay can still be hit while it is interactive; in that case the
+        # click really did go to it, but it is never the app the person is
+        # working in, so report no window and let the caller fall back.
+        if not title.strip() or _is_overlay_title(title):
+            return None, ""
+        return int(root), title
+    except Exception:
+        return None, ""
+
+
+def _stored_click_point(selector: str) -> tuple[int, int] | None:
+    """The center of the rectangle recorded for a numbered control in the last
+    inspect, used as a positional fallback when the control will not resolve by
+    name. None when there is no usable rectangle."""
+    stored = STATE.elements.get(selector) if selector.isdigit() else None
+    if not stored:
+        return None
+    rect = stored.get("rect")
+    if isinstance(rect, (list, tuple)) and len(rect) == 4:
+        left, top, right, bottom = rect
+        if right > left and bottom > top:
+            return (int((left + right) / 2), int((top + bottom) / 2))
+    return None
+
+
+def _click_at(x: int, y: int) -> None:
+    """Move the mouse to a screen point and left click there via pywinauto's
+    input backend, so a custom-drawn button that ignores UIA still responds."""
+    from pywinauto import mouse
+
+    mouse.click(button="left", coords=(x, y))
 
 
 def _foreground_window_title() -> str:
@@ -360,24 +623,175 @@ def _foreground_window_title() -> str:
         return ""
 
 
-def _resolve_element(x: int, y: int) -> dict[str, str] | None:
+# Names of the decorative image layers legacy apps stack to draw one button
+# (background, borders, the icon, a front overlay). A click resolves to whichever
+# of these is on top, so recording must look past them to the real button.
+_DECORATIVE_NAME_RE = re.compile(
+    r"^(background_mask|button_(background|border_\w+|front|image)|shape\d*|image\d*|picture\d*|label\d*)$",
+    re.IGNORECASE,
+)
+
+
+def _is_decorative_name(name: str) -> bool:
+    return not name or bool(_DECORATIVE_NAME_RE.match(name.strip()))
+
+
+def _rect_mostly_inside(inner: tuple[int, int, int, int] | None, outer: tuple[int, int, int, int] | None, frac: float = 0.7) -> bool:
+    """Whether at least `frac` of the inner rectangle's area lies within the outer
+    one. A button's own caption is mostly inside it; a wider label that merely
+    clips the same point (a hidden menu item, a neighbouring field) is not."""
+    if not inner or not outer:
+        return False
+    ix = max(0, min(inner[2], outer[2]) - max(inner[0], outer[0]))
+    iy = max(0, min(inner[3], outer[3]) - max(inner[1], outer[1]))
+    inter = ix * iy
+    inner_area = max(1, (inner[2] - inner[0]) * (inner[3] - inner[1]))
+    return inter / inner_area >= frac
+
+
+def choose_click_label(candidates: list[dict[str, Any]]) -> dict[str, str] | None:
+    """Pick the human label for a click from the controls whose rectangle contains
+    the clicked point. The click's button is the SMALLEST interactable control at
+    the point; its label is a caption drawn ON that button (a text node whose
+    center lies inside the button's rectangle), never a stray label elsewhere in
+    the window. Pure so it can be unit tested. Each candidate carries {name,
+    auto_id, control_type, area, rect}."""
+    contained = [c for c in candidates if (c.get("area") or 0) > 0]
+    captions = sorted(
+        [c for c in contained
+         if (c.get("control_type") or "") in LABEL_CONTROL_TYPES and (c.get("name") or "").strip()],
+        key=lambda c: c["area"],
+    )
+    buttons = sorted(
+        [c for c in contained
+         if (c.get("control_type") or "") in INTERACTABLE_CONTROL_TYPES
+         and (c.get("control_type") or "") != "Window"
+         and not _is_decorative_name((c.get("name") or ""))
+         and ((c.get("name") or "").strip() or (c.get("auto_id") or "").strip())],
+        key=lambda c: c["area"],
+    )
+    if buttons:
+        button = buttons[0]
+        # A caption for THIS button must sit mostly within the button's own
+        # rectangle, so a hidden or neighbouring label (a menu item from another
+        # tab, say) that only clips the same point can never win.
+        on_button = [c for c in captions if _rect_mostly_inside(c.get("rect"), button.get("rect"))]
+        caption = on_button[0]["name"].strip() if on_button else ""
+        label = caption or (button.get("name") or "").strip() or (button.get("auto_id") or "").strip()
+        return {"name": label[:500], "auto_id": (button.get("auto_id") or "")[:500], "control_type": (button.get("control_type") or "")[:100]}
+    if captions:
+        # No interactable control at the point: fall back to the smallest visible
+        # caption there (a plain clickable label or link).
+        return {"name": captions[0]["name"].strip()[:500], "auto_id": "", "control_type": "Text"}
+    return None
+
+
+def _label_at_point(top: Any, x: int, y: int) -> dict[str, str] | None:
+    """Find the best human label for a click by looking only at controls that are
+    actually VISIBLE at the click point. Hidden content (a tab that is not on top,
+    an off-screen list) keeps its geometry in the accessibility tree and used to
+    hijack labels; filtering by visibility and constraining the caption to the
+    clicked button removes that whole class of error."""
+    try:
+        top_rect = top.rectangle()
+        win_area = max(1, (top_rect.right - top_rect.left) * (top_rect.bottom - top_rect.top))
+    except Exception:
+        win_area = None
+    candidates: list[dict[str, Any]] = []
+    try:
+        descendants = top.descendants()[:1500]
+    except Exception:
+        return None
+    for control in descendants:
+        try:
+            info = control.element_info
+            rect = info.rectangle
+            if not (rect.left <= x <= rect.right and rect.top <= y <= rect.bottom):
+                continue
+            area = max(1, (rect.right - rect.left) * (rect.bottom - rect.top))
+            # A control that fills most of the window is a background/container, not
+            # the button the person meant to click.
+            if win_area is not None and area >= 0.7 * win_area:
+                continue
+            # Skip controls that are not really shown: a hidden tab's labels still
+            # contain the point geometrically but are off-screen, and picking one
+            # is exactly the bug this guards against.
+            try:
+                if not control.is_visible():
+                    continue
+            except Exception:
+                pass
+            candidates.append({
+                "name": str(info.name or ""),
+                "auto_id": str(info.automation_id or ""),
+                "control_type": str(info.control_type or ""),
+                "area": area,
+                "rect": (rect.left, rect.top, rect.right, rect.bottom),
+            })
+        except Exception:
+            continue
+    return choose_click_label(candidates)
+
+
+def _resolve_element(x: int, y: int, hwnd: int | None = None, window_title: str = "") -> dict[str, str] | None:
     """Resolve the UI Automation element under a screen point to a stable
     description (window title, control name, automation id, control type). Returns
     None if nothing usable is there, so an unresolved click is simply dropped from
-    the recording rather than recorded as a fragile coordinate."""
+    the recording rather than recorded as a fragile coordinate.
+
+    When the recorder passes the window it hit-tested AT CLICK TIME (hwnd and
+    title), that window is authoritative: this may run seconds after the click,
+    by which time a newly opened window can cover the clicked spot, and a fresh
+    lookup would blame the wrong app. Without a handle, the OS hit test runs now.
+    Custom-drawn buttons resolve to a decorative image layer, so the window is
+    searched for the real button and its visible caption."""
     try:
         _, Desktop = _load_pywinauto()
-        element = Desktop(backend="uia").from_point(x, y)
-        info = element.element_info
-        try:
-            window = str(element.top_level_parent().window_text() or "")
-        except Exception:
-            window = ""
+
+        window = window_title or ""
+        top = None
+        if hwnd is None:
+            hwnd, real_title = _real_window_at(x, y)
+            if hwnd is not None:
+                window = real_title
+        if hwnd is not None:
+            try:
+                top = Desktop(backend="uia").window(handle=hwnd)
+            except Exception:
+                top = None
+
+        name = auto_id = control_type = ""
+        if top is None:
+            # Fall back to the raw element the OS reports under the point.
+            element = Desktop(backend="uia").from_point(x, y)
+            info = element.element_info
+            name = str(info.name or "")
+            auto_id = str(info.automation_id or "")
+            control_type = str(info.control_type or "")
+            try:
+                top = element.top_level_parent()
+                if not window:
+                    window = str(top.window_text() or "")
+            except Exception:
+                top = None
+
+        # Find the real labeled control at the point (skips decorative layers and
+        # names custom buttons by their visible caption). Keep the raw element only
+        # when nothing better is found.
+        if top is not None and (not name or _is_decorative_name(name) or control_type not in INTERACTABLE_CONTROL_TYPES):
+            better = _label_at_point(top, x, y)
+            if better is not None:
+                name = better["name"]
+                auto_id = better["auto_id"]
+                control_type = better["control_type"]
+
+        if not window and not name and not auto_id:
+            return None
         return {
             "window": window[:500],
-            "name": str(info.name or "")[:500],
-            "auto_id": str(info.automation_id or "")[:500],
-            "control_type": str(info.control_type or "")[:100],
+            "name": name[:500],
+            "auto_id": auto_id[:500],
+            "control_type": control_type[:100],
         }
     except Exception:
         return None
@@ -407,8 +821,11 @@ class ClickRecorder:
         # thread so it never stalls keyboard/mouse sampling on the poll loop. The
         # poll loop appends a placeholder click immediately and queues it here.
         self._resolver: threading.Thread | None = None
-        self._queue: "queue.Queue[tuple[dict[str, Any], int, int] | None]" = queue.Queue()
+        self._queue: "queue.Queue[tuple[dict[str, Any], int, int, int | None, str] | None]" = queue.Queue()
         self._lock = threading.Lock()
+        # Screenshots taken so far this recording (bounded by RECORD_MAX_SHOTS).
+        # Touched only on the poll thread, so no lock is needed.
+        self._shot_count = 0
         # Typed characters accumulate here with the window they were typed in, then
         # flush to one "type" event on the next click, Enter/Tab, or stop.
         self._typed: list[str] = []
@@ -424,11 +841,13 @@ class ClickRecorder:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=3)
-        # The poll loop has stopped, so no more clicks will be queued. Let the
-        # resolver finish the ones already queued, then exit on the sentinel.
+        # The poll loop has stopped, so no more clicks will be queued. Give the
+        # resolver real time to finish the queued tail: the LAST clicks of a
+        # recording are usually the point of it, and a short timeout here once
+        # silently dropped them.
         self._queue.put(None)
         if self._resolver is not None:
-            self._resolver.join(timeout=3)
+            self._resolver.join(timeout=20)
         with self._lock:
             self._flush_typed_locked()
             return list(self._events)
@@ -460,14 +879,16 @@ class ClickRecorder:
             time.sleep(RECORD_POLL_SECONDS)
 
     def _resolve_loop(self) -> None:
-        # Drain queued clicks, resolving each element off the poll thread and
-        # filling the placeholder in place. Exits on the None sentinel.
+        # Drain queued clicks, filling in the slow part (the control's name via a
+        # UI Automation round trip) off the poll thread. The window and screenshot
+        # were already captured at click time, so the lookup runs against the
+        # window that was really clicked even if the screen has since changed.
         while True:
             item = self._queue.get()
             if item is None:
                 return
-            event, x, y = item
-            resolved = _resolve_element(x, y)
+            event, x, y, hwnd, title = item
+            resolved = _resolve_element(x, y, hwnd, title)
             if resolved:
                 with self._lock:
                     event.update(resolved)
@@ -520,15 +941,30 @@ class ClickRecorder:
             self._events.append({"kind": "type", "window": window[:500], "text": text[:RECORD_MAX_TYPED]})
 
     def _capture(self, x: int, y: int) -> None:
-        # A click ends the current typing run so events stay in order. The click is
-        # appended immediately as a placeholder and resolved off-thread.
+        # A click ends the current typing run so events stay in order. The two
+        # time-critical facts are captured RIGHT NOW, before the screen reacts to
+        # the click: which window received it (the OS hit test, instant) and a
+        # small screenshot around it. Only the slow control-name lookup is
+        # deferred to the resolver thread, pinned to the window captured here.
+        hwnd, title = _real_window_at(x, y)
+        # Never record clicks in WorkCrew itself (starting/stopping the recording).
+        if self._ignore_lower and title.strip().lower().startswith(self._ignore_lower):
+            return
         with self._lock:
             self._flush_typed_locked()
             if len(self._events) >= RECORD_MAX_EVENTS:
                 return
             event: dict[str, Any] = {"kind": "click", "x": x, "y": y}
+            if title.strip():
+                event["window"] = title[:500]
+            shot = None
+            if self._shot_count < RECORD_MAX_SHOTS:
+                shot = _capture_click_shot(x, y, self._shot_count)
+                if shot is not None:
+                    self._shot_count += 1
+                    event["screenshot_path"] = shot
             self._events.append(event)
-        self._queue.put((event, x, y))
+        self._queue.put((event, x, y, hwnd, title))
 
 
 def build_record_trace(events: list[dict[str, Any]], ignore_window: str = "") -> list[dict[str, Any]]:
@@ -558,27 +994,52 @@ def build_record_trace(events: list[dict[str, Any]], ignore_window: str = "") ->
             continue
         name = (event.get("name") or "").strip()
         auto_id = (event.get("auto_id") or "").strip()
+        shot = (event.get("screenshot_path") or "").strip()
         control = name or auto_id
+        # A click whose control never got a name is still a real step when we
+        # know where it happened or have its screenshot; only a click with no
+        # name, no window, AND no image is unusable noise.
         if not control:
+            if not shot and not window:
+                continue
+            control = "(unlabeled control)"
+        entry: dict[str, Any] = {"kind": "click", "window": window, "control": control, "controlType": (event.get("control_type") or "").strip()}
+        # Collapse a consecutive repeat of the SAME named control (a double-click
+        # is one action). Never collapse unlabeled clicks: two different buttons
+        # that both failed to resolve to a name would otherwise merge and a real
+        # step would be lost, so those are always kept (their screenshots tell the
+        # model they differ).
+        prev = trace[-1] if trace else None
+        is_named_repeat = (
+            prev is not None
+            and control != "(unlabeled control)"
+            and {k: v for k, v in prev.items() if k != "screenshotPath"} == entry
+        )
+        if is_named_repeat:
             continue
-        entry = {"kind": "click", "window": window, "control": control, "controlType": (event.get("control_type") or "").strip()}
-        if trace and trace[-1] == entry:
-            continue
+        if shot:
+            entry["screenshotPath"] = shot
         trace.append(entry)
     return trace
 
 
 def inspect_window() -> str:
     window = require_window()
-    infos: list[dict[str, str]] = []
-    for control in window.descendants()[:500]:
+    infos: list[dict[str, Any]] = []
+    for control in window.descendants()[:800]:
         try:
             info = control.element_info
-            infos.append({
+            entry: dict[str, Any] = {
                 "name": str(info.name or "")[:500],
                 "auto_id": str(info.automation_id or "")[:500],
                 "control_type": str(info.control_type or "")[:100],
-            })
+            }
+            try:
+                rect = info.rectangle
+                entry["rect"] = [rect.left, rect.top, rect.right, rect.bottom]
+            except Exception:
+                pass
+            infos.append(entry)
         except Exception:
             # Skip any descendant that cannot be read instead of failing inspect.
             continue
@@ -619,7 +1080,14 @@ def execute_action(action: dict[str, Any]) -> str:
         if command == "inspect":
             return inspect_window()
         if command == "screenshot":
-            image = require_window().capture_as_image()
+            # With a connected window, capture just that window; before any
+            # connect, capture the whole screen instead of erroring out.
+            if STATE.window is not None:
+                image = STATE.window.capture_as_image()
+            else:
+                from PIL import ImageGrab
+
+                image = ImageGrab.grab()
             output = Path(tempfile.gettempdir()) / f"workcrew-window-{os.getpid()}.png"
             image.save(output)
             return str(output)
@@ -643,10 +1111,24 @@ def execute_action(action: dict[str, Any]) -> str:
             return "Typed text"
 
         selector = require_text(action.get("control"), "control")
-        control = find_control(selector)
         if command == "click":
-            control.click_input()
-            return f"Clicked control {selector}"
+            # Click by the control when it resolves, but always fall back to a real
+            # mouse click at its recorded rectangle center. Custom-drawn buttons
+            # (the Group/Pane controls in legacy business apps) often refuse a UIA
+            # invoke or fail to re-resolve by name, yet a positional click on their
+            # center always works, which is what the user sees themselves do.
+            try:
+                control = find_control(selector)
+                control.click_input()
+                return f"Clicked control {selector}"
+            except Exception:
+                point = _stored_click_point(selector)
+                if point is None:
+                    raise
+                _click_at(*point)
+                return f"Clicked control {selector}"
+
+        control = find_control(selector)
         if command == "set-text":
             value = optional_text(action.get("value"), MAX_TEXT_LENGTH) or ""
             control.set_edit_text(value)

@@ -38,6 +38,7 @@ import {
 } from "./auth-local.js";
 import { simulatedBillingProvider } from "./billing-simulated.js";
 import {
+  MAX_SUMMARY_IMAGES,
   MODEL_PRICES,
   actionSignature,
   actualCostMicrodollars,
@@ -441,18 +442,26 @@ app.get("/v1/referral", routeLimit(30), async (request): Promise<ReferralInfo> =
 // pages/windows) and posts it here; the model writes a single instruction that
 // the normal automation loop can run and adapt on every routine run. Requires a
 // signed-in user; the call is a small one-shot summarization.
-app.post("/v1/recordings/summarize", authLimit(20), async (request) => {
+// Recording summaries may carry a handful of small per-click screenshots, so
+// this one route accepts a larger body than the global 256 KB limit.
+app.post("/v1/recordings/summarize", { ...authLimit(20), bodyLimit: 1_536 * 1024 }, async (request) => {
   // Gate like the other paid routes: a real (Haiku) model call happens here, so
   // only an active subscriber may use it, and a tight per-route limit bounds spend
   // beyond the loose global limit.
   const userId = await authenticate(request);
   const subscription = requireActive(await getSubscription(userId));
   const body = summarizeRecordingRequestSchema.parse(request.body);
-  // Count this small model call against the same hard caps as chat and automation,
-  // and cap its output by the budget too so nothing keeps spending once the daily
-  // or monthly limit is reached. It is a single bounded call, on the Economy engine
-  // in Economy mode (cheaper) or Claude Haiku otherwise.
-  const summaryTier: ConcreteModelTier = subscription.modelMode === "economy" && economyEngineAvailable() ? "glm" : "haiku";
+  // Screenshots need a vision model, so an image-bearing recording summarizes on
+  // Claude Haiku; a plain text trace may use the Economy engine in Economy mode.
+  // If only the Economy engine is configured, the images are dropped rather than
+  // failing the whole summary.
+  let events = body.events;
+  let hasImages = events.some((event) => typeof event.screenshot === "string" && event.screenshot.length > 0);
+  if (hasImages && !config.anthropicApiKey) {
+    events = events.map(({ screenshot: _screenshot, ...rest }) => rest);
+    hasImages = false;
+  }
+  const summaryTier: ConcreteModelTier = !hasImages && subscription.modelMode === "economy" && economyEngineAvailable() ? "glm" : "haiku";
   const headroom = await budgetHeadroom(userId, subscription);
   const summaryMaxTokens = Math.min(400, budgetLimitedOutputTokens(summaryTier, Math.min(headroom.daily, headroom.monthly)));
   if (summaryMaxTokens < 1) {
@@ -461,12 +470,20 @@ app.post("/v1/recordings/summarize", authLimit(20), async (request) => {
     }
     throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
   }
-  const reservationAmount = maximumReservationMicrodollars(summaryTier, body, summaryMaxTokens);
+  // Reserve against the text of the trace plus a flat allowance per screenshot: a
+  // small crop costs a few hundred input tokens, while its base64 text would
+  // inflate a byte-length estimate (and the user's hold) a hundredfold.
+  const textOnly = { surface: body.surface, events: events.map(({ screenshot: _screenshot, ...rest }) => rest) };
+  const imageCount = hasImages ? Math.min(MAX_SUMMARY_IMAGES, events.filter((event) => event.screenshot).length) : 0;
+  const reservationAmount = maximumReservationMicrodollars(summaryTier, textOnly, summaryMaxTokens)
+    + imageCount * 600 * MODEL_PRICES[summaryTier].input;
   const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: summaryTier, amountMicrodollars: reservationAmount });
   try {
-    const task = await summarizeRecording(body.surface, body.events, summaryMaxTokens, summaryTier);
-    await settleBudget(reservation.reservationId, reservationAmount);
-    return { task };
+    const summary = await summarizeRecording(body.surface, events, summaryMaxTokens, summaryTier);
+    // Settle what the call actually cost (settleBudget clamps to the reservation),
+    // so an image-bearing recording is billed for real tokens, not size estimates.
+    await settleBudget(reservation.reservationId, actualCostMicrodollars(summaryTier, summary.usage));
+    return { task: summary.task };
   } catch (error) {
     await releaseBudget(reservation.reservationId);
     throw error;
