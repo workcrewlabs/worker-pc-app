@@ -666,25 +666,98 @@ function registerIpc(): void {
     return { opened: true };
   });
 
-  // Run one shell command in the workspace. The main process itself shows the
-  // approval here, so a command can never run without the user allowing the exact
-  // command, even if some other renderer code tried to call this directly.
+  // Run one shell command, inside the conversation's working folder when the user
+  // has added one (otherwise WorkCrew's hidden workspace). Normal commands are
+  // gated by the in-app approval the renderer shows, governed by the "Always allow"
+  // toggle. As a floor that cannot be bypassed, an obviously destructive command is
+  // ALSO confirmed natively here, so a mass delete or format never runs silently.
+  // Matches obviously destructive commands regardless of flag order/position:
+  // any recursive rm (-rf, -fr, -r, --recursive), rmdir/rd /s, del with /s or /q
+  // anywhere, format X:, mkfs, dd if=, a real shutdown invocation (with a flag,
+  // not the word in prose), reg delete, diskpart, and PowerShell recursive removes.
+  const DESTRUCTIVE_COMMAND = /(\brm\s+(?:-\S*r|--recursive)|\brmdir\s+\/s|\brd\s+\/s|\bdel\s+[^|]*\/[sq]\b|\bformat\s+[a-z]:|\bmkfs\b|\bdd\s+if=|\bshutdown\s+[-/]|\breg\s+delete\b|\bdiskpart\b|Remove-Item[^|]*-Recurse)/i;
   ipcMain.handle("shell:run", async (_event, raw) => {
-    const { command } = shellActionSchema.parse(raw);
-    const target = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
-    const options = {
-      type: "warning" as const,
-      buttons: ["Cancel", "Run"],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-      title: "Run a command?",
-      message: "WorkCrew wants to run a command on your computer.",
-      detail: `${command}\n\nThis runs in WorkCrew's workspace folder. Only allow commands you understand and trust.`
+    const input = (raw ?? {}) as { command?: unknown; cwd?: unknown };
+    const { command } = shellActionSchema.parse({ kind: "shell", command: input.command });
+    const cwd = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd : null;
+    if (DESTRUCTIVE_COMMAND.test(command)) {
+      const target = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+      const options = {
+        type: "warning" as const,
+        buttons: ["Cancel", "Run"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        title: "Run a risky command?",
+        message: "WorkCrew wants to run a command that can delete or change many files.",
+        detail: `${command}\n\n${cwd ? `In: ${cwd}` : "In WorkCrew's workspace folder"}\n\nOnly allow commands you understand and trust.`
+      };
+      const { response } = target ? await dialog.showMessageBox(target, options) : await dialog.showMessageBox(options);
+      if (response !== 1) return "The user declined to run this command.";
+    }
+    return runShellCommand(command, cwd);
+  });
+
+  // Whether a dropped path is a file or a folder, so dragging a folder into the
+  // chat sets it as the working folder instead of failing as a file upload.
+  ipcMain.handle("files:path-kind", async (_event, raw) => {
+    if (typeof raw !== "string" || !raw.trim()) return "missing";
+    const fs = await import("node:fs/promises");
+    try {
+      const info = await fs.stat(raw);
+      return info.isDirectory() ? "directory" : info.isFile() ? "file" : "missing";
+    } catch {
+      return "missing";
+    }
+  });
+
+  // Pick a folder to work in (the user's own project or data folder). WorkCrew
+  // keeps it as the conversation's working folder and runs commands inside it.
+  ipcMain.handle("dialog:open-folder", async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Choose a folder to work in",
+      buttonLabel: "Work in this folder",
+      properties: ["openDirectory"]
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const path = result.filePaths[0] as string;
+    return { path, name: path.split(/[\\/]/).filter(Boolean).pop() ?? path };
+  });
+
+  // A shallow, bounded listing of a working folder, so the model knows what it is
+  // working with before it acts. Heavy/noise directories are skipped, and depth,
+  // breadth, and total size are capped.
+  ipcMain.handle("workspace:tree", async (_event, raw) => {
+    const dir = typeof raw === "string" ? raw : "";
+    if (!dir) return "";
+    const fs = await import("node:fs/promises");
+    const IGNORE = new Set([".git", "node_modules", ".next", "dist", "out", "build", ".venv", "__pycache__", ".cache", ".turbo"]);
+    const MAX_ENTRIES = 400;
+    const lines: string[] = [];
+    let count = 0;
+    const readEntries = async (current: string) => {
+      try {
+        return await fs.readdir(current, { withFileTypes: true });
+      } catch {
+        return [];
+      }
     };
-    const { response } = target ? await dialog.showMessageBox(target, options) : await dialog.showMessageBox(options);
-    if (response !== 1) return "The user declined to run this command.";
-    return runShellCommand(command);
+    async function walk(current: string, prefix: string, depth: number): Promise<void> {
+      if (depth > 3 || count >= MAX_ENTRIES) return;
+      const entries = await readEntries(current);
+      entries.sort((a, b) => (a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name) : a.isDirectory() ? -1 : 1));
+      for (const entry of entries) {
+        if (count >= MAX_ENTRIES) { lines.push(`${prefix}...`); return; }
+        const isDir = entry.isDirectory();
+        if (isDir && IGNORE.has(entry.name)) { lines.push(`${prefix}${entry.name}/ (skipped)`); count += 1; continue; }
+        lines.push(`${prefix}${entry.name}${isDir ? "/" : ""}`);
+        count += 1;
+        if (isDir) await walk(join(current, entry.name), `${prefix}  `, depth + 1);
+      }
+    }
+    await walk(dir, "", 0);
+    return lines.join("\n").slice(0, 12_000);
   });
 
   ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));

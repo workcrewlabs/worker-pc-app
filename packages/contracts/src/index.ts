@@ -334,7 +334,12 @@ export const chatSendSchema = z.object({
   attachments: z.array(attachmentRefSchema).max(20).default([]),
   model: modelTierSchema.default("sonnet"),
   effort: effortSchema.default("high"),
-  thinking: z.boolean().default(false)
+  thinking: z.boolean().default(false),
+  // App-provided context for this turn only (for example the working folder's
+  // path and current listing). It is shown to the model alongside the newest
+  // user message but never stored as part of it, so reopening the conversation
+  // shows only what the user actually typed.
+  context: z.string().max(24_000).optional()
 }).strict();
 export type ChatSend = z.infer<typeof chatSendSchema>;
 

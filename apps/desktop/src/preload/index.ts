@@ -30,6 +30,9 @@ type ChatSendPayload = {
   model: ModelTier;
   effort: "low" | "medium" | "high" | "max";
   thinking?: boolean;
+  // App-provided context for this turn (for example the working folder's path
+  // and listing); shown to the model but never stored with the message.
+  context?: string;
 };
 
 // A frame envelope as delivered over the chat:delta channel.
@@ -136,10 +139,12 @@ const workcrew = {
     setPinned: (id: string, pinned: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke("conversations:pin", id, pinned)
   },
   automation: {
-    execute: (action: AutomationAction): Promise<string> => {
+    // cwd is the conversation's working folder (when the user added one), so a
+    // shell command runs inside their folder instead of the hidden workspace.
+    execute: (action: AutomationAction, cwd?: string): Promise<string> => {
       if (action.kind === "browser") return ipcRenderer.invoke("automation:browser", action);
       if (action.kind === "windows") return ipcRenderer.invoke("automation:windows", action);
-      if (action.kind === "shell") return ipcRenderer.invoke("shell:run", action);
+      if (action.kind === "shell") return ipcRenderer.invoke("shell:run", { command: action.command, cwd });
       return Promise.resolve(action.summary);
     },
     launchBrowser: (): Promise<{ launched: boolean; message: string }> => ipcRenderer.invoke("automation:launch-browser"),
@@ -167,6 +172,12 @@ const workcrew = {
   },
   files: {
     pick: (): Promise<PickedFile[]> => ipcRenderer.invoke("dialog:open-files"),
+    // Pick a folder to work in, and read a shallow listing of it for the model.
+    pickFolder: (): Promise<{ path: string; name: string } | null> => ipcRenderer.invoke("dialog:open-folder"),
+    folderTree: (path: string): Promise<string> => ipcRenderer.invoke("workspace:tree", path),
+    // Whether a dropped path is a file or a folder, so a dropped folder becomes
+    // the working folder instead of a failed file upload.
+    pathKind: (path: string): Promise<"file" | "directory" | "missing"> => ipcRenderer.invoke("files:path-kind", path),
     // Resolve the absolute path of a file dropped onto the window, so it can be
     // uploaded through the same path-based pipeline as the file picker. Guarded
     // so an unavailable webUtils never breaks the bridge; the caller falls back.

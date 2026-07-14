@@ -31,6 +31,26 @@ function id(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Working folders ----------------------------------------------------------
+// The folder each conversation is working in, kept so reopening a saved
+// conversation restores its folder (and keeps routing to the command engine).
+
+export type WorkingFolder = { path: string; name: string };
+
+const FOLDERS_KEY = "conversationFolders";
+
+export function getConversationFolder(conversationId: string): WorkingFolder | null {
+  const map = read<Record<string, WorkingFolder>>(FOLDERS_KEY, {});
+  return map[conversationId] ?? null;
+}
+
+export function setConversationFolder(conversationId: string, folder: WorkingFolder | null): void {
+  const map = read<Record<string, WorkingFolder>>(FOLDERS_KEY, {});
+  if (folder) map[conversationId] = folder;
+  else delete map[conversationId];
+  write(FOLDERS_KEY, map);
+}
+
 // History ------------------------------------------------------------------
 
 export type RunOutcome = "complete" | "stopped" | "failed";

@@ -1,6 +1,4 @@
 import { useState } from "react";
-import type { ModelTier } from "@workcrew/contracts";
-import type { AutomationRunner } from "../hooks/useAutomationRunner";
 import {
   addRoutine,
   describeCadence,
@@ -81,15 +79,18 @@ function TimeStepper({ value, min, max, onChange, label }: { value: number; min:
 }
 
 export function RoutinesPanel({
-  runner,
-  model,
+  onRun,
+  busy,
   routines,
   onChange,
   onClose,
   initialTask = ""
 }: {
-  runner: AutomationRunner;
-  model: ModelTier;
+  // Run a routine now. The workspace opens a fresh conversation for it and drives
+  // it there, so a routine run behaves like any other computer task.
+  onRun: (task: string, label: string) => void;
+  // Whether a computer task is already running or paused (the machine is busy).
+  busy: boolean;
   routines: Routine[];
   onChange: (next: Routine[]) => void;
   onClose: () => void;
@@ -142,8 +143,8 @@ export function RoutinesPanel({
   }
 
   function runNow(routine: Routine) {
-    if (runner.running) return;
-    void runner.run(routine.task, model, routine.name);
+    if (busy) return;
+    onRun(routine.task, routine.name);
   }
 
   return (
@@ -203,7 +204,7 @@ export function RoutinesPanel({
                 <span className="routine-meta">{describeCadence(routine)}{routine.enabled ? "" : " · Paused"}</span>
               </div>
               <div className="routine-actions">
-                <button className="primary small" onClick={() => runNow(routine)} disabled={runner.running}>Run now</button>
+                <button className="primary small" onClick={() => runNow(routine)} disabled={busy}>Run now</button>
                 <button className="icon-button" onClick={() => startEdit(routine)} aria-label={`Edit ${routine.name}`} title="Edit">
                   <PencilIcon />
                 </button>

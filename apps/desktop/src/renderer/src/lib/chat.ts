@@ -10,6 +10,19 @@ export type ChatRole = "user" | "assistant";
 // the full reference lives on the send payload.
 export type TurnAttachment = { filename: string; kind: AttachmentKind };
 
+// A file attached by its real location on the computer (picked, dragged, or a
+// pasted copied file). Attaching is instant: nothing is read or uploaded until
+// the message is sent, and a local task never uploads it at all.
+export type LocalFile = { path: string; name: string; size: number };
+
+// Guess the display kind of a local file from its name, for the turn chip.
+export function kindForFilename(name: string): AttachmentKind {
+  const ext = (name.split(".").pop() ?? "").toLowerCase();
+  if (["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) return "image";
+  if (ext === "pdf") return "pdf";
+  return "text";
+}
+
 export type ChatTurn = {
   // A local id, stable for the lifetime of the turn in the transcript.
   id: string;

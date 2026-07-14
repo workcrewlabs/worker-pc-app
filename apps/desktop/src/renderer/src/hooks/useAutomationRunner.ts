@@ -37,7 +37,9 @@ export type AutomationRunner = {
   running: boolean;
   label: string;
   pending: { action: AutomationAction; label: string } | null;
-  run: (task: string, model: ModelTier, label?: string) => Promise<void>;
+  // workingFolder, when set, is the absolute path of the user's chosen folder; any
+  // shell command in this run executes inside it instead of the hidden workspace.
+  run: (task: string, model: ModelTier, label?: string, workingFolder?: string) => Promise<void>;
   decide: (approved: boolean) => void;
   stop: () => void;
   clear: () => void;
@@ -47,6 +49,12 @@ export type AutomationRunner = {
   // from React state, which lags a tick), this is set the instant a run starts,
   // so callers can avoid launching a second run in the same tick.
   isBusy: () => boolean;
+  // A computer/browser task needs the real mouse and screen, so it cannot run in
+  // the background. When its conversation loses focus it is paused between steps
+  // (the mouse is released) and resumes from the same place when reopened.
+  paused: boolean;
+  pause: () => void;
+  resume: () => void;
 };
 
 export function useAutomationRunner(): AutomationRunner {
@@ -56,7 +64,16 @@ export function useAutomationRunner(): AutomationRunner {
   const [error, setError] = useState("");
   const [label, setLabel] = useState("");
   const [pending, setPending] = useState<{ action: AutomationAction; label: string } | null>(null);
+  // A paused run is one whose conversation is no longer on screen. The loop parks
+  // between steps until resumed, so the mouse is never driven for a background chat.
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
+  const resumeResolve = useRef<(() => void) | null>(null);
 
+  // The user's chosen working folder for the current run (absolute path), passed to
+  // the shell so a command runs inside their folder. Held in a ref so the execute
+  // calls read the latest without threading it through every step.
+  const workingFolderRef = useRef<string | undefined>(undefined);
   const stoppedRef = useRef(false);
   // Set synchronously the instant a run begins and cleared on every exit path.
   // The React `status` state lags a tick, so two callers (a manual send and the
@@ -126,6 +143,37 @@ export function useAutomationRunner(): AutomationRunner {
     }
   }
 
+  // Park the loop while paused. Called between steps, before the next action is
+  // chosen or executed, so a pause never interrupts an action mid-flight; it takes
+  // effect at the next safe boundary. The mouse overlay is lowered while parked so
+  // the user has their cursor back, and re-raised by the next input action.
+  async function waitIfPaused(): Promise<void> {
+    if (!pausedRef.current) return;
+    hideOverlay();
+    await new Promise<void>((resolve) => {
+      resumeResolve.current = resolve;
+    });
+    resumeResolve.current = null;
+  }
+
+  // Pause the run (its conversation left the screen). The in-flight action, if any,
+  // finishes; the loop then parks at the next boundary.
+  function pause(): void {
+    if (!runningRef.current || pausedRef.current) return;
+    pausedRef.current = true;
+    setPaused(true);
+  }
+
+  // Resume a paused run from where it stopped (its conversation is on screen again).
+  function resume(): void {
+    if (!pausedRef.current) return;
+    pausedRef.current = false;
+    setPaused(false);
+    const release = resumeResolve.current;
+    resumeResolve.current = null;
+    release?.();
+  }
+
   function requestApproval(action: AutomationAction): Promise<boolean> {
     return new Promise((resolve) => {
       approvalResolve.current = resolve;
@@ -154,6 +202,15 @@ export function useAutomationRunner(): AutomationRunner {
 
   function stop(): void {
     stoppedRef.current = true;
+    // If the run is parked (paused), release it so the loop wakes, sees the stop
+    // flag, and exits cleanly instead of hanging on the resume promise.
+    if (pausedRef.current) {
+      pausedRef.current = false;
+      setPaused(false);
+      const release = resumeResolve.current;
+      resumeResolve.current = null;
+      release?.();
+    }
     // Stop the mouse-driving helper first; the overlay is lowered by the run's
     // exit path (or the main-process safety timer) once the in-flight action has
     // actually settled, so it never disappears while the mouse is still moving.
@@ -168,6 +225,7 @@ export function useAutomationRunner(): AutomationRunner {
   // a step or stops the run.
   async function replayRecipe(recipe: Recipe): Promise<"complete" | "failed" | "stopped"> {
     for (const step of recipe.steps) {
+      await waitIfPaused();
       if (stoppedRef.current) return "stopped";
       const action = step.action;
       const id = stepId();
@@ -191,7 +249,7 @@ export function useAutomationRunner(): AutomationRunner {
         if (action.kind === "windows" && (action.command === "type-text" || action.command === "press-key")) {
           await new Promise((settle) => setTimeout(settle, 150));
         }
-        await window.workcrew.automation.execute(action);
+        await window.workcrew.automation.execute(action, workingFolderRef.current);
         setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
       } catch {
         setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "error" } : item)));
@@ -201,12 +259,13 @@ export function useAutomationRunner(): AutomationRunner {
     return "complete";
   }
 
-  async function run(task: string, model: ModelTier, runLabel = ""): Promise<void> {
+  async function run(task: string, model: ModelTier, runLabel = "", workingFolder?: string): Promise<void> {
     const trimmed = task.trim();
     // Synchronous guard: if a run is already in flight, do nothing. This is set
     // before any await so a second caller in the same tick cannot slip past it.
     if (trimmed.length < 3 || runningRef.current) return;
     runningRef.current = true;
+    workingFolderRef.current = workingFolder;
     // Event name only; never the task text or any on-screen content.
     track("automation_started");
     // Wrap the whole run in try/finally so the in-flight guard is cleared on
@@ -215,6 +274,8 @@ export function useAutomationRunner(): AutomationRunner {
     // strand the runner with isBusy() stuck true until an app restart.
     try {
     stoppedRef.current = false;
+    pausedRef.current = false;
+    setPaused(false);
     mouseActiveRef.current = false;
     setSteps([]);
     setSummary("");
@@ -261,6 +322,9 @@ export function useAutomationRunner(): AutomationRunner {
       let result: { toolUseId: string; ok: boolean; output: string } | undefined;
 
       for (let step = 0; step < MAX_STEPS; step += 1) {
+        // Park here if the conversation left the screen; resume picks up the same
+        // run (the backend run id is still valid, so no work is lost).
+        await waitIfPaused();
         if (stoppedRef.current) {
           setStatus("stopped");
           break;
@@ -303,7 +367,7 @@ export function useAutomationRunner(): AutomationRunner {
 
         try {
           showOverlayFor(action);
-          const output = await window.workcrew.automation.execute(action);
+          const output = await window.workcrew.automation.execute(action, workingFolderRef.current);
           setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
           result = { toolUseId: response.toolUseId, ok: true, output: redactResult(output) };
           // Remember the latest snapshot so a following click can be resolved to
@@ -347,8 +411,10 @@ export function useAutomationRunner(): AutomationRunner {
     }
     } finally {
       runningRef.current = false;
+      pausedRef.current = false;
+      setPaused(false);
     }
   }
 
-  return { steps, status, summary, error, label, pending, run, decide, stop, clear, setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running" };
+  return { steps, status, summary, error, label, pending, run, decide, stop, clear, setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
 }

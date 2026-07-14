@@ -1,4 +1,64 @@
+import { useEffect, useState } from "react";
 import type { AutomationRunner } from "../hooks/useAutomationRunner";
+import { Markdown } from "../lib/markdown";
+
+// Folder-mode work rendered the quiet cowork way: a muted past-tense line per
+// command, a small spinner with elapsed seconds while working, and the final
+// answer as a normal chat message. Nothing boxed, no Stop button here (the
+// composer's Send button becomes Stop), so answering a question about a folder
+// feels like chat, not like the computer being taken over. The boxed panel
+// below stays for headed automations (browser and app control).
+export function FolderActivity({ runner }: { runner: AutomationRunner }) {
+  const { steps, summary, status, error, running } = runner;
+
+  // Elapsed seconds since the run started, shown next to the spinner like
+  // "Working... 7s" so a long command visibly makes progress.
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    setElapsed(0);
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1_000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  if (!running && steps.length === 0 && !summary && !error) return null;
+
+  // Past-tense, muted line per action. Folder work is commands, so almost every
+  // line reads "Ran a command"; the command itself sits in the hover title.
+  const lineFor = (label: string, stepStatus: string): string => {
+    const base = label === "Run a command" ? "Ran a command" : label;
+    if (stepStatus === "error") return `${base} (failed)`;
+    if (stepStatus === "declined") return `${base} (skipped)`;
+    return base;
+  };
+
+  return (
+    <div className="folder-activity" aria-live="polite">
+      {steps
+        .filter((step) => step.status !== "running")
+        .map((step) => (
+          <p key={step.id} className="folder-step" title={step.detail || undefined}>
+            {lineFor(step.label, step.status)}
+          </p>
+        ))}
+      {running && (
+        <p className="folder-working">
+          <span className="chip-spinner" aria-hidden="true" />
+          Working...{elapsed >= 3 ? ` ${elapsed}s` : ""}
+        </p>
+      )}
+      {!running && summary && (
+        <div className="turn turn-assistant">
+          <div className="assistant-body">
+            <Markdown text={summary} />
+          </div>
+        </div>
+      )}
+      {!running && error && status !== "stopped" && <p className="turn-error">{error}</p>}
+    </div>
+  );
+}
 
 // Shows an automation run inline inside the chat: the task being done, each step
 // as it happens, and the final result. This replaces the old separate Automation
