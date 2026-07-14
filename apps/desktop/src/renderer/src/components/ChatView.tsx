@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import type { AttachmentRef, ModelTier } from "@workcrew/contracts";
-import type { ChatTurn } from "../lib/chat";
+import type { ChatTurn, LocalFile } from "../lib/chat";
 import type { AutomationRunner } from "../hooks/useAutomationRunner";
 import { Dictation } from "../lib/dictation";
 import { Dropdown, type DropdownOption } from "./Dropdown";
 import { MessageList } from "./MessageList";
-import { AutomationActivity } from "./AutomationActivity";
+import { AutomationActivity, FolderActivity } from "./AutomationActivity";
 
-type PickedFile = { path: string; name: string; size: number };
-// A file in the composer: it shows immediately with a spinner while it uploads,
-// then becomes ready (or shows an error). path is the file's real location on the
-// computer when known (drag, file picker, or a pasted copied file), so a task can
-// work on the original file locally instead of only the uploaded copy.
-type Attachment = { id: string; filename: string; status: "uploading" | "ready" | "error"; ref?: AttachmentRef; path?: string };
+type PickedFile = LocalFile;
+// A file in the composer. A file with a real location on the computer (drag, file
+// picker, or a pasted copied file) attaches INSTANTLY: only its path is recorded,
+// and nothing is read or uploaded until the message is sent (a local task works on
+// the original file and never uploads it). Only a pasted screenshot, which has no
+// path, uploads its bytes when pasted and shows a brief spinner.
+type Attachment = { id: string; filename: string; status: "uploading" | "ready" | "error"; ref?: AttachmentRef; path?: string; size?: number };
 
 function PlusIcon() {
   return (
@@ -27,6 +28,14 @@ function CursorIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M5 3l6 17 2.5-6.5L20 11z" />
+    </svg>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     </svg>
   );
 }
@@ -135,13 +144,17 @@ export function ChatView({
   onAlwaysAllowChange,
   onSaveRoutine,
   onRerun,
-  composerSeed
+  composerSeed,
+  workingFolder,
+  onPickFolder,
+  onClearFolder,
+  onAddFolder
 }: {
   turns: ChatTurn[];
   streaming: boolean;
   model: ModelTier;
   onModelChange: (model: ModelTier) => void;
-  onSend: (text: string, attachments: AttachmentRef[], localPaths: string[]) => void;
+  onSend: (text: string, attachments: AttachmentRef[], files: LocalFile[]) => void;
   onStop: () => void;
   onAutomate: (task: string) => void;
   onRecord?: () => void;
@@ -152,6 +165,11 @@ export function ChatView({
   onSaveRoutine?: () => void;
   onRerun?: () => void;
   composerSeed?: { text: string; nonce: number };
+  workingFolder?: { path: string; name: string } | null;
+  onPickFolder?: () => void;
+  onClearFolder?: () => void;
+  // A folder dragged into the chat becomes the working folder.
+  onAddFolder?: (folder: { path: string; name: string }) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -160,6 +178,8 @@ export function ChatView({
   const [dictating, setDictating] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [voiceNote, setVoiceNote] = useState("");
+  // The "+" opens a small menu to add photos/files or a folder to work in.
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const dictationRef = useRef<Dictation | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -171,10 +191,13 @@ export function ChatView({
   const hasConversation = turns.length > 0 || runnerActive;
 
   const uploading = attachments.some((item) => item.status === "uploading");
+  // Pasted screenshots (no path) upload when pasted and carry a ref by send time.
   const readyRefs = attachments.filter((item) => item.status === "ready" && item.ref).map((item) => item.ref as AttachmentRef);
-  // Real local paths of attached files (drag, picker, or pasted copied files), so
-  // a processing task can work on the originals on the computer.
-  const readyPaths = attachments.filter((item) => item.status === "ready" && item.path).map((item) => item.path as string);
+  // Path files attach instantly; they are sent by their real location and only
+  // read at send time (or worked on in place by a local task, with no upload).
+  const readyFiles: LocalFile[] = attachments
+    .filter((item) => item.status === "ready" && item.path)
+    .map((item) => ({ path: item.path as string, name: item.filename, size: item.size ?? 0 }));
 
   // Show the one-time model setup progress on first voice use.
   useEffect(() => window.workcrew.dictation.onStatus((status) => {
@@ -249,32 +272,31 @@ export function ChatView({
     return () => clearTimeout(timer);
   }, [attachError]);
 
-  // Add files: show each as a chip with a spinner straight away, then upload them
-  // in the background and mark each ready (or failed) on its own. More files can
-  // be added while others are still uploading.
+  // Close the add menu on any outside click or Escape.
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const close = (): void => setAddMenuOpen(false);
+    const onKey = (event: KeyboardEvent): void => { if (event.key === "Escape") setAddMenuOpen(false); };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("click", close); window.removeEventListener("keydown", onKey); };
+  }, [addMenuOpen]);
+
+  // Add files by their real location: the chip is ready INSTANTLY, like cowork.
+  // Nothing is read or uploaded here; a local task works on the original file in
+  // place, and a chat question reads it at send time under the thinking state.
   function addFiles(picked: PickedFile[]) {
     if (picked.length === 0) return;
     setAttachError("");
     setAttachments((current) => {
       const room = Math.max(0, 20 - current.length);
-      const accepted = picked.slice(0, room);
-      const chips: Attachment[] = accepted.map((file) => ({ id: localId(), filename: file.name, status: "uploading", path: file.path }));
-      accepted.forEach((file, index) => {
-        const chip = chips[index];
-        if (!chip) return;
-        window.workcrew.attachments.upload([file])
-          .then((refs) => {
-            const ref = refs[0];
-            setAttachments((list) => list.map((item) =>
-              item.id === chip.id ? (ref ? { ...item, status: "ready", ref } : { ...item, status: "error" }) : item
-            ));
-            if (!ref) setAttachError("That file could not be added. Please try again.");
-          })
-          .catch((error) => {
-            setAttachments((list) => list.map((item) => (item.id === chip.id ? { ...item, status: "error" } : item)));
-            setAttachError(friendlyFileError(error));
-          });
-      });
+      const chips: Attachment[] = picked.slice(0, room).map((file) => ({
+        id: localId(),
+        filename: file.name,
+        status: "ready",
+        path: file.path,
+        size: file.size
+      }));
       return [...current, ...chips];
     });
   }
@@ -319,7 +341,9 @@ export function ChatView({
       if (path) picked.push({ path, name: file.name, size: file.size });
       else addImageBlob(file);
     }
-    if (picked.length) addFiles(picked);
+    // Route through the directory-aware handler so a pasted/copied folder becomes
+    // the working folder instead of a failed file upload, exactly like a drop.
+    if (picked.length) void handleDropped(picked);
   }
 
   async function pickFiles() {
@@ -331,6 +355,19 @@ export function ChatView({
       return;
     }
     addFiles(picked);
+  }
+
+  // Route each dropped path: a folder becomes the working folder, a file attaches
+  // instantly. The kind check is a local stat, so the drop still feels immediate.
+  async function handleDropped(picked: PickedFile[]) {
+    const files: PickedFile[] = [];
+    for (const item of picked) {
+      let kind: "file" | "directory" | "missing" = "file";
+      try { kind = await window.workcrew.files.pathKind(item.path); } catch { kind = "file"; }
+      if (kind === "directory") onAddFolder?.({ path: item.path, name: item.name });
+      else if (kind === "file") files.push(item);
+    }
+    addFiles(files);
   }
 
   function onDrop(event: React.DragEvent) {
@@ -346,7 +383,7 @@ export function ChatView({
         // A file without a resolvable path is skipped.
       }
     }
-    addFiles(picked);
+    void handleDropped(picked);
   }
 
   function onDragOver(event: React.DragEvent) {
@@ -362,10 +399,10 @@ export function ChatView({
 
   function submit(text: string) {
     const trimmed = text.trim();
-    // Block while a chat is streaming, files are uploading, or an automation is
-    // running, so a message is never silently dropped against a busy engine.
-    if ((!trimmed && readyRefs.length === 0) || streaming || uploading || runner.running) return;
-    onSend(trimmed, readyRefs, readyPaths);
+    // Block while a chat is streaming, a pasted image is still uploading, or an
+    // automation is running, so a message is never dropped against a busy engine.
+    if ((!trimmed && readyRefs.length === 0 && readyFiles.length === 0) || streaming || uploading || runner.running) return;
+    onSend(trimmed, readyRefs, readyFiles);
     setDraft("");
     setAttachments([]);
     setAttachError("");
@@ -378,7 +415,7 @@ export function ChatView({
     }
   }
 
-  const canSend = (draft.trim().length > 0 || readyRefs.length > 0) && !uploading && !runner.running;
+  const canSend = (draft.trim().length > 0 || readyRefs.length > 0 || readyFiles.length > 0) && !uploading && !runner.running;
 
   const composer = (
     <div
@@ -414,16 +451,31 @@ export function ChatView({
       {attachError && <div className="attach-error-row">{attachError}</div>}
       {voiceNote && <div className="voice-note">{voiceNote}</div>}
       <div className="composer-tools">
-        <button
-          className="tool-button"
-          type="button"
-          title="Add files or photos"
-          aria-label="Add files or photos"
-          onClick={() => void pickFiles()}
-          disabled={streaming}
-        >
-          <PlusIcon />
-        </button>
+        <div className="add-menu-wrap">
+          <button
+            className="tool-button"
+            type="button"
+            title="Add files or a folder"
+            aria-label="Add files or a folder"
+            aria-haspopup="menu"
+            onClick={(event) => { event.stopPropagation(); setAddMenuOpen((open) => !open); }}
+            disabled={streaming}
+          >
+            <PlusIcon />
+          </button>
+          {addMenuOpen && (
+            <div className="add-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+              <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); void pickFiles(); }}>
+                <span className="add-menu-icon"><PlusIcon /></span> Add photos or files
+              </button>
+              {onPickFolder && (
+                <button type="button" role="menuitem" onClick={() => { setAddMenuOpen(false); onPickFolder(); }}>
+                  <span className="add-menu-icon"><FolderIcon /></span> Add a folder to work in
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         {onRecord && (
           <button
             className="tool-button"
@@ -455,15 +507,44 @@ export function ChatView({
           direction="up"
           align="right"
         />
-        {streaming ? (
-          <button className="stop-button" type="button" onClick={onStop}>Stop</button>
+        {streaming || (workingFolder && runner.running) ? (
+          <button className="stop-button" type="button" onClick={streaming ? onStop : runner.stop}>Stop</button>
         ) : (
           <button className="run-button" type="button" onClick={() => submit(draft)} disabled={!canSend}>Send</button>
         )}
       </div>
-      {dragging && <div className="drop-hint">Drop files to attach</div>}
+      {dragging && <div className="drop-hint">Drop files or a folder</div>}
     </div>
   );
+
+  // The working-folder pill sits BELOW the composer, detached from it, on the
+  // page background (like Claude cowork), never inside the composer panel.
+  const folderContext = workingFolder ? (() => {
+    const folderName = workingFolder.name || workingFolder.path;
+    const rawParent = workingFolder.path.length > folderName.length
+      ? workingFolder.path.slice(0, workingFolder.path.length - folderName.length)
+      : "";
+    const folderParent = rawParent.length > 30 ? `…${rawParent.slice(rawParent.length - 30)}` : rawParent;
+    return (
+      <div className="composer-context">
+        <div className="folder-pill" title={`Working in ${workingFolder.path}. Click to change.`}>
+          <button type="button" className="folder-pill-main" onClick={onPickFolder} aria-label={`Working in ${workingFolder.path}. Change folder.`}>
+            <span className="folder-pill-icon" aria-hidden="true"><FolderIcon /></span>
+            <span className="folder-pill-loc">
+              {folderParent && <span className="folder-pill-parent">{folderParent}</span>}
+              <span className="folder-pill-name">{folderName}</span>
+            </span>
+            <svg className="folder-pill-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          {onClearFolder && (
+            <button type="button" className="folder-pill-remove" aria-label="Stop working in this folder" onClick={onClearFolder}>×</button>
+          )}
+        </div>
+      </div>
+    );
+  })() : null;
 
   // The "Always allow" toggle sits just under the composer, on the left, like a
   // permissions switch. It is present in both the empty and active layouts.
@@ -479,6 +560,7 @@ export function ChatView({
         <div className="chat-empty-inner">
           <h1 className="greeting">{timeGreeting()}</h1>
           {composer}
+          {folderContext}
           {aux}
           <p className="suggestion-label">Try an automation</p>
           <div className="suggestion-chips">
@@ -501,9 +583,13 @@ export function ChatView({
     <div className="chat-active">
       <div className="chat-scroll" ref={scrollRef}>
         <MessageList turns={turns} streaming={streaming} />
-        <AutomationActivity runner={runner} task={automationTask} onSaveRoutine={onSaveRoutine} onRerun={onRerun} />
+        {workingFolder ? (
+          <FolderActivity runner={runner} />
+        ) : (
+          <AutomationActivity runner={runner} task={automationTask} onSaveRoutine={onSaveRoutine} onRerun={onRerun} />
+        )}
       </div>
-      <div className="composer-dock">{composer}{aux}</div>
+      <div className="composer-dock">{composer}{folderContext}{aux}</div>
     </div>
   );
 }

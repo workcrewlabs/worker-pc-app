@@ -22,12 +22,14 @@ import { UsageBanner } from "./components/UsageBanner";
 import { UsageBoostBanner } from "./components/UsageBoostBanner";
 import { usageStatus } from "./lib/usage";
 import {
+  getConversationFolder,
   loadPermissions,
   loadRoutines,
   markRoutineRan,
   nextDueRoutine,
   type PermissionState,
-  type Routine
+  type Routine,
+  type WorkingFolder
 } from "./lib/storage";
 
 type AppInfo = { name: string; version: string; authMode: string; billingMode: string };
@@ -423,7 +425,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   // background; only the active pane is on screen. A brand-new chat starts as one
   // blank pane.
   const firstKey = useRef(localId());
-  const [panes, setPanes] = useState<{ key: string; conversationId?: string; initialTurns?: ChatTurn[]; initialAutomation?: { task: string; label: string } }[]>(
+  const [panes, setPanes] = useState<{ key: string; conversationId?: string; initialTurns?: ChatTurn[]; initialAutomation?: { task: string; label: string }; initialWorkingFolder?: WorkingFolder | null }[]>(
     () => [{ key: firstKey.current }]
   );
   const [activeKey, setActiveKey] = useState<string>(firstKey.current);
@@ -715,7 +717,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
       const detail = await window.workcrew.conversations.get(id);
       const key = `conv:${id}`;
       knownConvIds.current.add(id);
-      setPanes((list) => [{ key, conversationId: id, initialTurns: turnsFromMessages(detail.messages) }, ...prunePanes(list)]);
+      setPanes((list) => [{ key, conversationId: id, initialTurns: turnsFromMessages(detail.messages), initialWorkingFolder: getConversationFolder(id) }, ...prunePanes(list)]);
       setActiveKey(key);
     } catch {
       // Leave the current panes in place if the load fails.
@@ -905,6 +907,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
                 initialTurns={pane.initialTurns}
                 initialConversationId={pane.conversationId}
                 initialAutomation={pane.initialAutomation}
+                initialWorkingFolder={pane.initialWorkingFolder}
                 composerSeed={pane.key === activeKey ? composerSeed : undefined}
                 onStatus={handlePaneStatus}
                 onRefreshEntitlement={onRefreshEntitlement}

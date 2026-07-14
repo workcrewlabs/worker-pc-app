@@ -5,10 +5,16 @@
 // requests stay in chat, and only imperative "do this on my machine" phrasing
 // automates.
 
+// Lowercase and strip leading quotes, brackets, and stray punctuation so a typed
+// `"whats in this folder` still starts with "whats" for the matchers below.
+function normalized(text: string): string {
+  return text.trim().toLowerCase().replace(/^["'`”“‘’([{«\s]+/, "");
+}
+
 // Whether a message is an instruction to act on the user's computer (drive the
 // browser or a Windows app) rather than a question to answer in chat.
 export function looksLikeAutomation(text: string): boolean {
-  const t = text.trim().toLowerCase();
+  const t = normalized(text);
   if (t.length < 4) return false;
   // Plainly a question, or a writing/explaining request: keep it in chat.
   if (/^(how|what|whats|what's|why|when|who|where|which|is |are |do |does |can i|can you|can u|could you|would you|explain|tell me|write|draft|compose|summari|translate|define|describe|give me|list|brainstorm|suggest|recommend|help me (write|understand|learn|decide|with)|teach me|show me how)\b/.test(t)) {
@@ -41,7 +47,7 @@ export function looksLikeAutomation(text: string): boolean {
 // task. Used while iterating on an automation: a question is answered in chat,
 // anything else is treated as a correction that re-runs the task.
 export function isQuestionLike(text: string): boolean {
-  const t = text.trim().toLowerCase();
+  const t = normalized(text);
   return /^(how|what|whats|what's|why|when|who|where|which|is |are |do |does |can i|can you|can u|could you|would you|explain|tell me|write|draft|compose|summari|translate|define|describe|give me|list|brainstorm|suggest|recommend|help me|teach me|show me how)\b/.test(t);
 }
 
@@ -52,7 +58,7 @@ export function isQuestionLike(text: string): boolean {
 // checked before any automation routing. Controlling an app ("open Excel and...",
 // "in Excel", "on my computer") is the opposite and is left to automation.
 export function looksLikeFileRequest(text: string): boolean {
-  const t = text.trim().toLowerCase();
+  const t = normalized(text);
   if (t.length < 5) return false;
   // Controlling an app or the machine is automation, not a file hand-off.
   if (/\b(open|launch|in|inside|using|control|automate)\s+(my\s+|the\s+)?(excel|word|powerpoint|sheets?|docs?)\b/.test(t)) return false;

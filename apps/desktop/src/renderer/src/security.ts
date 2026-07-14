@@ -83,13 +83,14 @@ export function isConsequentialAction(action: AutomationAction, label?: string):
 // on Claude Code: when "Always allow" is off, every write action asks (and the
 // user approves to continue). "Always allow" silences the asking, but only for
 // categories the user has left on in Permissions; a category turned off keeps
-// asking even with "Always allow" on. Shell is excluded here because the main
-// process shows its own native confirmation that cannot be bypassed.
+// asking even with "Always allow" on. A shell command (used to work inside a
+// folder the user added) is governed the same way: it asks each time when "Always
+// allow" is off, and runs freely when it is on. The main process keeps a separate
+// native floor for obviously destructive commands that cannot be bypassed.
 export function requiresApproval(
   action: AutomationAction,
   opts: { alwaysAllow: boolean; permissions: Record<string, boolean>; label?: string }
 ): boolean {
-  if (action.kind === "shell") return false;
   if (!actionNeedsApproval(action)) return false; // reads and finish never prompt
   // Money-moving, destructive, and terminal-launch actions are never silenced,
   // even with "Always allow" on. This closes the path where Always allow lets

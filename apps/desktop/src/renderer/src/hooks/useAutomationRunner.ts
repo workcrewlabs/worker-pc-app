@@ -37,7 +37,9 @@ export type AutomationRunner = {
   running: boolean;
   label: string;
   pending: { action: AutomationAction; label: string } | null;
-  run: (task: string, model: ModelTier, label?: string) => Promise<void>;
+  // workingFolder, when set, is the absolute path of the user's chosen folder; any
+  // shell command in this run executes inside it instead of the hidden workspace.
+  run: (task: string, model: ModelTier, label?: string, workingFolder?: string) => Promise<void>;
   decide: (approved: boolean) => void;
   stop: () => void;
   clear: () => void;
@@ -68,6 +70,10 @@ export function useAutomationRunner(): AutomationRunner {
   const pausedRef = useRef(false);
   const resumeResolve = useRef<(() => void) | null>(null);
 
+  // The user's chosen working folder for the current run (absolute path), passed to
+  // the shell so a command runs inside their folder. Held in a ref so the execute
+  // calls read the latest without threading it through every step.
+  const workingFolderRef = useRef<string | undefined>(undefined);
   const stoppedRef = useRef(false);
   // Set synchronously the instant a run begins and cleared on every exit path.
   // The React `status` state lags a tick, so two callers (a manual send and the
@@ -243,7 +249,7 @@ export function useAutomationRunner(): AutomationRunner {
         if (action.kind === "windows" && (action.command === "type-text" || action.command === "press-key")) {
           await new Promise((settle) => setTimeout(settle, 150));
         }
-        await window.workcrew.automation.execute(action);
+        await window.workcrew.automation.execute(action, workingFolderRef.current);
         setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
       } catch {
         setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "error" } : item)));
@@ -253,12 +259,13 @@ export function useAutomationRunner(): AutomationRunner {
     return "complete";
   }
 
-  async function run(task: string, model: ModelTier, runLabel = ""): Promise<void> {
+  async function run(task: string, model: ModelTier, runLabel = "", workingFolder?: string): Promise<void> {
     const trimmed = task.trim();
     // Synchronous guard: if a run is already in flight, do nothing. This is set
     // before any await so a second caller in the same tick cannot slip past it.
     if (trimmed.length < 3 || runningRef.current) return;
     runningRef.current = true;
+    workingFolderRef.current = workingFolder;
     // Event name only; never the task text or any on-screen content.
     track("automation_started");
     // Wrap the whole run in try/finally so the in-flight guard is cleared on
@@ -360,7 +367,7 @@ export function useAutomationRunner(): AutomationRunner {
 
         try {
           showOverlayFor(action);
-          const output = await window.workcrew.automation.execute(action);
+          const output = await window.workcrew.automation.execute(action, workingFolderRef.current);
           setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
           result = { toolUseId: response.toolUseId, ok: true, output: redactResult(output) };
           // Remember the latest snapshot so a following click can be resolved to

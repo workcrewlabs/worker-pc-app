@@ -45,8 +45,12 @@ describe("approval policy (requiresApproval)", () => {
     expect(requiresApproval(windowsWrite, { alwaysAllow: true, permissions: { "browser-writes": false } })).toBe(false);
   });
 
-  it("never prompts in-app for shell (the main process confirms it natively)", () => {
-    expect(requiresApproval({ kind: "shell", command: "git status" }, { alwaysAllow: false, permissions: {} })).toBe(false);
+  it("gates shell on the Always allow toggle: asks when off, runs freely when on", () => {
+    // A folder command asks each time when Always allow is off...
+    expect(requiresApproval({ kind: "shell", command: "git status" }, { alwaysAllow: false, permissions: {} })).toBe(true);
+    // ...and runs without prompting when Always allow is on (the main process keeps
+    // a separate native floor for obviously destructive commands).
+    expect(requiresApproval({ kind: "shell", command: "git status" }, { alwaysAllow: true, permissions: {} })).toBe(false);
   });
 });
 

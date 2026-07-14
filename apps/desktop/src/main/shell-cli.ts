@@ -1,18 +1,33 @@
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { app } from "electron";
 
-// Runs one shell command inside WorkCrew's workspace folder. This is the engine
-// behind coding and media tasks (clone a repo, run ffmpeg, edit files). It is
-// ALWAYS gated by an approval the main process itself shows (see shell:run), so
-// the command cannot run without the user explicitly allowing the exact command.
+// Runs one shell command inside a working folder. This is the engine behind
+// coding and media tasks (clone a repo, run ffmpeg, edit files). By default it
+// uses WorkCrew's own hidden workspace; when the user has added a folder to work
+// in, the command runs inside THAT folder instead. It is gated by an approval
+// (see shell:run) so a command runs only with the user's permission.
 
 const MAX_OUTPUT_CHARS = 60_000;
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 export function workspaceDir(): string {
   return join(app.getPath("userData"), "workspace");
+}
+
+// Resolve the folder a command should run in: the user's chosen folder when it is
+// a real directory, otherwise WorkCrew's hidden workspace. Never trusts the caller
+// blindly; a path that is not an existing directory falls back to the workspace.
+export async function resolveWorkingDir(folder?: string | null): Promise<string> {
+  if (folder && folder.trim()) {
+    try {
+      if ((await stat(folder)).isDirectory()) return folder;
+    } catch {
+      // Not a real directory: fall through to the workspace.
+    }
+  }
+  return workspaceDir();
 }
 
 function clamp(text: string): string {
@@ -32,8 +47,8 @@ function killTree(pid: number | undefined): void {
   } catch { /* already gone */ }
 }
 
-export async function runShellCommand(command: string): Promise<string> {
-  const cwd = workspaceDir();
+export async function runShellCommand(command: string, folder?: string | null): Promise<string> {
+  const cwd = await resolveWorkingDir(folder);
   try {
     await mkdir(cwd, { recursive: true });
   } catch (error) {

@@ -606,6 +606,36 @@ select option:checked { background-color: var(--panel-2); }
 .panes { flex: 1; min-height: 0; display: flex; }
 .pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pane:not(.pane-active) { display: none; }
+/* The "+" add menu: choose photos/files or a folder to work in. Opens downward. */
+.add-menu-wrap { position: relative; display: inline-flex; }
+.add-menu { position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; min-width: 210px; display: flex; flex-direction: column; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 12px 30px rgba(0,0,0,.28); }
+.add-menu button { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: var(--fs-ui); text-align: left; cursor: pointer; }
+.add-menu button:hover { background: var(--panel-2); }
+.add-menu-icon { flex: none; display: inline-flex; color: var(--accent-soft); }
+/* The working-folder pill: a refined dark pill at the bottom-left of the composer
+   showing the folder WorkCrew is operating in (kept for the whole conversation),
+   matching the cowork "project or folder" pill: darker than the composer, a quiet
+   purple-tinted border, folder icon, the path, and a chevron (click to change). */
+.composer-context { display: flex; align-items: center; margin-top: 10px; }
+.folder-pill { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid #3a3550; border-left: 2px solid var(--accent); border-radius: 9px; background: var(--panel); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .02); transition: border-color .15s ease, box-shadow .15s ease; }
+.folder-pill:hover { box-shadow: 0 0 0 3px var(--accent-glow); }
+:root[data-theme="light"] .folder-pill { border-color: rgba(124, 92, 224, .30); border-left-color: var(--accent); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .5); }
+.folder-pill-main { display: inline-flex; align-items: center; gap: 9px; min-width: 0; padding: 7px 9px 7px 11px; border: 0; background: transparent; color: var(--text); cursor: pointer; }
+.folder-pill-icon { flex: none; display: inline-flex; color: var(--accent-soft); }
+.folder-pill-loc { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.folder-pill-parent { flex: none; color: var(--muted); font-size: 12px; }
+.folder-pill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-size: 12.5px; font-weight: 600; letter-spacing: .1px; }
+.folder-pill-chevron { flex: none; color: var(--muted); }
+.folder-pill-remove { flex: none; width: 20px; height: 20px; margin: 0 6px 0 2px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; }
+.folder-pill-remove:hover { background: var(--panel-2); color: var(--text); }
+
+/* Folder-mode activity: the quiet cowork look. Muted one-line breadcrumbs for
+   each command, a small spinner while working, and the answer as normal chat
+   text. Deliberately unboxed so it reads as part of the conversation. */
+.folder-activity { width: min(720px, calc(100% - 64px)); margin: 0 auto; display: flex; flex-direction: column; gap: 7px; padding: 2px 0 10px; }
+.folder-step { margin: 0; color: var(--muted); font-size: 13px; letter-spacing: .1px; }
+.folder-working { display: inline-flex; align-items: center; gap: 9px; margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.folder-activity .turn-assistant { margin-top: 6px; }
 .message-list { width: min(720px, calc(100% - 64px)); margin: 0 auto; padding: 28px 0 16px; display: flex; flex-direction: column; gap: 22px; }
 .turn { display: flex; flex-direction: column; }
 .turn-user { align-items: flex-end; }
