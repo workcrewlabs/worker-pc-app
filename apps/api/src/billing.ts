@@ -3,6 +3,7 @@ import {
   PLAN_CATALOG,
   REFERRAL_BONUS_MICRODOLLARS,
   type BillingInterval,
+  type PaidPlanId,
   type PlanId
 } from "@workcrew/contracts";
 import { config } from "./config.js";
@@ -59,7 +60,9 @@ async function ensureImmediateUpgradeProration(client: Stripe): Promise<void> {
   immediateProrationEnsured = true;
 }
 
-function priceId(plan: PlanId, interval: BillingInterval): string {
+// Stripe prices exist only for paid plans; the free plan is granted at sign-up
+// and never passes through checkout, which the PaidPlanId type enforces here.
+function priceId(plan: PaidPlanId, interval: BillingInterval): string {
   const id = config.stripePrices[plan][interval];
   if (!id) {
     throw Object.assign(new Error("The selected price is not configured"), { statusCode: 503, code: "PRICE_UNAVAILABLE" });
@@ -89,7 +92,7 @@ export function isEntitledStatus(status: string): boolean {
   return false;
 }
 
-export async function createCheckout(userId: string, plan: PlanId, interval: BillingInterval): Promise<string> {
+export async function createCheckout(userId: string, plan: PaidPlanId, interval: BillingInterval): Promise<string> {
   const client = requireStripe();
   const existing = await getSubscription(userId);
   const customerId = existing?.stripeCustomerId ?? undefined;
@@ -194,7 +197,7 @@ export function downgradeSchedulePhases(
 // applied in place immediately and the fresh entitlement is returned.
 export async function changePlan(
   userId: string,
-  plan: PlanId,
+  plan: PaidPlanId,
   interval: BillingInterval
 ): Promise<{ url: string } | { changed: true }> {
   const client = requireStripe();

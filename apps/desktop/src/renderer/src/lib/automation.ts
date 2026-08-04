@@ -5,6 +5,7 @@ import type { AutomationAction } from "@workcrew/contracts";
 export function actionLabel(action: AutomationAction): string {
   if (action.kind === "finish") return "Finishing up";
   if (action.kind === "shell") return "Run a command";
+  if (action.kind === "write_file") return "Write a file";
   if (action.kind === "browser") {
     switch (action.command) {
       case "open":
@@ -60,6 +61,7 @@ export function actionLabel(action: AutomationAction): string {
 // A short detail string for an action, used as a subtitle in the activity list.
 export function actionDetail(action: AutomationAction): string | undefined {
   if (action.kind === "shell") return action.command;
+  if (action.kind === "write_file") return action.path;
   if (action.kind === "browser") return action.url ?? action.value ?? action.target;
   if (action.kind === "windows") return action.application ?? action.windowTitle ?? action.control ?? action.value;
   return undefined;

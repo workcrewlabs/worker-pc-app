@@ -629,6 +629,62 @@ select option:checked { background-color: var(--panel-2); }
 .folder-pill-remove { flex: none; width: 20px; height: 20px; margin: 0 6px 0 2px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; }
 .folder-pill-remove:hover { background: var(--panel-2); color: var(--text); }
 
+/* Onboarding: the Claude-style first-run flow. A centered column on the page
+   background, serif titles, one quiet card, and a single primary action. */
+.ob-shell { height: 100%; overflow-y: auto; display: grid; place-items: center; position: relative; background: radial-gradient(circle at 50% -20%, var(--accent-glow) 0, transparent 45%), var(--bg); }
+.ob-brand { position: absolute; top: 34px; left: 0; right: 0; display: flex; justify-content: center; }
+/* The onboarding brand reads larger than the compact in-app header brand. */
+.ob-brand .brand-mark { width: 48px; height: 48px; }
+.ob-brand .brand-name { font-size: 22px; }
+.ob-inner { width: min(560px, calc(100vw - 48px)); display: flex; flex-direction: column; align-items: center; padding: 110px 0 48px; text-align: center; }
+.ob-wide { width: min(920px, calc(100vw - 48px)); }
+.ob-title { font-family: Georgia, "Times New Roman", serif; font-weight: 500; font-size: 34px; line-height: 1.2; color: var(--text); }
+.ob-sub { margin-top: 10px; color: var(--muted); font-size: 15px; }
+.ob-card { width: 100%; margin-top: 26px; padding: 26px 28px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel-2); text-align: left; display: flex; flex-direction: column; gap: 22px; }
+.ob-card p { color: var(--text-soft); font-size: 14.5px; line-height: 1.55; }
+/* Each point is an icon chip vertically CENTERED against its text block, so a
+   two-line sentence never leaves the icon floating above it. */
+.ob-bullet { display: flex; align-items: center; gap: 16px; }
+.ob-bullet p { flex: 1; margin: 0; }
+.ob-bullet-icon { flex: none; width: 42px; height: 42px; display: grid; place-items: center; border-radius: 50%; background: rgba(139, 92, 246, .14); border: 1px solid rgba(139, 92, 246, .28); color: var(--accent-soft); }
+.ob-icon-chip { flex: none; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; background: rgba(139, 92, 246, .14); border: 1px solid rgba(139, 92, 246, .28); color: var(--accent-soft); }
+.ob-column-head { display: flex; align-items: center; gap: 11px; }
+.ob-prompt-icon { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 11px; background: rgba(139, 92, 246, .14); border: 1px solid rgba(139, 92, 246, .28); color: var(--accent-soft); }
+.ob-input { width: 100%; margin-top: 26px; padding: 16px; border: 1px solid var(--line-3); border-radius: 12px; outline: none; color: var(--text); background: var(--panel-2); font-size: 15px; text-align: center; }
+.ob-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+/* Role dropdown: the shared Dropdown component sized to match the name input on
+   the previous step. The trigger fills the row and centres its label, with the
+   chevron pinned to the right edge so it never shifts the text off-centre. */
+.ob-select-wrap { width: 100%; margin-top: 26px; }
+.ob-select-wrap .wc-dropdown { display: block; width: 100%; }
+.ob-select-wrap .wc-dropdown-trigger { position: relative; width: 100%; justify-content: center; padding: 16px 46px; border-radius: 12px; border-color: var(--line-3); font-size: 15px; }
+.ob-select-wrap .wc-dropdown-trigger:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.ob-select-wrap .wc-dropdown-placeholder { color: var(--muted); }
+.ob-select-wrap .wc-dropdown-chevron { position: absolute; right: 18px; top: 50%; transform: translateY(-50%); }
+/* The menu matches the trigger's width, and scrolls rather than growing past the
+   viewport once every role is listed. The scrollbar gutter is reserved on both
+   edges so the scrollbar cannot pull the centred labels off-axis. */
+.ob-select-wrap .wc-dropdown-menu { left: 0; right: 0; width: 100%; min-width: 0; max-height: 322px; overflow-y: auto; scrollbar-gutter: stable both-edges; }
+/* Centre each label on the row's own axis: the checkmark is taken out of flow so
+   a selected row's text lines up with every other row. */
+.ob-select-wrap .wc-dropdown-item { position: relative; justify-content: center; padding: 11px 34px; text-align: center; font-size: 14.5px; }
+.ob-select-wrap .wc-dropdown-check { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); }
+.ob-primary { width: 100%; margin-top: 18px; padding: 15px; border: 0; border-radius: 12px; cursor: pointer; background: var(--text); color: var(--bg); font-size: 15px; font-weight: 700; }
+.ob-primary:disabled { opacity: .45; cursor: default; }
+.ob-primary:hover:not(:disabled) { background: #fff; }
+.ob-link { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 10px; margin-top: 6px; }
+.ob-link:hover { color: var(--text); }
+.ob-prompts { width: 100%; display: flex; flex-direction: column; gap: 12px; margin-top: 26px; }
+.ob-prompt { display: flex; align-items: center; gap: 13px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel-2); color: var(--text); font-size: 14.5px; text-align: left; cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.ob-prompt:hover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); transform: translateY(-1px); }
+.ob-columns { width: 100%; display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin: 26px 0 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-2); overflow: hidden; }
+.ob-column { padding: 22px; text-align: left; display: flex; flex-direction: column; gap: 9px; }
+.ob-column + .ob-column { border-left: 1px solid var(--line); }
+.ob-column h3 { font-size: 17px; color: var(--text); }
+.ob-column p { color: var(--muted); font-size: 13.5px; line-height: 1.5; }
+.ob-column strong { color: var(--text-soft); font-size: 13px; }
+.ob-tag { align-self: flex-start; padding: 3px 9px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); font-size: 11.5px; }
+
 /* Folder-mode activity: the quiet cowork look. Muted one-line breadcrumbs for
    each command, a small spinner while working, and the answer as normal chat
    text. Deliberately unboxed so it reads as part of the conversation. */

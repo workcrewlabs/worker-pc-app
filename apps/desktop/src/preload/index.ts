@@ -145,6 +145,7 @@ const workcrew = {
       if (action.kind === "browser") return ipcRenderer.invoke("automation:browser", action);
       if (action.kind === "windows") return ipcRenderer.invoke("automation:windows", action);
       if (action.kind === "shell") return ipcRenderer.invoke("shell:run", { command: action.command, cwd });
+      if (action.kind === "write_file") return ipcRenderer.invoke("file:write", { path: action.path, content: action.content, cwd });
       return Promise.resolve(action.summary);
     },
     launchBrowser: (): Promise<{ launched: boolean; message: string }> => ipcRenderer.invoke("automation:launch-browser"),

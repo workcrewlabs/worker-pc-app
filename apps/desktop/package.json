@@ -1,6 +1,6 @@
 {
   "name": "@workcrew/desktop",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
@@ -12,7 +12,9 @@
     "build:helper": "cd ../../python/windows-agent && py -m PyInstaller --noconfirm workcrew-windows-agent.spec",
     "package": "npm run build && electron-builder --win nsis",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "web:dev": "vite --config vite.web.config.ts",
+    "web:build": "vite build --config vite.web.config.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",

@@ -23,14 +23,20 @@ import { UsageBoostBanner } from "./components/UsageBoostBanner";
 import { usageStatus } from "./lib/usage";
 import {
   getConversationFolder,
+  getOnboarding,
   loadPermissions,
   loadRoutines,
   markRoutineRan,
   nextDueRoutine,
+  takeOnboardingStarter,
   type PermissionState,
   type Routine,
   type WorkingFolder
 } from "./lib/storage";
+import { OnboardingFlow } from "./components/OnboardingFlow";
+import { DownloadGateModal } from "./components/DownloadGateModal";
+import { Brand, LogoMark } from "./components/Brand";
+import { isWebBuild } from "./lib/platform";
 
 type AppInfo = { name: string; version: string; authMode: string; billingMode: string };
 type Phase = "loading" | "auth" | "paywall" | "workspace";
@@ -86,31 +92,8 @@ function errorMessage(error: unknown): string {
   return message;
 }
 
-function LogoMark() {
-  return (
-    <svg className="brand-glyph" viewBox="0 0 100 100" role="img" aria-hidden="true" focusable="false">
-      <defs>
-        <linearGradient id="wc-grad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#a78bfa" />
-          <stop offset="0.55" stopColor="#7c3aed" />
-          <stop offset="1" stopColor="#5b21b6" />
-        </linearGradient>
-        <mask id="wc-plus">
-          <rect width="100" height="100" fill="white" />
-          <rect x="41" y="29" width="18" height="42" rx="9" fill="black" />
-          <rect x="29" y="41" width="42" height="18" rx="9" fill="black" />
-        </mask>
-      </defs>
-      <g mask="url(#wc-plus)" fill="url(#wc-grad)">
-        <circle cx="50" cy="28" r="22" />
-        <circle cx="50" cy="72" r="22" />
-        <circle cx="28" cy="50" r="22" />
-        <circle cx="72" cy="50" r="22" />
-        <rect x="28" y="28" width="44" height="44" rx="14" />
-      </g>
-    </svg>
-  );
-}
+// LogoMark and Brand moved to components/Brand.tsx so onboarding and every
+// other surface share the exact same brand asset.
 
 // A success checkmark in a soft ring, shown on the "check your inbox" screens.
 function CheckBadge() {
@@ -122,14 +105,6 @@ function CheckBadge() {
   );
 }
 
-function Brand({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className={`brand ${compact ? "brand-compact" : ""}`} aria-label="WorkCrew">
-      <span className="brand-mark"><LogoMark /></span>
-      <span className="brand-name">WorkCrew</span>
-    </div>
-  );
-}
 
 // Sidebar nav icons: a lightning bolt for Routines, a lock for Permissions, and a
 // gear for Settings, matching common app conventions.
@@ -413,6 +388,9 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   const [accountOpen, setAccountOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [recorderOpen, setRecorderOpen] = useState(false);
+  // Web build: the record button stays visible but opens the download-the-app
+  // prompt instead of the recorder.
+  const [webRecordGate, setWebRecordGate] = useState(false);
   const [permissions, setPermissions] = useState<PermissionState>(() => loadPermissions());
   const [routines, setRoutines] = useState<Routine[]>(() => loadRoutines());
   const [recents, setRecents] = useState<ConversationSummary[]>([]);
@@ -444,6 +422,12 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   function seedComposer(text: string) {
     setComposerSeed((current) => ({ text, nonce: current.nonce + 1 }));
   }
+  // A starter prompt picked during onboarding lands in the composer, once, so
+  // the user's very first screen already has their chosen task ready to send.
+  useEffect(() => {
+    const starter = takeOnboardingStarter();
+    if (starter) seedComposer(starter);
+  }, []);
   // A task being turned into a routine via "Save as a routine", carried into the
   // Routines form.
   const [routineSeed, setRoutineSeed] = useState("");
@@ -867,21 +851,36 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
         <header className="workspace-header">
           <h1 className="workspace-title" title={chatTitle}>{chatTitle}</h1>
           <div className="header-right">
-            {!isUltra && (
+            {entitlement.plan === "free" ? (
+              <button className="upgrade-pill" onClick={() => setAccountOpen(true)} title="You are on the free plan. See paid plans.">
+                Free plan &middot; Upgrade
+              </button>
+            ) : !isUltra && (
               <button className="upgrade-pill" onClick={handleUpgrade} disabled={upgrading}>
                 {upgrading ? "Upgrading..." : "Upgrade"}
               </button>
             )}
-            {dailyLimit > 0 && (
-              <div className={`usage-box ${dailyPercent >= 80 ? "usage-box-high" : ""}`} title="Your daily limit. It frees up as the 24-hour window rolls forward.">
-                <div><span>Today</span><strong>{formatTokens(dailyLeft)} left</strong></div>
-                <div className="usage-track"><span style={{ width: `${dailyPercent}%` }} /></div>
+            {entitlement.plan === "free" ? (
+              // The free trial is a single one-time allowance, so show ONE bar for
+              // it, not the daily/monthly split (which would wrongly imply a reset).
+              <div className={`usage-box ${percent >= 80 ? "usage-box-high" : ""}`} title="Your one-time free trial tokens. These do not reset; upgrade for more.">
+                <div><span>Free trial</span><strong>{formatTokens(Math.max(0, entitlement.budgetMicrodollars - usage))} left</strong></div>
+                <div className="usage-track"><span style={{ width: `${percent}%` }} /></div>
               </div>
+            ) : (
+              <>
+                {dailyLimit > 0 && (
+                  <div className={`usage-box ${dailyPercent >= 80 ? "usage-box-high" : ""}`} title="Your daily limit. It frees up as the 24-hour window rolls forward.">
+                    <div><span>Today</span><strong>{formatTokens(dailyLeft)} left</strong></div>
+                    <div className="usage-track"><span style={{ width: `${dailyPercent}%` }} /></div>
+                  </div>
+                )}
+                <div className={`usage-box ${percent >= 80 ? "usage-box-high" : ""}`} title="Your monthly limit. It resets at the start of your billing period.">
+                  <div><span>This month</span><strong>{formatTokens(Math.max(0, entitlement.budgetMicrodollars - usage))} left</strong></div>
+                  <div className="usage-track"><span style={{ width: `${percent}%` }} /></div>
+                </div>
+              </>
             )}
-            <div className={`usage-box ${percent >= 80 ? "usage-box-high" : ""}`} title="Your monthly limit. It resets at the start of your billing period.">
-              <div><span>This month</span><strong>{formatTokens(Math.max(0, entitlement.budgetMicrodollars - usage))} left</strong></div>
-              <div className="usage-track"><span style={{ width: `${percent}%` }} /></div>
-            </div>
           </div>
         </header>
         {upgradeError && <div className="upgrade-error-bar" role="alert">{upgradeError}</div>}
@@ -912,7 +911,9 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
                 onStatus={handlePaneStatus}
                 onRefreshEntitlement={onRefreshEntitlement}
                 onSaveRoutine={saveAsRoutine}
-                onRecord={() => setRecorderOpen(true)}
+                onRecord={() => { if (isWebBuild) setWebRecordGate(true); else setRecorderOpen(true); }}
+                plan={entitlement.plan}
+                onSeePlans={() => setAccountOpen(true)}
               />
             </div>
           ))}
@@ -944,6 +945,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
         />
       )}
       {inviteOpen && <InviteDialog onClose={() => setInviteOpen(false)} />}
+      {webRecordGate && <DownloadGateModal feature="Recording" onClose={() => setWebRecordGate(false)} />}
       {recorderOpen && (
         <RecorderDialog
           onClose={() => setRecorderOpen(false)}
@@ -960,6 +962,9 @@ export default function App() {
   const [entitlement, setEntitlement] = useState<SubscriptionState>(EMPTY_ENTITLEMENT);
   const [fatal, setFatal] = useState("");
   const [userName, setUserName] = useState<string | null>(null);
+  // Whether the first-run onboarding flow (name, role, starter prompt) has been
+  // completed on this install. It renders in place of the workspace once.
+  const [onboarded, setOnboarded] = useState<boolean>(() => getOnboarding().done);
   // Mandatory-update status watched at the root so the blocking gate can sit above
   // every screen (loading, sign-in, paywall, and the app). The Workspace keeps its
   // own copy of this feed for the quiet "Restart to update" sidebar pill; here we
@@ -1072,6 +1077,14 @@ export default function App() {
       ? <AuthScreen onReady={refresh} />
       : phase === "paywall"
       ? <Paywall info={info} onActivated={(state) => { setEntitlement(state); setPhase("workspace"); }} />
+      : !onboarded
+      ? <OnboardingFlow
+          userName={userName}
+          onSetName={setUserDisplayName}
+          onDone={() => setOnboarded(true)}
+          showDownloadStep={isWebBuild}
+          onDownload={() => window.open("https://getworkcrew.com/#download", "_blank")}
+        />
       : (
     <Workspace
       info={info}

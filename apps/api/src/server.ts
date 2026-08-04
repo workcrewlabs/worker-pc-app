@@ -54,7 +54,7 @@ import { economyEngineAvailable, provider, routeAutomationTier, type ConcreteMod
 import { processAndStoreAttachment } from "./attachments.js";
 import { cancelSubscriptionForDeletion, changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { landingPage } from "./landing.js";
-import { budgetHeadroom, creditReferralOnPayment, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
+import { budgetHeadroom, budgetWindowFor, creditReferralOnPayment, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
 import { DAY_MS } from "@workcrew/contracts";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
@@ -70,6 +70,7 @@ import {
   getMessages,
   getRun,
   getSubscription,
+  grantFreeSubscriptionIfAbsent,
   getUserById,
   initializeDatabase,
   listConversations,
@@ -172,7 +173,16 @@ function requireActive(subscription: SubscriptionRow | null): SubscriptionRow {
 }
 
 async function subscriptionState(userId: string): Promise<SubscriptionState> {
-  const subscription = await getSubscription(userId);
+  let subscription = await getSubscription(userId);
+  // A signed-in user with no subscription row at all gets the free plan here,
+  // on their first entitlement read (every client loads entitlement right
+  // after login, so this is the single choke point). The grant is a strictly
+  // additive INSERT-if-absent: it can never alter an existing free or paid
+  // row, and paid tiers are still granted only by the Stripe webhook.
+  if (!subscription) {
+    await grantFreeSubscriptionIfAbsent(userId);
+    subscription = await getSubscription(userId);
+  }
   if (!subscription) {
     return {
       active: false,
@@ -194,7 +204,7 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
     };
   }
   const nowMs = Date.now();
-  const window = getBudgetWindow(subscription.budgetAnchorMs, nowMs);
+  const window = budgetWindowFor(subscription, nowMs);
   const limits = planLimits(subscription.plan);
   const [usage, dailyUsed] = await Promise.all([
     getBudgetUsage(userId, window),
@@ -522,6 +532,13 @@ app.post("/v1/billing/checkout", routeLimit(15), async (request) => {
 app.post("/v1/billing/change-plan", routeLimit(15), async (request) => {
   const userId = await authenticate(request);
   const body = createCheckoutSchema.parse(request.body);
+  // A free-plan user has no Stripe subscription to modify, so "changing plan"
+  // for them is really a first purchase: send them through a fresh hosted
+  // checkout. The paid tier is still granted only by the post-payment webhook.
+  const current = await getSubscription(userId);
+  if (!current?.stripeSubscriptionId) {
+    return { url: await createCheckout(userId, body.plan, body.interval) };
+  }
   const result = await changePlan(userId, body.plan, body.interval);
   if ("url" in result) return { url: result.url };
   return subscriptionState(userId);
@@ -658,12 +675,15 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
   const mode = subscription.modelMode;
   const isUltra = subscription.plan === "ultra";
 
-  // One automation step is a single tool call chosen against the latest snapshot,
-  // so its output is small. This ceiling is trimmed from the old 1200 to cut wasted
-  // output budget on every step (a real share of automation spend) while leaving
-  // ample room for any actual action. A step still needs a little room to emit one.
+  // One automation step is a single tool call. Most steps are small, but a
+  // write_file step carries an entire file's content in its arguments, and a
+  // ceiling that truncates the call mid-JSON corrupts it into an unrunnable
+  // action (observed as garbage argument keys from the economy engine). The
+  // ceiling therefore leaves room for a real file; unspent output is never
+  // billed (reservations settle to actual usage), so the higher ceiling only
+  // means a temporarily larger hold, not more spend.
   const MIN_STEP_OUTPUT_TOKENS = 64;
-  const STEP_MAX_OUTPUT_TOKENS = 700;
+  const STEP_MAX_OUTPUT_TOKENS = 4_000;
   // After the Economy engine repeats the same action this many times, hand the run
   // off to Claude. MAX_REPEATED_ACTIONS remains the final give-up if even Claude loops.
   const ESCALATE_AFTER_REPEATS = 2;
@@ -748,6 +768,37 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
       }
     }
 
+    // A malformed tool call is fed back to the model as a plain-text correction
+    // so it can fix its own call, instead of ending the run. The broken tool_use
+    // block is deliberately NOT replayed into history (one provider's
+    // compatibility layer chokes on a dangling malformed tool call); a text
+    // description of the mistake is enough for the model to retry correctly.
+    // Bounded corrections per engine; if the Economy engine still cannot produce
+    // a runnable action (its tool-call serialization is known to corrupt long
+    // file contents), the run escalates to Claude like a stuck run does. Only
+    // when even that fails does the fallback finish in result.action end the run.
+    const correctInvalid = async (): Promise<void> => {
+      for (let corrections = 0; result.invalid && corrections < 2; corrections += 1) {
+        const assistantText = result.content
+          .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
+          .map((block) => block.text)
+          .join("\n")
+          .trim() || "(sent a tool call that could not be run)";
+        run.messages.push({ role: "assistant", content: [{ type: "text", text: assistantText }] });
+        run.messages.push({ role: "user", content: [{ type: "text", text: result.invalid.message }] });
+        request.log.warn({ runId: run.id, step: run.stepCount, detail: result.invalid.message.slice(0, 300) }, "invalid planner action fed back for correction");
+        result = await planStep(tier);
+      }
+    };
+    await correctInvalid();
+    if (result.invalid && !run.escalated && provider(tier) === "zai" && config.anthropicApiKey) {
+      run.escalated = true;
+      request.log.warn({ runId: run.id, step: run.stepCount }, "invalid actions persisted; escalating to Claude");
+      tier = routeAutomationTier({ mode, escalated: true, ultra: isUltra });
+      result = await planStep(tier);
+      await correctInvalid();
+    }
+
     // Track repeated actions for both the escalation trigger and the final loop
     // stop. A finish action ends the run and is never a loop.
     if (result.action.kind !== "finish") {
@@ -795,7 +846,7 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
       }
     }, "automation step token usage");
 
-    const window = getBudgetWindow(subscription.budgetAnchorMs);
+    const window = budgetWindowFor(subscription);
     const usage = await getBudgetUsage(userId, window);
     const usagePayload = {
       usedMicrodollars: usage.used,
@@ -901,11 +952,19 @@ app.post("/v1/chat", routeLimit(40), async (request, reply) => {
   // Set the SSE headers and take over the raw response. Each frame is written as
   // a single `data: <json>` line followed by a blank line, which is the shared
   // wire contract the desktop is built against.
+  // Writing to the raw socket bypasses the CORS plugin's reply hooks, so the
+  // allow-origin header must be attached here by hand or the web app's browser
+  // discards the stream. Only origins already on the allowlist are echoed.
+  const origin = request.headers.origin;
+  const corsHeaders = origin && config.allowedOrigins.has(origin)
+    ? { "Access-Control-Allow-Origin": origin, Vary: "Origin" }
+    : {};
   reply.raw.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
-    "X-Accel-Buffering": "no"
+    "X-Accel-Buffering": "no",
+    ...corsHeaders
   });
 
   // Stop iterating as soon as the client hangs up so we do not keep spending on

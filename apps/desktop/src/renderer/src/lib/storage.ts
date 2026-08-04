@@ -51,6 +51,33 @@ export function setConversationFolder(conversationId: string, folder: WorkingFol
   write(FOLDERS_KEY, map);
 }
 
+// Onboarding ----------------------------------------------------------------
+// The first-run flow (name, role, starter prompt), shown once per install.
+// `starter` briefly holds the prompt the user picked so the workspace can drop
+// it into the composer right after onboarding finishes.
+
+export type OnboardingRecord = { done: boolean; name?: string; role?: string; starter?: string };
+
+const ONBOARDING_KEY = "onboarding";
+
+export function getOnboarding(): OnboardingRecord {
+  return read<OnboardingRecord>(ONBOARDING_KEY, { done: false });
+}
+
+export function setOnboarding(record: OnboardingRecord): void {
+  write(ONBOARDING_KEY, record);
+}
+
+// Read and clear the starter prompt chosen during onboarding, so it seeds the
+// composer exactly once.
+export function takeOnboardingStarter(): string {
+  const record = getOnboarding();
+  if (!record.starter) return "";
+  const starter = record.starter;
+  setOnboarding({ ...record, starter: undefined });
+  return starter;
+}
+
 // History ------------------------------------------------------------------
 
 export type RunOutcome = "complete" | "stopped" | "failed";

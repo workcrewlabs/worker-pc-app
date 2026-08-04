@@ -21,6 +21,13 @@ describe("desktop action approvals", () => {
   it("always requires approval for shell commands", () => {
     expect(actionNeedsApproval({ kind: "shell", command: "git clone https://example.com/repo" })).toBe(true);
   });
+
+  it("gates write_file like shell: asks when Always allow is off, silent when on", () => {
+    const write: AutomationAction = { kind: "write_file", path: "src/utils.js", content: "export {};" };
+    expect(actionNeedsApproval(write)).toBe(true);
+    expect(requiresApproval(write, { alwaysAllow: false, permissions: ALL_ON })).toBe(true);
+    expect(requiresApproval(write, { alwaysAllow: true, permissions: ALL_ON })).toBe(false);
+  });
 });
 
 describe("approval policy (requiresApproval)", () => {
