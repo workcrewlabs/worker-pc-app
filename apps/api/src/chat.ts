@@ -8,7 +8,7 @@ import {
 } from "@workcrew/contracts";
 import { actualCostMicrodollars, budgetLimitedOutputTokens, estimatedInputMicrodollars, maximumReservationMicrodollars, withRollingCacheBreakpoint } from "./anthropic.js";
 import { blocksForRow, estimateMediaTokens } from "./attachments.js";
-import { budgetHeadroom, getBudgetUsage, releaseBudget, reserveBudget, settleBudget } from "./budget.js";
+import { budgetHeadroom, exhaustionError, getBudgetUsage, releaseBudget, reserveBudget, settleBudget } from "./budget.js";
 import { config } from "./config.js";
 import {
   addMessage,
@@ -328,10 +328,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
     if (remaining - inputEstimate < MIN_OUTPUT_TOKENS * outputPrice) {
       // Not enough left to cover this turn's input plus even a minimal answer. Stop
       // here (no provider call), reporting the window that is actually binding.
-      if (headroom.daily <= headroom.monthly) {
-        throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
-      }
-      throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+      throw exhaustionError(input.subscription.plan, headroom.daily <= headroom.monthly);
     }
     let effectiveMaxTokens = Math.min(MAX_OUTPUT_TOKENS, budgetLimitedOutputTokens(tier, remaining - inputEstimate));
     const reservationAmount =
@@ -353,10 +350,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
     const finalOutputBudget = reservation.reservedMicrodollars - inputEstimate;
     if (finalOutputBudget < MIN_OUTPUT_TOKENS * outputPrice) {
       await releaseOnce();
-      if (headroom.daily <= headroom.monthly) {
-        throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
-      }
-      throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+      throw exhaustionError(input.subscription.plan, headroom.daily <= headroom.monthly);
     }
     effectiveMaxTokens = Math.min(effectiveMaxTokens, budgetLimitedOutputTokens(tier, finalOutputBudget));
 

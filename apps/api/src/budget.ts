@@ -155,6 +155,26 @@ export async function budgetHeadroom(userId: string, subscription: SubscriptionR
   };
 }
 
+/**
+ * The error to raise when a user has no budget left to run a turn.
+ *
+ * `dailyBinding` says the rolling 24h cap is the one that ran out, which for a
+ * paid plan genuinely does free up tomorrow. The FREE plan is a one-time trial
+ * whose daily and lifetime caps are the same number, so an exhausted trial can
+ * look "daily" while never actually refilling. It therefore always reports the
+ * permanent upgrade message, so a free user is never told to come back tomorrow
+ * for tokens that are gone for good.
+ */
+export function exhaustionError(plan: PlanId, dailyBinding: boolean): Error {
+  if (plan === "free") {
+    return Object.assign(new Error("You have used all your free tokens. Upgrade to keep going."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+  }
+  if (dailyBinding) {
+    return Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+  }
+  return Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+}
+
 export async function reserveBudget(input: {
   subscription: SubscriptionRow;
   runId: string;
@@ -243,16 +263,7 @@ export async function reserveBudget(input: {
     // The insert only fails when a window is already exhausted. Report which one
     // is binding so the user sees a clear, accurate message.
     const dailyUsed = await rollingUsage(input.subscription.userId, dayStart);
-    // On the free trial the daily and lifetime caps are equal, so a same-day
-    // exhaustion could read as a daily limit; but the free trial never refills,
-    // so it must always report the permanent "upgrade" message, never "tomorrow".
-    if (input.subscription.plan !== "free" && dailyUsed >= limits.daily) {
-      throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
-    }
-    if (input.subscription.plan === "free") {
-      throw Object.assign(new Error("You have used all your free tokens. Upgrade to keep going."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
-    }
-    throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+    throw exhaustionError(input.subscription.plan, dailyUsed >= limits.daily);
   }
   // Read back the amount actually reserved. The SQL clamps it to the headroom that
   // was left at insert time (serialized by the advisory lock), so this is the real

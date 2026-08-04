@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { PLAN_CATALOG } from "@workcrew/contracts";
-import { budgetHeadroom, budgetWindowFor, reserveBudget } from "./budget.js";
+import { budgetHeadroom, budgetWindowFor, exhaustionError, reserveBudget } from "./budget.js";
 import { client, getSubscription, grantFreeSubscriptionIfAbsent, initializeDatabase, upsertSubscription } from "./db.js";
 
 // The free tier is granted once per user, renews its $0.30 allowance through
@@ -65,6 +65,29 @@ describe("free tier", () => {
     expect(first.reservedMicrodollars).toBe(250_000);
     const second = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 100_000 });
     expect(second.reservedMicrodollars).toBeLessThanOrEqual(50_000);
+  });
+
+  // Every budget gate in the API reports exhaustion through this one helper. A
+  // free user must never be told their tokens "free up tomorrow": their trial is
+  // one-time, so the daily cap and the lifetime cap are the same number and a
+  // spent trial would otherwise read as a temporary daily limit.
+  it("never tells a free user their tokens come back tomorrow", () => {
+    for (const dailyBinding of [true, false]) {
+      const free = exhaustionError("free", dailyBinding) as Error & { code: string; statusCode: number };
+      expect(free.message).toBe("You have used all your free tokens. Upgrade to keep going.");
+      expect(free.code).toBe("BUDGET_EXHAUSTED");
+      expect(free.statusCode).toBe(402);
+      expect(free.message).not.toMatch(/tomorrow/i);
+    }
+
+    // A paid plan's rolling daily cap genuinely does refill, so it keeps saying so.
+    const paidDaily = exhaustionError("pro", true) as Error & { code: string };
+    expect(paidDaily.code).toBe("RATE_LIMIT_DAY");
+    expect(paidDaily.message).toMatch(/tomorrow/i);
+
+    const paidPeriod = exhaustionError("pro", false) as Error & { code: string };
+    expect(paidPeriod.code).toBe("BUDGET_EXHAUSTED");
+    expect(paidPeriod.message).not.toMatch(/tomorrow/i);
   });
 
   it("uses one fixed lifetime window that never rolls over", () => {
