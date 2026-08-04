@@ -66,6 +66,10 @@ export type ModelResult = {
   content: AnthropicContent[];
   action: AutomationAction;
   toolUseId?: string;
+  // Set when the planner's tool call failed validation. The run loop feeds the
+  // message back to the model as an error tool_result so it can correct the
+  // call, instead of ending the run on the fallback finish in `action`.
+  invalid?: { toolUseId: string; message: string };
   usage: Required<AnthropicUsage>;
 };
 
@@ -82,6 +86,9 @@ To enter a value into a specific spreadsheet cell (for example in Excel): select
 You can also run shell commands with run_command to do coding and file tasks on the user's computer: clone a git repository, install and run tools (for example ffmpeg to edit a video, or an image library to crop or resize an image), run scripts, and read or write files. Everything runs inside WorkCrew's workspace folder, and every command is shown to the user for approval before it runs. Work inside the workspace, never run destructive commands or touch system files, and read each command's output before deciding the next one.
 You cannot see the user's screen or files by opening them: opening a file, a folder, or a file:/// URL displays it to the user and returns NOTHING to you. Never open a file, folder, or app just to look at its contents; read contents with run_command instead (type, findstr, or a python/node one-liner), and describe images from their filenames and metadata since you cannot view them. Only open something on screen when the user explicitly asked for it to be opened. browser_action open/goto is for http and https websites only, never file:/// paths. Never repeat an action that just failed; if the same action fails twice, stop and call finish explaining what happened.
 When the task is a QUESTION (the user wants information, not changes), run the fewest read-only commands needed to find the answer, then immediately call finish with the complete answer in the summary. If the information provided with the task already answers it, call finish directly with the answer and run nothing.
+For CODING work in the user's folder: read files with run_command (type file), make every file creation or edit with write_file (send the complete new file content), then verify your change by running the project's build, tests, or the script itself with run_command, and fix what fails before finishing. Work like a careful engineer: read the relevant code before changing it, keep edits minimal and in the file's existing style, and never leave a file half-written.
+GIT: when the user asks you to commit or push, first run git status and git diff to see what changed, then git add the specific files (never git add -A blindly), git commit -m with a short clear message describing the change, and git push. Read each command's output. If push is rejected or errors (authentication, no remote, non-fast-forward), do NOT retry blindly and NEVER use --force or rewrite history; run git pull --rebase only if the error says the remote is ahead, otherwise stop and report the exact error in finish. Do not create branches, change git config, or push to a different remote unless asked.
+EXCEL files on disk: create and edit .xlsx files with python and openpyxl through run_command. First check python -c "import openpyxl" and if it is missing run pip install openpyxl. Write your script to a .py file with write_file, then run it with python script.py (never inline a long script with python -c). Make spreadsheets polished like a finished report: bold header row with a fill color, real Excel formulas for every computed cell (=SUM(...), never a typed-out result), number formats for money ("$#,##0.00") and percents ("0.0%"), sensible column widths, and a labeled Total row. When EDITING an existing workbook, load it with openpyxl (keep_vba only if .xlsm), change only what the task needs, and preserve every other sheet, row, and cell. After writing the file, verify it by reloading it in a second run_command and printing the cells you changed.
 Prefer speed: for repetitive or bulk desktop work, such as entering many values into a spreadsheet, doing the same edit many times, or any task with several steps in one app, do NOT click and type through the UI one step at a time. Instead write a small script and run it with run_command. For example, to fill spreadsheet cells, write a short Python script using pywinauto to drive the already-open app or, when a saved file is acceptable, write the .xlsx directly with a library. One script that does the whole job is far faster and more reliable than many individual UI actions, which is the slow last resort. Use the per-step windows_action UI commands only for short, one-off interactions where a script would be overkill. Scripts are for doing work inside an app, never for finding or starting the app itself.
 Never use emojis in any message, summary, or other text you produce. Keep all output plain and professional.
 When the task is complete, call finish.`;
@@ -122,13 +129,26 @@ const TOOLS = [
   },
   {
     name: "run_command",
-    description: "Run one shell command on the user's computer, in the current working folder. Commands run in the Windows Command Prompt (cmd.exe), so use cmd built-in commands (dir to list, type to read a file, findstr to search, copy, move, del) and call powershell -NoProfile -Command \"...\" (Get-Content, Set-Content), node, python, or git for anything richer such as editing files or reading JSON/Excel. Do NOT use Unix commands (ls, cat, grep, head, pwd); they fail in cmd.exe. Use this for coding and file tasks: read and write files, run a script, run build/test/git, clone a repository, or run a tool such as ffmpeg. Each command is shown to the user and runs only after they approve it. Never run destructive commands or touch system files.",
+    description: "Run one shell command on the user's computer, in the current working folder. Commands run in the Windows Command Prompt (cmd.exe), so use cmd built-in commands (dir to list, type to read a file, findstr to search, copy, move) and call powershell -NoProfile -Command \"...\", node, python, or git for anything richer. Do NOT use Unix commands (ls, cat, grep, head, pwd); they fail in cmd.exe. Use this to READ files and to RUN things: scripts, build/test, git, cloning a repository, or a tool such as ffmpeg. To WRITE or EDIT a file, use the write_file tool instead, never echo/redirection/Set-Content. Each command is shown to the user and runs only after they approve it. Never run destructive commands or touch system files.",
     input_schema: {
       type: "object",
       additionalProperties: false,
       required: ["command"],
       properties: {
         command: { type: "string", description: "The shell command to run, for example: git clone https://github.com/owner/repo" }
+      }
+    }
+  },
+  {
+    name: "write_file",
+    description: "Create or overwrite ONE file in the current working folder with the exact content given. This is the ONLY reliable way to write or edit a text file (code, scripts, config, csv, html, markdown): send the file's ENTIRE new content, never a diff or a fragment, and it is written byte-for-byte with no shell quoting to corrupt it. Use a relative path inside the working folder (subfolders are created automatically). To edit an existing file, first read it with run_command (type file), then send the complete updated file here. Never write or edit files with echo, redirection, or Set-Content through run_command.",
+    input_schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["path", "content"],
+      properties: {
+        path: { type: "string", description: "Path of the file relative to the working folder, for example src/utils.js or notes.txt" },
+        content: { type: "string", description: "The complete new content of the file." }
       }
     }
   },
@@ -248,22 +268,33 @@ export function actionSignature(action: AutomationAction): string {
   return `${action.kind}:${JSON.stringify(entries)}`;
 }
 
-function parseAction(content: AnthropicContent[]): { action: AutomationAction; toolUseId?: string } {
+function parseAction(content: AnthropicContent[]): { action: AutomationAction; toolUseId?: string; invalid?: { toolUseId: string; message: string } } {
   const tool = content.find((item): item is Extract<AnthropicContent, { type: "tool_use" }> => item.type === "tool_use");
   if (tool) {
     const kind = tool.name === "browser_action" ? "browser"
       : tool.name === "windows_action" ? "windows"
       : tool.name === "run_command" ? "shell"
+      : tool.name === "write_file" ? "write_file"
       : tool.name === "finish" ? "finish"
       : null;
     if (kind) {
       const parsed = automationActionSchema.safeParse({ kind, ...tool.input });
       if (parsed.success) return { action: parsed.data, toolUseId: tool.id };
-      // The planner produced an action we can't run. End the run cleanly with a
-      // plain explanation instead of throwing a raw validation error at the user.
+      // The planner produced an action we can't run. Mark it invalid, carrying a
+      // corrective message: the run loop feeds it back as an error tool_result so
+      // the model can fix its own call (bounded retries), instead of ending the
+      // run. The fallback finish below is only used when correction runs out.
+      const issues = parsed.error.issues
+        .slice(0, 3)
+        .map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`)
+        .join("; ");
       return {
         action: { kind: "finish", summary: "I couldn't finish this task because the next step came back in a form I can't run. Please try rephrasing the request." },
-        toolUseId: tool.id
+        toolUseId: tool.id,
+        invalid: {
+          toolUseId: tool.id,
+          message: `Your ${tool.name} call was invalid and was NOT executed. Problems: ${issues}. Call ${tool.name} again with corrected parameters (note: run_command commands must be under 4000 characters; write longer content with write_file instead).`
+        }
       };
     }
   }
@@ -365,6 +396,7 @@ export async function callModel(input: {
     content: payload.content,
     action: parsed.action,
     toolUseId: parsed.toolUseId,
+    invalid: parsed.invalid,
     usage: {
       input_tokens: payload.usage.input_tokens ?? 0,
       output_tokens: payload.usage.output_tokens ?? 0,

@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { AttachmentRef, ModelTier } from "@workcrew/contracts";
+import type { AttachmentRef, ModelTier, PlanId } from "@workcrew/contracts";
 import type { ChatTurn, LocalFile } from "../lib/chat";
 import { setConversationFolder, type PermissionState, type WorkingFolder } from "../lib/storage";
 import { useChatStream } from "../hooks/useChatStream";
 import { useAutomationRunner } from "../hooks/useAutomationRunner";
 import { ChatView } from "./ChatView";
 import { ApprovalModal } from "./ApprovalModal";
+import { DownloadGateModal } from "./DownloadGateModal";
+import { UpgradeWallModal } from "./UpgradeWallModal";
+import { isWebBuild } from "../lib/platform";
 import { looksLikeAutomation, isQuestionLike, looksLikeFileRequest } from "../lib/routing";
 
 // The status one pane reports up to the workspace so the sidebar can show a
@@ -44,6 +47,10 @@ type Props = {
   onRefreshEntitlement: () => void;
   onSaveRoutine: (task: string) => void;
   onRecord: () => void;
+  // The user's plan (locks the highest effort on free) and the action that
+  // opens the plans screen when they hit the free or daily token wall.
+  plan: PlanId | null;
+  onSeePlans: () => void;
 };
 
 export function ConversationPane({
@@ -62,7 +69,9 @@ export function ConversationPane({
   onStatus,
   onRefreshEntitlement,
   onSaveRoutine,
-  onRecord
+  onRecord,
+  plan,
+  onSeePlans
 }: Props) {
   const chat = useChatStream();
   const runner = useAutomationRunner();
@@ -79,8 +88,29 @@ export function ConversationPane({
   // the async preamble (the folder-tree read) cannot slip past the lagging
   // runner.running state and be silently dropped.
   const startingRef = useRef(false);
+  // Web build: which desktop-only feature was just attempted (shows the
+  // download-the-app modal), and whether the token-limit upgrade wall is up.
+  const [downloadGate, setDownloadGate] = useState<string | null>(null);
+  const [upgradeWall, setUpgradeWall] = useState<{ daily: boolean } | null>(null);
+  const lastBudgetError = useRef("");
+
+  // Surface the Claude-style upgrade wall the moment a turn or run fails on a
+  // token limit. The error text is matched (the backend's budget errors are
+  // stable strings); each distinct error shows the wall once.
+  const lastChatError = [...chat.turns].reverse().find((turn) => turn.error)?.error ?? "";
+  const budgetError = [lastChatError, runner.error ?? ""].find((text) => /usage limit for today|all your (free )?tokens/i.test(text)) ?? "";
+  useEffect(() => {
+    if (budgetError && budgetError !== lastBudgetError.current) {
+      lastBudgetError.current = budgetError;
+      setUpgradeWall({ daily: /today/i.test(budgetError) });
+    }
+  }, [budgetError]);
 
   async function pickFolder(): Promise<void> {
+    if (isWebBuild) {
+      setDownloadGate("Working in a folder");
+      return;
+    }
     try {
       const picked = await window.workcrew.files.pickFolder();
       if (picked) setWorkingFolder(picked);
@@ -99,12 +129,12 @@ export function ConversationPane({
     try { tree = await window.workcrew.files.folderTree(folder.path); } catch { tree = ""; }
     const head =
       `You are working inside the user's own folder at:\n${folder.path}\n` +
-      `This folder is the working directory; every run_command already runs inside it (do not cd to it). ` +
-      `run_command executes in Windows cmd.exe, so use Windows commands: "type file" to read a file, "dir" to ` +
-      `list, "findstr" to search. For anything richer (editing files, JSON/Excel, multi-line writes) call ` +
-      `powershell -NoProfile -Command "..." (Get-Content, Set-Content), or node/python/git. Do NOT use unix ` +
-      `commands like cat, ls, or grep; they fail in cmd.exe. Use run_command to read, edit, and create files and ` +
-      `run build/test/git directly in the folder, editing existing files in place. ` +
+      `This folder is the working directory; every run_command and write_file already works inside it (do not ` +
+      `cd to it). run_command executes in Windows cmd.exe, so use Windows commands: "type file" to read a file, ` +
+      `"dir" to list, "findstr" to search, and powershell -NoProfile -Command "...", node, python, or git for ` +
+      `anything richer. Do NOT use unix commands like cat, ls, or grep; they fail in cmd.exe. Create or edit ` +
+      `every file with write_file (send the complete new content); use run_command to read files and to run ` +
+      `scripts, build/test, and git directly in the folder. ` +
       `Work with commands ONLY. You cannot see the screen or view files by opening them: opening a file, the ` +
       `folder, or a file:/// URL shows it to the user and returns nothing to you. NEVER open the folder or any ` +
       `file in Explorer, a browser, a photo viewer, or any app just to look at it; read contents with "type", ` +
@@ -127,6 +157,12 @@ export function ConversationPane({
   // When a working folder is set, the task is prefixed with the folder context and
   // the folder path is passed through so shell commands run inside it.
   function runAutomation(task: string, label = "Task"): void {
+    // The web version cannot drive the user's computer; the attempt becomes a
+    // download-the-app prompt, like Claude's web version.
+    if (isWebBuild) {
+      setDownloadGate("Running automations");
+      return;
+    }
     const trimmed = task.trim();
     const folder = workingFolder;
     // Folder mode routes every turn (including short replies like "ok") through the
@@ -340,8 +376,20 @@ export function ConversationPane({
         workingFolder={workingFolder}
         onPickFolder={() => void pickFolder()}
         onClearFolder={() => setWorkingFolder(null)}
-        onAddFolder={(folder) => setWorkingFolder(folder)}
+        onAddFolder={isWebBuild ? undefined : (folder) => setWorkingFolder(folder)}
+        plan={plan}
       />
+      {active && downloadGate && (
+        <DownloadGateModal feature={downloadGate} onClose={() => setDownloadGate(null)} />
+      )}
+      {active && upgradeWall && (
+        <UpgradeWallModal
+          plan={plan}
+          daily={upgradeWall.daily}
+          onClose={() => setUpgradeWall(null)}
+          onUpgrade={() => { setUpgradeWall(null); onSeePlans(); }}
+        />
+      )}
       {active && runner.pending && (
         <ApprovalModal
           action={runner.pending.action}

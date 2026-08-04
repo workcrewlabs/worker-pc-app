@@ -4,6 +4,9 @@ export function actionNeedsApproval(action: AutomationAction): boolean {
   if (action.kind === "finish") return false;
   // Running a shell command on the user's computer always requires approval.
   if (action.kind === "shell") return true;
+  // Writing a file inside the working folder is a write like shell: it asks
+  // unless "Always allow" covers it.
+  if (action.kind === "write_file") return true;
   if (action.kind === "browser") {
     return new Set(["click", "fill", "type", "press", "select", "check", "uncheck", "click-selector", "fill-selector"]).has(action.command);
   }

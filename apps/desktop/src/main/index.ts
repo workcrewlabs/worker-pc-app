@@ -1,11 +1,12 @@
 import "dotenv/config";
 import { join, resolve, sep } from "node:path";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, screen, session, shell } from "electron";
 import {
   APP_NAME,
   SUPPORT_EMAIL,
   recordedEventSchema,
   shellActionSchema,
+  writeFileActionSchema,
   summarizeRecordingRequestSchema,
   chatSendSchema,
   chatDeltaFrameSchema,
@@ -30,7 +31,7 @@ import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
 import { extractOfficeText } from "./office.js";
 import { extractPdfText, looksLikeText } from "./pdf-text.js";
 import { EXPORT_EXTENSIONS, generateExport, sanitizeExportName, type ExportExtension } from "./file-export.js";
-import { runShellCommand } from "./shell-cli.js";
+import { confinePath, resolveWorkingDir, runShellCommand } from "./shell-cli.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -50,6 +51,18 @@ const chatStreams = new Map<string, AbortController>();
 let attachmentUploadChain: Promise<unknown> = Promise.resolve();
 
 console.info("[WorkCrew] main process loaded");
+
+// A background fetch that fails (for example the backend briefly unreachable)
+// must never take the whole app down. Without these guards, one unawaited
+// promise rejection in the main process exits Electron entirely; with them the
+// failure is logged and the app keeps running, and the renderer's own error
+// handling (Try again, offline notices) stays in charge of recovery.
+process.on("unhandledRejection", (reason) => {
+  console.error("[WorkCrew] unhandled rejection:", reason instanceof Error ? reason.message : reason);
+});
+process.on("uncaughtException", (error) => {
+  console.error("[WorkCrew] uncaught exception:", error?.message ?? error);
+});
 
 // The app follows the OS display scaling (a Windows setting of 125% renders the
 // app at 125%, and changing that setting changes the app to match). We do NOT
@@ -696,6 +709,31 @@ function registerIpc(): void {
       if (response !== 1) return "The user declined to run this command.";
     }
     return runShellCommand(command, cwd);
+  });
+
+  // Write one whole file inside the working folder (or the hidden workspace when
+  // no folder is set). The model sends the file's entire content, so there is no
+  // shell quoting to corrupt it. The resolved path is confined to the working
+  // folder: anything that escapes it (.. or an absolute path elsewhere) is
+  // refused, so the model can never write outside what the user granted.
+  ipcMain.handle("file:write", async (_event, raw) => {
+    const input = (raw ?? {}) as { path?: unknown; content?: unknown; cwd?: unknown };
+    const parsed = writeFileActionSchema.parse({ kind: "write_file", path: input.path, content: input.content });
+    const cwd = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd : null;
+    const base = resolve(await resolveWorkingDir(cwd));
+    const target = confinePath(base, parsed.path);
+    if (!target) {
+      return "Blocked: the path is outside the working folder.";
+    }
+    const fs = await import("node:fs/promises");
+    const { dirname, relative } = await import("node:path");
+    try {
+      await fs.mkdir(dirname(target), { recursive: true });
+      await fs.writeFile(target, parsed.content, "utf8");
+    } catch (error) {
+      return `Could not write the file: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    return `Wrote ${Buffer.byteLength(parsed.content, "utf8")} bytes to ${relative(base, target) || parsed.path}`;
   });
 
   // Whether a dropped path is a file or a folder, so dragging a folder into the

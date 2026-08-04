@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { app } from "electron";
 
 // Runs one shell command inside a working folder. This is the engine behind
@@ -28,6 +28,18 @@ export async function resolveWorkingDir(folder?: string | null): Promise<string>
     }
   }
   return workspaceDir();
+}
+
+// Resolve a requested (relative or absolute) path against a base directory and
+// return the absolute path ONLY if it stays strictly inside base. Returns null
+// when the path escapes the folder (via .. or an absolute path elsewhere) or
+// resolves to the base directory itself. This is the confinement that stops
+// write_file from ever touching a file outside the folder the user granted.
+// Pure path math so it is unit-tested directly.
+export function confinePath(base: string, requested: string): string | null {
+  const root = resolve(base);
+  const target = resolve(root, requested);
+  return target.startsWith(root + sep) ? target : null;
 }
 
 function clamp(text: string): string {
@@ -58,9 +70,13 @@ export async function runShellCommand(command: string, folder?: string | null): 
     // windowsVerbatimArguments keeps the command identical to what the user
     // approved (Node would otherwise re-escape quotes and corrupt it). On POSIX
     // the child is detached into its own group so the whole tree can be killed.
+    // GIT_TERMINAL_PROMPT=0 makes git fail fast with a readable error instead of
+    // hanging invisibly on a credential prompt (there is no terminal to answer
+    // it), so a push without stored credentials reports instead of timing out.
+    const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
     const child = process.platform === "win32"
-      ? spawn(process.env.COMSPEC ?? "cmd.exe", ["/d", "/s", "/c", command], { cwd, windowsHide: true, windowsVerbatimArguments: true })
-      : spawn("/bin/sh", ["-c", command], { cwd, detached: true });
+      ? spawn(process.env.COMSPEC ?? "cmd.exe", ["/d", "/s", "/c", command], { cwd, env, windowsHide: true, windowsVerbatimArguments: true })
+      : spawn("/bin/sh", ["-c", command], { cwd, env, detached: true });
 
     let out = "";
     let settled = false;

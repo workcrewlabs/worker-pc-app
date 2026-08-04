@@ -148,7 +148,8 @@ export function ChatView({
   workingFolder,
   onPickFolder,
   onClearFolder,
-  onAddFolder
+  onAddFolder,
+  plan
 }: {
   turns: ChatTurn[];
   streaming: boolean;
@@ -168,6 +169,8 @@ export function ChatView({
   workingFolder?: { path: string; name: string } | null;
   onPickFolder?: () => void;
   onClearFolder?: () => void;
+  // The user's plan; the free plan hides the highest-effort option.
+  plan?: string | null;
   // A folder dragged into the chat becomes the working folder.
   onAddFolder?: (folder: { path: string; name: string }) => void;
 }) {
@@ -500,7 +503,7 @@ export function ChatView({
         </button>
         <Dropdown
           value={model}
-          options={MODEL_OPTIONS}
+          options={plan === "free" ? MODEL_OPTIONS.filter((option) => option.value !== "opus") : MODEL_OPTIONS}
           onChange={onModelChange}
           ariaLabel="Answer effort"
           header="Effort"

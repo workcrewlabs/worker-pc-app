@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Built output of the browser (web) app, produced by `npm run web:build`.
+dist-web/
 out/
 .vite/
 .env

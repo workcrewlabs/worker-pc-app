@@ -17,7 +17,8 @@ export function Dropdown<T extends string>({
   ariaLabel,
   header,
   direction = "down",
-  align = "left"
+  align = "left",
+  placeholder
 }: {
   value: T;
   options: DropdownOption<T>[];
@@ -26,6 +27,8 @@ export function Dropdown<T extends string>({
   header?: string;
   direction?: "up" | "down";
   align?: "left" | "right";
+  /** Shown on the trigger while nothing is selected yet (an empty `value`). */
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -66,7 +69,9 @@ export function Dropdown<T extends string>({
         aria-label={ariaLabel}
         onClick={() => setOpen((value) => !value)}
       >
-        <span>{current?.label ?? ""}</span>
+        <span className={!current && placeholder ? "wc-dropdown-placeholder" : undefined}>
+          {current?.label ?? placeholder ?? ""}
+        </span>
         <svg className="wc-dropdown-chevron" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M6 9l6 6 6-6" />
         </svg>

@@ -99,7 +99,7 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       user_id TEXT PRIMARY KEY,
       stripe_customer_id TEXT,
       stripe_subscription_id TEXT UNIQUE,
-      plan TEXT NOT NULL CHECK (plan IN ('pro', 'ultra')),
+      plan TEXT NOT NULL CHECK (plan IN ('free', 'pro', 'ultra')),
       interval TEXT NOT NULL CHECK (interval IN ('month', 'year')),
       status TEXT NOT NULL,
       active INTEGER NOT NULL DEFAULT 0,
@@ -294,6 +294,9 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   // When a user pins a conversation. NULL means unpinned; a timestamp orders the
   // pinned chats (most recently pinned first) above the rest of Recents.
   await addColumnIfMissing(db, "conversations", "pinned_at_ms", "BIGINT");
+  // Existing databases created before the free tier still carry a CHECK that
+  // only allows 'pro' and 'ultra'; widen it so free-plan rows can be granted.
+  await widenPlanCheckForFreeTier(db);
   // Created after the column migration so it also applies to databases whose
   // users table predates the referral columns. Multiple NULL codes are allowed
   // by both SQLite and Postgres, so legacy rows without a code do not collide.
@@ -320,6 +323,66 @@ async function addColumnIfMissing(db: DatabaseClient, table: string, column: str
     // a real failure and must surface.
     if (!message.includes("duplicate column") && !message.includes("already exists")) throw error;
   }
+}
+
+// Databases created before the free tier carry a CHECK that only allows the
+// paid plans, which would reject every free-plan grant. Widen it to include
+// 'free', per dialect: Postgres can drop and re-add the named constraint;
+// SQLite cannot alter a CHECK, so the table is rebuilt once (rename, recreate
+// with the current DDL, copy, drop). Both paths are idempotent: they detect
+// the already-widened state and do nothing.
+async function widenPlanCheckForFreeTier(db: DatabaseClient): Promise<void> {
+  if (db.dialect === "postgres") {
+    // Find check constraints that mention the plan column but not pending_plan
+    // and do not already allow 'free'; those are the stale paid-only checks.
+    const stale = await db.execute(`
+      SELECT conname FROM pg_constraint
+      WHERE conrelid = 'subscriptions'::regclass AND contype = 'c'
+        AND pg_get_constraintdef(oid) LIKE '%plan%'
+        AND pg_get_constraintdef(oid) NOT LIKE '%pending_plan%'
+        AND pg_get_constraintdef(oid) NOT LIKE '%interval%'
+        AND pg_get_constraintdef(oid) NOT LIKE '%free%'`);
+    for (const row of stale.rows as unknown as { conname: string }[]) {
+      await db.execute(`ALTER TABLE subscriptions DROP CONSTRAINT "${row.conname}"`);
+    }
+    if (stale.rows.length > 0) {
+      await db.execute("ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_plan_check CHECK (plan IN ('free', 'pro', 'ultra'))");
+    }
+    return;
+  }
+  const master = await db.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'subscriptions'");
+  const tableSql = String((master.rows[0] as unknown as { sql?: unknown })?.sql ?? "");
+  if (!tableSql.includes("plan IN ('pro', 'ultra')")) return;
+  const columns =
+    "user_id, stripe_customer_id, stripe_subscription_id, plan, interval, status, active, " +
+    "budget_anchor_ms, current_period_end_ms, auto_reload_enabled, auto_reload_pack, " +
+    "monthly_topup_limit_micro, stripe_payment_method_id, pending_plan, pending_interval, " +
+    "pending_effective_ms, model_mode, updated_at_ms";
+  await db.batch([
+    "ALTER TABLE subscriptions RENAME TO subscriptions_legacy_plan",
+    `CREATE TABLE subscriptions (
+      user_id TEXT PRIMARY KEY,
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT UNIQUE,
+      plan TEXT NOT NULL CHECK (plan IN ('free', 'pro', 'ultra')),
+      interval TEXT NOT NULL CHECK (interval IN ('month', 'year')),
+      status TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 0,
+      budget_anchor_ms BIGINT NOT NULL,
+      current_period_end_ms BIGINT NOT NULL,
+      auto_reload_enabled INTEGER NOT NULL DEFAULT 0,
+      auto_reload_pack TEXT NOT NULL DEFAULT 'small',
+      monthly_topup_limit_micro BIGINT NOT NULL DEFAULT 0,
+      stripe_payment_method_id TEXT,
+      pending_plan TEXT CHECK (pending_plan IN ('pro', 'ultra')),
+      pending_interval TEXT CHECK (pending_interval IN ('month', 'year')),
+      pending_effective_ms BIGINT,
+      model_mode TEXT NOT NULL DEFAULT 'economy',
+      updated_at_ms BIGINT NOT NULL
+    )`,
+    `INSERT INTO subscriptions (${columns}) SELECT ${columns} FROM subscriptions_legacy_plan`,
+    "DROP TABLE subscriptions_legacy_plan"
+  ]);
 }
 
 // A strictly increasing millisecond clock for ordering rows written in quick
@@ -430,6 +493,29 @@ export async function upsertSubscription(input: SubscriptionUpsert): Promise<voi
       input.currentPeriodEndMs,
       Date.now()
     ]
+  });
+}
+
+// Grant the no-card free plan to a user who has NO subscription row at all.
+// ON CONFLICT DO NOTHING makes this strictly additive and idempotent: it can
+// never touch, downgrade, or reset an existing row (free or paid), so calling
+// it on every entitlement read is safe and a Stripe webhook still remains the
+// only writer that can grant a paid tier. The budget anchor is set at grant
+// time, so the $0.30 monthly free allowance renews on the user's own monthly
+// anniversary through the same budget-window math paid plans use.
+export async function grantFreeSubscriptionIfAbsent(userId: string): Promise<void> {
+  const now = Date.now();
+  // The free plan never expires on its own; access is bounded by the budget
+  // caps, not by a billing period. A century out keeps every "still active"
+  // comparison simple without a magic null.
+  const FREE_PERIOD_END_MS = now + 100 * 365 * 24 * 60 * 60 * 1000;
+  await client.execute({
+    sql: `INSERT INTO subscriptions (
+      user_id, stripe_customer_id, stripe_subscription_id, plan, interval,
+      status, active, budget_anchor_ms, current_period_end_ms, updated_at_ms
+    ) VALUES (?, NULL, NULL, 'free', 'month', 'free', 1, ?, ?, ?)
+    ON CONFLICT(user_id) DO NOTHING`,
+    args: [userId, now, FREE_PERIOD_END_MS, now]
   });
 }
 

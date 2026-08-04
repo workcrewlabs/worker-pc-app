@@ -438,7 +438,7 @@ export async function buildXlsx(rows: string[][]): Promise<Buffer> {
   zip.file("xl/worksheets/sheet1.xml", sheet);
   zip.file("xl/sharedStrings.xml", sharedStrings);
   zip.file("xl/styles.xml", styles);
-  return (await zip.generateAsync({ type: "nodebuffer" })) as Buffer;
+  return (await zip.generateAsync({ type: typeof Buffer === "undefined" ? "uint8array" : "nodebuffer" })) as Buffer;
 }
 
 /**
@@ -474,7 +474,7 @@ export async function buildDocx(text: string): Promise<Buffer> {
   zip.file("[Content_Types].xml", contentTypes);
   zip.file("_rels/.rels", rootRels);
   zip.file("word/document.xml", document);
-  return (await zip.generateAsync({ type: "nodebuffer" })) as Buffer;
+  return (await zip.generateAsync({ type: typeof Buffer === "undefined" ? "uint8array" : "nodebuffer" })) as Buffer;
 }
 
 /**
@@ -486,7 +486,7 @@ export async function generateExport(ext: ExportExtension, content: string): Pro
   if (ext === "xlsx") return buildXlsx(parseCsv(content));
   if (ext === "docx") return buildDocx(content);
   // csv, txt, md, json, html are plain text written exactly as produced.
-  return Buffer.from(content, "utf8");
+  return (typeof Buffer === "undefined" ? (new TextEncoder().encode(content) as unknown as Buffer) : Buffer.from(content, "utf8"));
 }
 
 /**

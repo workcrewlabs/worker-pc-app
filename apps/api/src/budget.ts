@@ -44,6 +44,24 @@ export function getBudgetWindow(anchorMs: number, nowMs = Date.now()): BudgetWin
   return { startMs, endMs: addUtcMonths(anchorMs, months + 1) };
 }
 
+// One century in milliseconds: the span of the free plan's single lifetime
+// budget window.
+const CENTURY_MS = 100 * 365 * 24 * 60 * 60 * 1000;
+
+// The budget window a subscription's usage is measured over. Paid plans roll
+// monthly (getBudgetWindow). The FREE plan is a one-time trial that never
+// resets: it uses a single fixed window from sign-up a century into the future,
+// so every reservation ever written carries the same period and all usage counts
+// against the one $0.30 cap. Because the window never rolls, once the cap is
+// reached it stays reached; there is no daily or monthly refill. The bounds are a
+// pure function of the fixed anchor, so they are stable across every call.
+export function budgetWindowFor(subscription: { plan: PlanId; budgetAnchorMs: number }, nowMs = Date.now()): BudgetWindow {
+  if (subscription.plan === "free") {
+    return { startMs: subscription.budgetAnchorMs, endMs: subscription.budgetAnchorMs + CENTURY_MS };
+  }
+  return getBudgetWindow(subscription.budgetAnchorMs, nowMs);
+}
+
 export function planBudget(plan: PlanId): number {
   return PLAN_CATALOG[plan].monthlyApiBudgetMicrodollars;
 }
@@ -125,7 +143,7 @@ export async function getBudgetUsage(userId: string, window: BudgetWindow): Prom
 // values are returned separately so the caller can say "frees up tomorrow" (daily)
 // versus "used all your tokens for this period" (monthly) accurately.
 export async function budgetHeadroom(userId: string, subscription: SubscriptionRow, nowMs = Date.now()): Promise<{ daily: number; monthly: number }> {
-  const window = getBudgetWindow(subscription.budgetAnchorMs, nowMs);
+  const window = budgetWindowFor(subscription, nowMs);
   const limits = planLimits(subscription.plan);
   const [monthly, daily] = await Promise.all([
     getBudgetUsage(userId, window),
@@ -137,6 +155,26 @@ export async function budgetHeadroom(userId: string, subscription: SubscriptionR
   };
 }
 
+/**
+ * The error to raise when a user has no budget left to run a turn.
+ *
+ * `dailyBinding` says the rolling 24h cap is the one that ran out, which for a
+ * paid plan genuinely does free up tomorrow. The FREE plan is a one-time trial
+ * whose daily and lifetime caps are the same number, so an exhausted trial can
+ * look "daily" while never actually refilling. It therefore always reports the
+ * permanent upgrade message, so a free user is never told to come back tomorrow
+ * for tokens that are gone for good.
+ */
+export function exhaustionError(plan: PlanId, dailyBinding: boolean): Error {
+  if (plan === "free") {
+    return Object.assign(new Error("You have used all your free tokens. Upgrade to keep going."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+  }
+  if (dailyBinding) {
+    return Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+  }
+  return Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+}
+
 export async function reserveBudget(input: {
   subscription: SubscriptionRow;
   runId: string;
@@ -145,7 +183,7 @@ export async function reserveBudget(input: {
   nowMs?: number;
 }): Promise<{ reservationId: string; window: BudgetWindow; reservedMicrodollars: number }> {
   const nowMs = input.nowMs ?? Date.now();
-  const window = getBudgetWindow(input.subscription.budgetAnchorMs, nowMs);
+  const window = budgetWindowFor(input.subscription, nowMs);
   const limits = planLimits(input.subscription.plan);
   const amount = input.amountMicrodollars;
   const dayStart = nowMs - DAY_MS;
@@ -225,10 +263,7 @@ export async function reserveBudget(input: {
     // The insert only fails when a window is already exhausted. Report which one
     // is binding so the user sees a clear, accurate message.
     const dailyUsed = await rollingUsage(input.subscription.userId, dayStart);
-    if (dailyUsed >= limits.daily) {
-      throw Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
-    }
-    throw Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
+    throw exhaustionError(input.subscription.plan, dailyUsed >= limits.daily);
   }
   // Read back the amount actually reserved. The SQL clamps it to the headroom that
   // was left at insert time (serialized by the advisory lock), so this is the real

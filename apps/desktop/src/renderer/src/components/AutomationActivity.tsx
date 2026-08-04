@@ -27,7 +27,7 @@ export function FolderActivity({ runner }: { runner: AutomationRunner }) {
   // Past-tense, muted line per action. Folder work is commands, so almost every
   // line reads "Ran a command"; the command itself sits in the hover title.
   const lineFor = (label: string, stepStatus: string): string => {
-    const base = label === "Run a command" ? "Ran a command" : label;
+    const base = label === "Run a command" ? "Ran a command" : label === "Write a file" ? "Wrote a file" : label;
     if (stepStatus === "error") return `${base} (failed)`;
     if (stepStatus === "declined") return `${base} (skipped)`;
     return base;

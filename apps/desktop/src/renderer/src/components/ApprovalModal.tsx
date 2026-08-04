@@ -28,10 +28,17 @@ export function ApprovalModal({
   }, [onDecide]);
 
   const isShell = action.kind === "shell";
+  const isWriteFile = action.kind === "write_file";
+  // Shell and write_file are the local-folder work actions: both are confirmed
+  // one at a time and governed by the global "Always allow" toggle, so neither
+  // shows a per-action "Allow always" button.
+  const isLocalAction = isShell || isWriteFile;
   const detail =
     action.kind === "shell"
       ? action.command
-      : action.kind === "browser"
+      : action.kind === "write_file"
+        ? action.path
+        : action.kind === "browser"
         ? action.url ?? action.value ?? action.target ?? action.key
         : action.kind === "windows"
           ? action.value ?? action.control ?? action.windowTitle ?? action.application
@@ -48,11 +55,13 @@ export function ApprovalModal({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <span className="modal-badge">Approval needed</span>
-        <h2 id="approval-title">{isShell ? "WorkCrew wants to run a command" : "WorkCrew wants to make a change"}</h2>
+        <h2 id="approval-title">{isShell ? "WorkCrew wants to run a command" : isWriteFile ? "WorkCrew wants to write a file" : "WorkCrew wants to make a change"}</h2>
         <p id="approval-desc" className="modal-text">
           {isShell
             ? "This runs on your computer in WorkCrew's workspace folder. Only allow commands you understand and trust."
-            : "Review this action before it runs. WorkCrew will only proceed if you allow it."}
+            : isWriteFile
+              ? "This creates or overwrites a file in the folder you are working in. Only allow it if you trust this change."
+              : "Review this action before it runs. WorkCrew will only proceed if you allow it."}
         </p>
         <div className="modal-action">
           <strong>{label}</strong>
@@ -63,11 +72,12 @@ export function ApprovalModal({
             Decline
           </button>
           <button ref={allowRef} className="primary" onClick={() => onDecide(true)}>
-            {isShell ? "Run it" : "Allow once"}
+            {isShell ? "Run it" : isWriteFile ? "Write it" : "Allow once"}
           </button>
         </div>
-        {/* Commands are always confirmed one at a time, so "Allow always" is hidden. */}
-        {!isShell && (
+        {/* Local folder work (commands and file writes) is confirmed one at a
+            time under the global toggle, so "Allow always" is hidden for it. */}
+        {!isLocalAction && (
           <>
             <button className="modal-allow-always" onClick={onAllowAlways}>
               Allow always

@@ -25,8 +25,12 @@ export type ReferralInfo = {
   bonusMicrodollars: number;
 };
 
-export const planIdSchema = z.enum(["pro", "ultra"]);
+export const planIdSchema = z.enum(["free", "pro", "ultra"]);
 export type PlanId = z.infer<typeof planIdSchema>;
+// The plans money can buy. Checkout and plan changes accept ONLY these; the
+// free plan is granted automatically at sign-up and can never be purchased.
+export const paidPlanIdSchema = z.enum(["pro", "ultra"]);
+export type PaidPlanId = z.infer<typeof paidPlanIdSchema>;
 
 export const billingIntervalSchema = z.enum(["month", "year"]);
 export type BillingInterval = z.infer<typeof billingIntervalSchema>;
@@ -38,6 +42,19 @@ export type BillingInterval = z.infer<typeof billingIntervalSchema>;
 // lands exactly on the monthly allowance and paces usage evenly across the month.
 // The monthly figure is also the user's plain "tokens per month" allowance.
 export const PLAN_CATALOG = {
+  free: {
+    name: "Free",
+    monthlyPriceUsd: 0,
+    yearlyPriceUsd: 0,
+    // $0.30 per calendar month, granted automatically at sign-up with no card.
+    // The daily gate equals the monthly allowance, so there is no daily pacing:
+    // a free user can spend the whole $0.30 on day one and then must upgrade
+    // (or wait for the next monthly window). Runs on the Economy engine like
+    // any economy-mode account, so the $0.30 stretches as far as possible.
+    dailyMicrodollars: 300_000,
+    monthlyApiBudgetMicrodollars: 300_000,
+    devices: 1
+  },
   pro: {
     name: "Pro",
     monthlyPriceUsd: 27,
@@ -167,6 +184,17 @@ export const shellActionSchema = z.object({
   command: z.string().min(1).max(4_000)
 }).strict();
 
+// Create or overwrite one whole file inside the working folder. This is the
+// reliable way for the model to write or edit files (code, scripts, config):
+// it sends the file's entire new content, so there is no shell quoting to
+// corrupt it. The desktop confines the path to the working folder before
+// writing, and the action is approval-gated like a shell command.
+export const writeFileActionSchema = z.object({
+  kind: z.literal("write_file"),
+  path: z.string().min(1).max(1_000),
+  content: z.string().max(400_000)
+}).strict();
+
 export const finishActionSchema = z.object({
   kind: z.literal("finish"),
   summary: z.string().min(1).max(10_000)
@@ -176,12 +204,14 @@ export const automationActionSchema = z.discriminatedUnion("kind", [
   browserActionSchema,
   windowsActionSchema,
   shellActionSchema,
+  writeFileActionSchema,
   finishActionSchema
 ]);
 export type AutomationAction = z.infer<typeof automationActionSchema>;
 export type BrowserAction = z.infer<typeof browserActionSchema>;
 export type WindowsAction = z.infer<typeof windowsActionSchema>;
 export type ShellAction = z.infer<typeof shellActionSchema>;
+export type WriteFileAction = z.infer<typeof writeFileActionSchema>;
 
 // ---------------------------------------------------------------------------
 // Click recording -> AI-written routine.
@@ -226,7 +256,7 @@ export type SummarizeRecordingRequest = z.infer<typeof summarizeRecordingRequest
 export type SummarizeRecordingResponse = { task: string };
 
 export const createCheckoutSchema = z.object({
-  plan: planIdSchema,
+  plan: paidPlanIdSchema,
   interval: billingIntervalSchema
 }).strict();
 
