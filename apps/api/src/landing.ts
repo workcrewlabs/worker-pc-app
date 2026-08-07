@@ -251,7 +251,11 @@ footer{border-top:1px solid var(--line);margin-top:64px;padding:30px 0;color:var
   <span>WorkCrew. Secure Windows automation.</span>
   <span class="flinks">
     <a href="#features">Features</a>
+    <a href="/pricing">Pricing</a>
     <a href="#help">Help</a>
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+    <a href="/refund-policy">Refunds</a>
     <button onclick="manageBilling()">Manage billing</button>
     <button onclick="openAuth('signin')">Sign in</button>
   </span>

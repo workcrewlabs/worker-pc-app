@@ -54,6 +54,7 @@ import { economyEngineAvailable, provider, routeAutomationTier, type ConcreteMod
 import { processAndStoreAttachment } from "./attachments.js";
 import { cancelSubscriptionForDeletion, changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
 import { landingPage } from "./landing.js";
+import { pricingPage, privacyPage, refundPolicyPage, termsPage } from "./legal.js";
 import { budgetHeadroom, budgetWindowFor, creditReferralOnPayment, exhaustionError, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
 import { DAY_MS } from "@workcrew/contracts";
 import { streamChat } from "./chat.js";
@@ -255,6 +256,24 @@ app.get("/", async (_request, reply) => {
     .type("text/html")
     .send(landingPage(config.downloadUrl));
 });
+
+// Public pricing and policy pages. Payment providers will not verify a merchant
+// account until these exist at stable URLs AND the site links to them, so they
+// are served here next to the landing page rather than hosted separately. They
+// carry no inline script, so the CSP can stay tighter than the landing page's.
+for (const [path, render] of [
+  ["/pricing", pricingPage],
+  ["/terms", termsPage],
+  ["/privacy", privacyPage],
+  ["/refund-policy", refundPolicyPage]
+] as const) {
+  app.get(path, async (_request, reply) => {
+    void reply
+      .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:")
+      .type("text/html")
+      .send(render());
+  });
+}
 
 // Stripe redirects the browser here after checkout. Plain web pages (not a
 // workcrew:// deep link), so there is no OS launch error. The desktop re-checks
