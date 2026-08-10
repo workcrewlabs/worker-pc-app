@@ -9,6 +9,7 @@ import {
   type SubscriptionState
 } from "@workcrew/contracts";
 import { formatTokens } from "./lib/storage";
+import { planName } from "./lib/plans";
 import { identifyUser, track } from "./lib/analytics";
 import { DEFAULT_CHAT_MODEL, localId, turnsFromMessages, type ChatTurn } from "./lib/chat";
 import { ConversationPane, type PaneStatus } from "./components/ConversationPane";
@@ -750,7 +751,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
     }
   }
 
-  const planLabel = entitlement.plan ? PLAN_CATALOG[entitlement.plan].name : "No plan";
+  const planLabel = planName(entitlement.plan, "No plan");
   // The header shows the current conversation's auto-generated title, and stays
   // empty on a new chat (no duplicate brand logo).
   const chatTitle = activeConversationId ? (recents.find((item) => item.id === activeConversationId)?.title ?? "") : "";
