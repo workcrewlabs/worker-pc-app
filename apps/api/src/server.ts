@@ -53,6 +53,18 @@ import {
 import { economyEngineAvailable, provider, routeAutomationTier, type ConcreteModelTier } from "./model-registry.js";
 import { processAndStoreAttachment } from "./attachments.js";
 import { cancelSubscriptionForDeletion, changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
+import {
+  adminCreateCustomer,
+  adminGrantAccess,
+  adminGrantSchema,
+  adminListCustomers,
+  adminRecentActivity,
+  adminRevokeAccess,
+  adminSetPassword,
+  adminUserParamSchema,
+  requireAdmin
+} from "./admin.js";
+import { adminPage } from "./admin-page.js";
 import { landingPage } from "./landing.js";
 import { pricingPage, privacyPage, refundPolicyPage, termsPage } from "./legal.js";
 import { budgetHeadroom, budgetWindowFor, creditReferralOnPayment, exhaustionError, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
@@ -309,6 +321,16 @@ app.get("/billing/cancel", async (_request, reply) => {
 const routeLimit = (max: number) => ({ config: { rateLimit: { max, timeWindow: "1 minute" } } });
 const authLimit = routeLimit;
 
+// The few facts a client needs before it has a session: how plans are paid for,
+// and who to write to when payment is arranged by hand. Public and unauthenticated
+// (the support address is published anyway); carries no user data and no secret.
+app.get("/v1/config", routeLimit(60), async () => ({
+  billingMode: config.billingMode,
+  // Only meaningful under manual billing; empty otherwise, so a client can never
+  // show a "pay us directly" message while a real payment processor is live.
+  billingContactEmail: config.billingMode === "manual" ? config.billingContactEmail : ""
+}));
+
 // Request body for updating the signed-in user's display name. Empty clears it.
 const updateProfileSchema = z.object({ name: z.string().trim().max(120) }).strict();
 
@@ -532,8 +554,20 @@ app.post("/v1/billing/simulate", routeLimit(15), async (request) => {
   return subscriptionState(userId);
 });
 
+// Under manual billing there is no payment processor to send anyone to. Every
+// purchase path answers with the same explicit error so the app can show the
+// "write to us to activate your plan" screen instead of opening a dead checkout.
+function refuseUnderManualBilling(): void {
+  if (config.billingMode !== "manual") return;
+  throw Object.assign(
+    new Error(`Plans are activated by the WorkCrew team right now. Email ${config.billingContactEmail} to arrange payment.`),
+    { statusCode: 409, code: "MANUAL_BILLING" }
+  );
+}
+
 app.post("/v1/billing/checkout", routeLimit(15), async (request) => {
   const userId = await authenticate(request);
+  refuseUnderManualBilling();
   const body = createCheckoutSchema.parse(request.body);
   return { url: await createCheckout(userId, body.plan, body.interval) };
 });
@@ -547,6 +581,7 @@ app.post("/v1/billing/checkout", routeLimit(15), async (request) => {
 // returned immediately.
 app.post("/v1/billing/change-plan", routeLimit(15), async (request) => {
   const userId = await authenticate(request);
+  refuseUnderManualBilling();
   const body = createCheckoutSchema.parse(request.body);
   // A free-plan user has no Stripe subscription to modify, so "changing plan"
   // for them is really a first purchase: send them through a fresh hosted
@@ -560,7 +595,11 @@ app.post("/v1/billing/change-plan", routeLimit(15), async (request) => {
   return subscriptionState(userId);
 });
 
-app.post("/v1/billing/portal", routeLimit(15), async (request) => ({ url: await createPortal(await authenticate(request)) }));
+app.post("/v1/billing/portal", routeLimit(15), async (request) => {
+  const userId = await authenticate(request);
+  refuseUnderManualBilling();
+  return { url: await createPortal(userId) };
+});
 
 // Permanently delete the authenticated user's account: cancel the Stripe
 // subscription first (so billing stops and we never orphan an active paid
@@ -574,7 +613,66 @@ app.delete("/v1/account", routeLimit(5), async (request) => {
   return { ok: true };
 });
 
+// Admin dashboard API. Every route resolves the caller through requireAdmin,
+// which authenticates the token and checks the email allowlist, answering 404 for
+// anyone else. Rate limits are deliberately tight: this is a one-operator surface,
+// not something that should ever see traffic.
+app.get("/v1/admin/customers", routeLimit(60), async (request) => {
+  await requireAdmin(request);
+  return adminListCustomers(request.query);
+});
+
+app.post("/v1/admin/customers", routeLimit(20), async (request) => {
+  const actor = await requireAdmin(request);
+  return adminCreateCustomer(actor, request.body);
+});
+
+app.post("/v1/admin/customers/:userId/grant", routeLimit(30), async (request) => {
+  const actor = await requireAdmin(request);
+  const { userId } = adminUserParamSchema.parse(request.params);
+  const body = adminGrantSchema.parse(request.body);
+  const { currentPeriodEndMs } = await adminGrantAccess(actor, userId, body.plan, body.months);
+  return { ok: true, currentPeriodEndMs };
+});
+
+app.post("/v1/admin/customers/:userId/revoke", routeLimit(30), async (request) => {
+  const actor = await requireAdmin(request);
+  const { userId } = adminUserParamSchema.parse(request.params);
+  await adminRevokeAccess(actor, userId);
+  return { ok: true };
+});
+
+app.post("/v1/admin/customers/:userId/password", routeLimit(15), async (request) => {
+  const actor = await requireAdmin(request);
+  const { userId } = adminUserParamSchema.parse(request.params);
+  await adminSetPassword(actor, userId, request.body);
+  return { ok: true };
+});
+
+app.get("/v1/admin/activity", routeLimit(30), async (request) => {
+  await requireAdmin(request);
+  return { actions: await adminRecentActivity() };
+});
+
+// The dashboard itself: one self-contained page that signs in with a normal
+// WorkCrew account and then drives the routes above. Its inline style and script
+// need a relaxed per-response CSP, like the landing page.
+app.get("/admin", async (_request, reply) => {
+  void reply
+    .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:")
+    .header("cache-control", "no-store")
+    .header("x-robots-tag", "noindex, nofollow")
+    .type("text/html")
+    .send(adminPage());
+});
+
 app.post("/v1/billing/webhook", { config: { rawBody: true } }, async (request, reply) => {
+  // With no Stripe account behind this deployment, anything arriving here is
+  // stale or forged. Refuse before touching the body or any signing secret.
+  if (config.billingMode !== "stripe") {
+    request.log.warn({ event: "stripe_webhook_rejected_mode" }, "Stripe webhook received while billing is not in Stripe mode");
+    return reply.code(404).send({ error: "Not found" });
+  }
   const signature = request.headers["stripe-signature"];
   const body = (request as typeof request & { rawBody?: Buffer }).rawBody;
   if (typeof signature !== "string" || !body) {

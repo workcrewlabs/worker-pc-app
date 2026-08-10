@@ -20,7 +20,19 @@ const envSchema = z.object({
   WORKCREW_DEV_BILLING: booleanText,
   WORKCREW_MOCK_AI: booleanText,
   AUTH_MODE: z.enum(["local", "supabase"]).default("local"),
-  BILLING_MODE: z.enum(["simulated", "stripe"]).default("simulated"),
+  // simulated: local development only, activates a plan with no payment.
+  // stripe: card payments through Stripe.
+  // manual: no payment processor at all. Customers pay the operator directly and
+  // an admin switches their access on from the admin dashboard. Production is
+  // allowed to run this way, so no Stripe key is required at boot.
+  BILLING_MODE: z.enum(["simulated", "stripe", "manual"]).default("simulated"),
+  // Accounts allowed into the admin dashboard, as a comma-separated list of
+  // email addresses. Empty means the dashboard is closed to everyone, which is
+  // the safe default for any deployment that has not opted in.
+  WORKCREW_ADMIN_EMAILS: z.string().default(""),
+  // Where a user is told to write to arrange payment while billing is manual.
+  // Shown in the app's upgrade screens and on the paywall.
+  WORKCREW_BILLING_CONTACT_EMAIL: z.string().default("workcrew.support@gmail.com"),
   WORKCREW_LOCAL_AUTH_SECRET: z.string().optional(),
   WORKCREW_ALLOWED_ORIGINS: z.string().default("http://127.0.0.1:5173"),
   WORKCREW_LOG_LEVEL: z.string().default("info"),
@@ -96,12 +108,21 @@ if (env.NODE_ENV === "production") {
   // available after the backend is deployed and a webhook endpoint is created
   // in Stripe, so the server must start without it and then be redeployed once
   // the secret is added. The webhook handler rejects events until it is set.
+  // Stripe config is only required when Stripe is the billing mode. Under manual
+  // billing there is no payment processor at all (customers pay the operator and
+  // an admin grants access), so demanding a Stripe key would block boot for a
+  // deployment that deliberately has none.
+  const stripeRequirements: [string, string | undefined][] = env.BILLING_MODE === "stripe"
+    ? [
+        ["STRIPE_SECRET_KEY", env.STRIPE_SECRET_KEY],
+        ["STRIPE_PRO_MONTHLY_PRICE_ID", env.STRIPE_PRO_MONTHLY_PRICE_ID],
+        ["STRIPE_PRO_YEARLY_PRICE_ID", env.STRIPE_PRO_YEARLY_PRICE_ID],
+        ["STRIPE_ULTRA_MONTHLY_PRICE_ID", env.STRIPE_ULTRA_MONTHLY_PRICE_ID],
+        ["STRIPE_ULTRA_YEARLY_PRICE_ID", env.STRIPE_ULTRA_YEARLY_PRICE_ID]
+      ]
+    : [];
   const missing = [
-    ["STRIPE_SECRET_KEY", env.STRIPE_SECRET_KEY],
-    ["STRIPE_PRO_MONTHLY_PRICE_ID", env.STRIPE_PRO_MONTHLY_PRICE_ID],
-    ["STRIPE_PRO_YEARLY_PRICE_ID", env.STRIPE_PRO_YEARLY_PRICE_ID],
-    ["STRIPE_ULTRA_MONTHLY_PRICE_ID", env.STRIPE_ULTRA_MONTHLY_PRICE_ID],
-    ["STRIPE_ULTRA_YEARLY_PRICE_ID", env.STRIPE_ULTRA_YEARLY_PRICE_ID],
+    ...stripeRequirements,
     ["ANTHROPIC_API_KEY", env.ANTHROPIC_API_KEY]
   ].filter(([, value]) => !value).map(([name]) => name);
 
@@ -123,9 +144,9 @@ if (env.NODE_ENV === "production") {
     throw new Error(`Production configuration is incomplete: ${missing.join(", ")}`);
   }
 
-  // Production must use a LIVE Stripe key. A test key here boots silently on test
-  // mode (paid signups never actually charge), so fail fast instead.
-  if (env.STRIPE_SECRET_KEY && !env.STRIPE_SECRET_KEY.startsWith("sk_live_")) {
+  // Production Stripe billing must use a LIVE key. A test key here boots silently
+  // on test mode (paid signups never actually charge), so fail fast instead.
+  if (env.BILLING_MODE === "stripe" && env.STRIPE_SECRET_KEY && !env.STRIPE_SECRET_KEY.startsWith("sk_live_")) {
     throw new Error("Production requires a live Stripe secret key (sk_live_...).");
   }
 
@@ -133,10 +154,12 @@ if (env.NODE_ENV === "production") {
     throw new Error("Development bypasses cannot be enabled in production");
   }
 
-  // The simulated billing provider is a local development convenience and must
-  // never run in production. Real revenue always goes through Stripe.
+  // The simulated billing provider activates a plan with no payment at all, so it
+  // is a local development convenience and must never run in production. Manual
+  // billing is different and is allowed: it grants nothing on its own and every
+  // activation is a deliberate, audited admin action.
   if (env.BILLING_MODE === "simulated") {
-    throw new Error("Simulated billing cannot be used in production; set BILLING_MODE=stripe");
+    throw new Error("Simulated billing cannot be used in production; set BILLING_MODE=stripe or manual");
   }
 }
 
@@ -145,9 +168,21 @@ if (env.NODE_ENV === "production") {
 // secret is more exposed. This complements the production live-key requirement.
 if (
   env.STRIPE_SECRET_KEY?.startsWith("sk_live_") &&
-  (env.NODE_ENV !== "production" || env.BILLING_MODE !== "stripe")
+  (env.NODE_ENV !== "production" || env.BILLING_MODE === "simulated")
 ) {
   throw new Error("A live Stripe secret key (sk_live_) must only be used in production Stripe billing.");
+}
+
+// Production manual billing with a Stripe key still lying around is untidy but
+// harmless: no code path can reach Stripe, because every purchase route refuses
+// before touching it and the webhook is rejected outright. Warn loudly rather
+// than refuse to boot, so a stale environment variable can never take the whole
+// product offline. The key should still be deleted.
+if (env.NODE_ENV === "production" && env.BILLING_MODE === "manual" && env.STRIPE_SECRET_KEY) {
+  console.warn(
+    "[WorkCrew] security: STRIPE_SECRET_KEY is set while BILLING_MODE is manual. " +
+    "No Stripe call can be made in this mode; delete the key from the environment."
+  );
 }
 
 /**
@@ -234,6 +269,12 @@ export const config = {
   mockAi: env.WORKCREW_MOCK_AI,
   authMode: env.AUTH_MODE,
   billingMode: env.BILLING_MODE,
+  // Emails allowed into the admin dashboard, lowercased for a case-insensitive
+  // match. An empty set closes the dashboard entirely.
+  adminEmails: new Set(
+    env.WORKCREW_ADMIN_EMAILS.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean)
+  ),
+  billingContactEmail: env.WORKCREW_BILLING_CONTACT_EMAIL.trim(),
   localAuthSecret,
   allowedOrigins: new Set([
     ...env.WORKCREW_ALLOWED_ORIGINS.split(",").map((item) => item.trim()).filter(Boolean),

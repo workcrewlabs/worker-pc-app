@@ -2,6 +2,8 @@
 // Everything here lives in window.localStorage. No new IPC channels are
 // introduced. Keys are versioned so a future schema change can migrate safely.
 
+import type { ComposerMode } from "./routing";
+
 const PREFIX = "workcrew";
 const VERSION = "v1";
 
@@ -29,6 +31,23 @@ function write<T>(name: string, value: T): void {
 
 function id(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Composer mode -------------------------------------------------------------
+// Whether new chats open on Chat (answer here, never touch the computer) or on
+// Computer use. Each conversation keeps its own toggle; this only remembers what
+// the user last picked so the next new chat opens the same way. Chat is the
+// default, so a request like "make me an excel sheet" comes back as a file to
+// download instead of WorkCrew driving Excel on screen.
+
+const MODE_KEY = "composerMode";
+
+export function loadComposerMode(): ComposerMode {
+  return read<ComposerMode>(MODE_KEY, "chat") === "computer" ? "computer" : "chat";
+}
+
+export function saveComposerMode(mode: ComposerMode): void {
+  write(MODE_KEY, mode);
 }
 
 // Working folders ----------------------------------------------------------

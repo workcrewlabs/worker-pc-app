@@ -49,12 +49,14 @@ Roles and what each may do. The backend is the only database client, so every ro
 | Start a run, advance a run step, send a chat turn, upload an attachment, summarize a recording | No | Yes, if subscription is active and within budget caps | n/a | No | The owning user's scheduled run only | Yes, as the signed-in user |
 | Spend model tokens / trigger paid AI work | No | Yes, bounded by the 5-hour, daily, and monthly caps | n/a | No | Bounded by the same caps | Yes, bounded by the same caps |
 | Create checkout, change plan (upgrade pays first via a hosted Stripe page), open billing portal | No | Yes, for their own account only | n/a | No | No | Yes, for the signed-in account |
-| Grant credits / mark a subscription active | No | No (cannot self-grant) | No client path | Yes, only after Stripe signature verification; event-guarded and one-shot per referred user | No | No |
+| Grant credits / mark a subscription active | No | No (cannot self-grant) | Yes, under manual billing only: grant, extend, or revoke months from `/admin`, every action written to `admin_audit` | Yes, only after Stripe signature verification; event-guarded and one-shot per referred user | No | No |
+| List all accounts, create an account, set another user's password (`/v1/admin/*`) | No | No (404, the surface is not advertised) | Yes, if their verified token's email is in `WORKCREW_ADMIN_EMAILS` | No | No | No |
 | Choose price IDs / amounts | No | No (server reads them from config/catalog) | n/a | No (server-set metadata only) | No | No |
 | Read server secrets (Stripe secret, webhook secret, `DATABASE_URL`, service role, Anthropic key) | No | No | No | No | No | No (backend only; never shipped to the client) |
 
 Notes:
-- There is no admin HTTP surface today. No route grants elevated access based on a client-supplied flag. If an admin capability is added later, it must check a server-side role, never a request field.
+- The admin surface (`/admin` and `/v1/admin/*`) exists to sell access by hand while billing is manual. Admission is decided entirely server side: the caller is authenticated normally, then their email is read from the database using the id in the VERIFIED token and matched against the `WORKCREW_ADMIN_EMAILS` allowlist. No request field, header, or flag can influence it, and an empty allowlist closes the surface to everyone. A non-admin receives 404 rather than 403 so the surface is not advertised, and every refusal logs an `admin_denied` event. Grants are written through the same `upsertSubscription` path Stripe uses, so there is exactly one entitlement writer.
+- The admin dashboard page holds no secret: it signs in through the ordinary public auth route and keeps the access token in memory only, so closing the tab ends the session.
 - "Stripe webhook" and "background worker" are server contexts, not callers a user can impersonate: the webhook is signature-verified and the worker runs in the backend on behalf of the owning user.
 - The desktop client has no privileges of its own; it acts strictly as the signed-in user and, in packaged builds, may only talk to the official backend origin.
 

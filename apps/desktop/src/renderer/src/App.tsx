@@ -35,6 +35,7 @@ import {
 } from "./lib/storage";
 import { OnboardingFlow } from "./components/OnboardingFlow";
 import { DownloadGateModal } from "./components/DownloadGateModal";
+import { ManualPaymentModal } from "./components/ManualPaymentModal";
 import { Brand, LogoMark } from "./components/Brand";
 import { isWebBuild } from "./lib/platform";
 
@@ -268,13 +269,24 @@ function AuthScreen({ onReady }: { onReady: () => Promise<void> }) {
   );
 }
 
-function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: SubscriptionState) => void }) {
+function Paywall({ info, manualBilling, onManualPayment, onActivated }: {
+  info: AppInfo;
+  // True when this backend has no card checkout and the team activates plans by
+  // hand: choosing a plan explains how to reach them instead of opening a page.
+  manualBilling: boolean;
+  onManualPayment: () => void;
+  onActivated: (state: SubscriptionState) => void;
+}) {
   const [interval, setInterval] = useState<BillingInterval>("year");
   const [busy, setBusy] = useState<PlanId | null>(null);
   const [error, setError] = useState("");
   const simulated = info.billingMode === "simulated";
 
   async function choose(plan: PlanId) {
+    if (manualBilling) {
+      onManualPayment();
+      return;
+    }
     setBusy(plan);
     setError("");
     try {
@@ -293,7 +305,10 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
 
   return (
     <main className="paywall-shell">
-      <header className="paywall-header"><Brand /><span className="secure-pill">Secure checkout</span></header>
+      <header className="paywall-header">
+        <Brand />
+        <span className="secure-pill">{manualBilling ? "Activated by our team" : "Secure checkout"}</span>
+      </header>
       <section className="pricing-intro">
         <p className="eyebrow">CHOOSE YOUR WORKCREW PLAN</p>
         <h1>Put routine work on autopilot</h1>
@@ -316,7 +331,13 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
               <div className="price"><strong>${Math.round(price)}</strong><span>/ month</span></div>
               <p className="billed">{annual ? `$${item.yearlyPriceUsd.toLocaleString()} billed yearly` : "Billed monthly"}</p>
               <button className={plan === "ultra" ? "primary full" : "secondary full"} onClick={() => choose(plan)} disabled={Boolean(busy)}>
-                {busy === plan ? "Preparing" : simulated ? `Activate ${item.name}` : `Subscribe to ${item.name}`}
+                {busy === plan
+                  ? "Preparing"
+                  : simulated
+                    ? `Activate ${item.name}`
+                    : manualBilling
+                      ? `Get ${item.name}`
+                      : `Subscribe to ${item.name}`}
               </button>
               <ul>
                 <li>{formatTokens(item.monthlyApiBudgetMicrodollars)} tokens every month</li>
@@ -332,7 +353,11 @@ function Paywall({ info, onActivated }: { info: AppInfo; onActivated: (state: Su
       </section>
       {error && <p className="error-banner">{error}</p>}
       {simulated && <p className="paywall-foot">Test activation. This unlocks the workspace with no real payment and no card charged.</p>}
-      <p className="paywall-foot">No free tier. No API usage begins until payment is confirmed.</p>
+      <p className="paywall-foot">
+        {manualBilling
+          ? "Card payments are not switched on yet. Choose a plan and we will tell you how to pay and switch your account on."
+          : "No free tier. No API usage begins until payment is confirmed."}
+      </p>
     </main>
   );
 }
@@ -962,6 +987,11 @@ export default function App() {
   const [entitlement, setEntitlement] = useState<SubscriptionState>(EMPTY_ENTITLEMENT);
   const [fatal, setFatal] = useState("");
   const [userName, setUserName] = useState<string | null>(null);
+  // How this backend takes payment, and who to write to when it is done by hand.
+  // "manual" means there is no card checkout to open anywhere in the app.
+  const [billing, setBilling] = useState<{ mode: string; contactEmail: string }>({ mode: "stripe", contactEmail: "" });
+  const [manualPayOpen, setManualPayOpen] = useState(false);
+  const manualBilling = billing.mode === "manual";
   // Whether the first-run onboarding flow (name, role, starter prompt) has been
   // completed on this install. It renders in place of the workspace once.
   const [onboarded, setOnboarded] = useState<boolean>(() => getOnboarding().done);
@@ -983,6 +1013,15 @@ export default function App() {
     });
     void window.workcrew.updates.check();
     return off;
+  }, []);
+
+  // How this backend takes payment. Fetched once, unauthenticated, so the
+  // upgrade screens know whether to open a card checkout or explain that the team
+  // activates plans by hand. Defaults to the card flow until the answer arrives.
+  useEffect(() => {
+    void window.workcrew.api.publicConfig()
+      .then((value) => setBilling({ mode: value.billingMode, contactEmail: value.billingContactEmail }))
+      .catch(() => {});
   }, []);
 
   async function refresh() {
@@ -1076,7 +1115,12 @@ export default function App() {
       : phase === "auth"
       ? <AuthScreen onReady={refresh} />
       : phase === "paywall"
-      ? <Paywall info={info} onActivated={(state) => { setEntitlement(state); setPhase("workspace"); }} />
+      ? <Paywall
+          info={info}
+          manualBilling={manualBilling}
+          onManualPayment={() => setManualPayOpen(true)}
+          onActivated={(state) => { setEntitlement(state); setPhase("workspace"); }}
+        />
       : !onboarded
       ? <OnboardingFlow
           userName={userName}
@@ -1095,6 +1139,12 @@ export default function App() {
       onSignOut={async () => { await window.workcrew.auth.signOut(); setPhase("auth"); }}
       onDeleteAccount={async () => { await window.workcrew.auth.deleteAccount(); setPhase("auth"); }}
       onUpgrade={async () => {
+        // With billing handled by hand there is no checkout to open, so explain
+        // how to reach the team instead of failing against a dead payment page.
+        if (manualBilling) {
+          setManualPayOpen(true);
+          return;
+        }
         // Upgrade to Ultra monthly ($200/mo), matching how the plan is presented,
         // rather than a surprise annual charge.
         if (info.billingMode === "simulated") {
@@ -1111,6 +1161,10 @@ export default function App() {
         }
       }}
       onAdjustPlan={async (plan, interval) => {
+        if (manualBilling) {
+          setManualPayOpen(true);
+          return;
+        }
         // The account dialog only opens for an active subscriber. In test mode this
         // re-activates at the chosen plan. In live billing an upgrade opens a hosted
         // Stripe payment page (entitlement updates on return); a downgrade applies
@@ -1127,5 +1181,10 @@ export default function App() {
   // The one-time usage-upgrade announcement, shown only inside the signed-in app
   // and never while a required-update gate is covering the screen.
   const announce = phase === "workspace" && update?.state !== "required" ? <UsageBoostBanner /> : null;
-  return <>{gate}{screen}{announce}</>;
+  // How to get a plan when payment is arranged by hand. Rendered at the root so it
+  // works from the paywall and from inside the app alike.
+  const manualPay = manualPayOpen
+    ? <ManualPaymentModal email={billing.contactEmail} onClose={() => setManualPayOpen(false)} />
+    : null;
+  return <>{gate}{screen}{announce}{manualPay}</>;
 }

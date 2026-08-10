@@ -3,6 +3,7 @@ import type { AttachmentRef, ModelTier } from "@workcrew/contracts";
 import type { ChatTurn, LocalFile } from "../lib/chat";
 import type { AutomationRunner } from "../hooks/useAutomationRunner";
 import { Dictation } from "../lib/dictation";
+import type { ComposerMode } from "../lib/routing";
 import { Dropdown, type DropdownOption } from "./Dropdown";
 import { MessageList } from "./MessageList";
 import { AutomationActivity, FolderActivity } from "./AutomationActivity";
@@ -47,6 +48,35 @@ function MicIcon() {
       <path d="M5 11a7 7 0 0 0 14 0" />
       <line x1="12" y1="18" x2="12" y2="21" />
     </svg>
+  );
+}
+
+// The Chat / Computer use switch, sitting in the composer's tool row. This is the
+// single, explicit choice for how the next message is handled, so WorkCrew never
+// has to guess: on Chat it answers here and hands back any file as a download, and
+// only on Computer use does it open apps and work on screen.
+function ModeToggle({ mode, onChange }: { mode: ComposerMode; onChange: (mode: ComposerMode) => void }) {
+  return (
+    <div className="mode-toggle" role="group" aria-label="How WorkCrew should handle your message">
+      <button
+        type="button"
+        className={mode === "chat" ? "is-active" : ""}
+        aria-pressed={mode === "chat"}
+        title="Answer in the chat. WorkCrew never touches your computer, and a file you ask for comes back as a download."
+        onClick={() => onChange("chat")}
+      >
+        Chat
+      </button>
+      <button
+        type="button"
+        className={mode === "computer" ? "is-active" : ""}
+        aria-pressed={mode === "computer"}
+        title="Let WorkCrew work on your computer: open your apps and websites and do the task on screen."
+        onClick={() => onChange("computer")}
+      >
+        Computer use
+      </button>
+    </div>
   );
 }
 
@@ -149,7 +179,12 @@ export function ChatView({
   onPickFolder,
   onClearFolder,
   onAddFolder,
-  plan
+  plan,
+  mode,
+  onModeChange,
+  computerHint,
+  onRunOnComputer,
+  onDismissHint
 }: {
   turns: ChatTurn[];
   streaming: boolean;
@@ -173,6 +208,14 @@ export function ChatView({
   plan?: string | null;
   // A folder dragged into the chat becomes the working folder.
   onAddFolder?: (folder: { path: string; name: string }) => void;
+  // Chat (answer here) or Computer use (work on screen), and the setter.
+  mode: ComposerMode;
+  onModeChange: (mode: ComposerMode) => void;
+  // Set when the last message sent on Chat read like a task for the computer. It
+  // holds that message, so the offer below can run it without retyping.
+  computerHint?: string;
+  onRunOnComputer?: () => void;
+  onDismissHint?: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -448,7 +491,7 @@ export function ChatView({
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        placeholder="Ask WorkCrew anything..."
+        placeholder={mode === "computer" ? "Tell WorkCrew what to do on your computer..." : "Ask WorkCrew anything..."}
         rows={hasConversation ? 1 : 3}
       />
       {attachError && <div className="attach-error-row">{attachError}</div>}
@@ -479,6 +522,7 @@ export function ChatView({
             </div>
           )}
         </div>
+        <ModeToggle mode={mode} onChange={onModeChange} />
         {onRecord && (
           <button
             className="tool-button"
@@ -550,22 +594,35 @@ export function ChatView({
   })() : null;
 
   // The "Always allow" toggle sits just under the composer, on the left, like a
-  // permissions switch. It is present in both the empty and active layouts.
-  const aux = (
+  // permissions switch. It only governs approvals for work done on the computer, so
+  // it is hidden while the toggle is on Chat, where nothing is ever acted on.
+  const aux = mode === "computer" ? (
     <div className="composer-aux">
       <AlwaysAllowToggle checked={alwaysAllow} onChange={onAlwaysAllowChange} />
     </div>
-  );
+  ) : null;
+
+  // Offered above the composer when a message typed on Chat read like a task for
+  // the computer, so the user is never stuck wondering why nothing happened: one
+  // click switches the toggle and runs that same message as a task.
+  const modeHint = computerHint ? (
+    <div className="mode-hint" role="status">
+      <span className="mode-hint-text">That sounds like something to do on your computer.</span>
+      <button type="button" className="mode-hint-run" onClick={onRunOnComputer}>Do it on my computer</button>
+      <button type="button" className="mode-hint-close" aria-label="Dismiss" onClick={onDismissHint}>×</button>
+    </div>
+  ) : null;
 
   if (!hasConversation) {
     return (
       <div className="chat-empty">
         <div className="chat-empty-inner">
           <h1 className="greeting">{timeGreeting()}</h1>
+          {modeHint}
           {composer}
           {folderContext}
           {aux}
-          <p className="suggestion-label">Try an automation</p>
+          <p className="suggestion-label">Try it on your computer</p>
           <div className="suggestion-chips">
             {AUTOMATION_PROMPTS.map((prompt) => (
               <button key={prompt} type="button" onClick={() => onAutomate(prompt)}>{prompt}</button>
@@ -592,7 +649,7 @@ export function ChatView({
           <AutomationActivity runner={runner} task={automationTask} onSaveRoutine={onSaveRoutine} onRerun={onRerun} />
         )}
       </div>
-      <div className="composer-dock">{composer}{folderContext}{aux}</div>
+      <div className="composer-dock">{modeHint}{composer}{folderContext}{aux}</div>
     </div>
   );
 }

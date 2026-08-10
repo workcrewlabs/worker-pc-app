@@ -442,6 +442,17 @@ function registerIpc(): void {
 
   ipcMain.handle("api:entitlement", () => api.request("/v1/entitlement"));
   ipcMain.handle("api:referral", () => api.request("/v1/referral"));
+  // How plans are paid for on this backend, and who to write to when payment is
+  // arranged by hand. Public and unauthenticated, so the renderer can ask for it
+  // before any session exists. A backend too old to know the route, or simply
+  // unreachable, falls back to the card flow rather than blocking the app.
+  ipcMain.handle("api:public-config", async () => {
+    try {
+      return await api.requestPublic("/v1/config");
+    } catch {
+      return { billingMode: "stripe", billingContactEmail: "" };
+    }
+  });
   // Simulated checkout: writes a Stripe-shaped active entitlement through the
   // backend. Used when BILLING_MODE is "simulated" (no real payment).
   ipcMain.handle("api:simulate", (_event, raw) => api.request("/v1/billing/simulate", { method: "POST", body: createCheckoutSchema.parse(raw) }));
