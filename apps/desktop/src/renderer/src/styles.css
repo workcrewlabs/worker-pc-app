@@ -820,6 +820,13 @@ select option:checked { background-color: var(--panel-2); }
 .modal-action { padding: 14px; border: 1px solid var(--line-3); border-radius: 11px; background: var(--field); }
 .modal-action strong { display: block; font-size: 13px; }
 .modal-action code { display: block; margin-top: 8px; color: var(--text-mid); font: 11px/1.5 Consolas, monospace; overflow-wrap: anywhere; }
+/* The crash screen shown by the error boundary in place of an empty window. It
+   reuses the loading shell's centered layout, so it never depends on the part of
+   the app that just failed. */
+.crash-title { margin: 0 0 10px; font-family: var(--font-serif); font-size: 22px; font-weight: 500; }
+.crash-body { max-width: 420px; margin: 0 0 18px; color: var(--muted); font-size: var(--fs-ui); line-height: 1.55; text-align: center; }
+.crash-detail { max-width: 460px; margin: 16px 0 0; color: var(--text-dim); font-size: 11px; text-align: center; overflow-wrap: anywhere; }
+
 /* The billing contact address on the "we activate your plan by hand" modal, set
    apart so it is easy to read off a screen and copy in one click. */
 .manual-pay-address { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
