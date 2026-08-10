@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { PLAN_CATALOG, type BillingInterval, type PlanId, type SubscriptionState } from "@workcrew/contracts";
+import { planName } from "../lib/plans";
 import { formatTokens } from "../lib/storage";
 
 function formatDate(value: string | null): string {
@@ -56,7 +57,7 @@ export function AccountDialog({
     setNameDraft(userName ?? "");
   }, [userName]);
 
-  const planName = entitlement.plan ? PLAN_CATALOG[entitlement.plan].name : "No active plan";
+  const currentPlanName = planName(entitlement.plan, "No active plan");
   const budget = entitlement.budgetMicrodollars;
   const used = Math.min(usedMicrodollars, budget);
   const remaining = Math.max(0, budget - used);
@@ -169,7 +170,7 @@ export function AccountDialog({
         <div className="account-plan">
           <div>
             <span className="field-label">Current plan</span>
-            <strong>{planName}</strong>
+            <strong>{currentPlanName}</strong>
           </div>
           <span className="tag">{entitlement.interval === "year" ? "Billed yearly" : entitlement.interval === "month" ? "Billed monthly" : entitlement.status}</span>
         </div>
@@ -190,12 +191,12 @@ export function AccountDialog({
           <div className="account-pending" role="status">
             <strong>Scheduled plan change</strong>
             <p>
-              You will switch to {PLAN_CATALOG[entitlement.pendingPlan].name} on {formatDate(entitlement.pendingEffective)}.
-              You keep your current {PLAN_CATALOG[entitlement.plan].name} limit of {formatTokens(budget)} tokens until then,
-              after which it becomes the {PLAN_CATALOG[entitlement.pendingPlan].name} limit. Nothing changes before that date.
+              You will switch to {planName(entitlement.pendingPlan)} on {formatDate(entitlement.pendingEffective)}.
+              You keep your current {planName(entitlement.plan)} limit of {formatTokens(budget)} tokens until then,
+              after which it becomes the {planName(entitlement.pendingPlan)} limit. Nothing changes before that date.
             </p>
             <button type="button" className="secondary" onClick={cancelDowngrade} disabled={busy !== null}>
-              {busy === "adjust" ? "Updating..." : `Keep ${PLAN_CATALOG[entitlement.plan].name}`}
+              {busy === "adjust" ? "Updating..." : `Keep ${planName(entitlement.plan)}`}
             </button>
           </div>
         )}
