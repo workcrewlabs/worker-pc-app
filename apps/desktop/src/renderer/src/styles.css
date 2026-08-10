@@ -435,6 +435,22 @@ select option:checked { background-color: var(--panel-2); }
 .tool-button { width: 32px; height: 32px; display: inline-grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; color: var(--muted); background: transparent; }
 .tool-button:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
 .tool-button:disabled { opacity: .5; cursor: default; }
+/* Chat / Computer use switch: a two-segment pill in the composer's tool row. The
+   chosen side is raised and legible, the other is quiet, so the current mode reads
+   at a glance without a second look. */
+.mode-toggle { display: inline-flex; align-items: center; gap: 2px; flex: none; padding: 2px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
+.mode-toggle button { padding: 5px 11px; border: 1px solid transparent; border-radius: 7px; cursor: pointer; color: var(--muted); background: transparent; font-size: var(--fs-small); font-weight: 600; white-space: nowrap; transition: color .15s, background .15s, border-color .15s; }
+.mode-toggle button:hover { color: var(--text); }
+.mode-toggle button.is-active { color: var(--text); border-color: var(--line); background: var(--panel-2); }
+:root[data-theme="light"] .mode-toggle { background: var(--card-2); }
+/* The offer shown above the composer when a message typed on Chat reads like a
+   task for the computer. It is a one-line nudge, never a blocking dialog. */
+.mode-hint { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; padding: 9px 10px 9px 13px; border: 1px solid var(--chip-accent-line); border-radius: 12px; color: var(--text); background: var(--chip-accent-bg); font-size: var(--fs-small); }
+.mode-hint-text { flex: 1; min-width: 0; color: var(--chip-accent-text); }
+.mode-hint-run { flex: none; padding: 6px 11px; border: 1px solid var(--accent); border-radius: 8px; cursor: pointer; color: #fff; background: var(--accent); font-size: var(--fs-small); font-weight: 600; }
+.mode-hint-run:hover { filter: brightness(1.08); }
+.mode-hint-close { flex: none; width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; cursor: pointer; color: var(--chip-accent-text); background: transparent; font-size: 15px; line-height: 1; }
+.mode-hint-close:hover { background: var(--hover-soft); }
 /* Voice input: the mic turns red and pulses while recording. */
 .mic-button.mic-recording { color: #fff; border-color: #a34049; background: #a34049; animation: mic-pulse 1.4s infinite; }
 @keyframes mic-pulse { 0% { box-shadow: 0 0 0 0 rgba(163,64,73,.5); } 70% { box-shadow: 0 0 0 7px rgba(163,64,73,0); } 100% { box-shadow: 0 0 0 0 rgba(163,64,73,0); } }

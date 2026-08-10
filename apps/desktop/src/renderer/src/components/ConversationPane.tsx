@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AttachmentRef, ModelTier, PlanId } from "@workcrew/contracts";
 import type { ChatTurn, LocalFile } from "../lib/chat";
-import { setConversationFolder, type PermissionState, type WorkingFolder } from "../lib/storage";
+import { loadComposerMode, saveComposerMode, setConversationFolder, type PermissionState, type WorkingFolder } from "../lib/storage";
 import { useChatStream } from "../hooks/useChatStream";
 import { useAutomationRunner } from "../hooks/useAutomationRunner";
 import { ChatView } from "./ChatView";
@@ -9,7 +9,7 @@ import { ApprovalModal } from "./ApprovalModal";
 import { DownloadGateModal } from "./DownloadGateModal";
 import { UpgradeWallModal } from "./UpgradeWallModal";
 import { isWebBuild } from "../lib/platform";
-import { looksLikeAutomation, isQuestionLike, looksLikeFileRequest } from "../lib/routing";
+import { looksLikeAutomation, isQuestionLike, shouldRunOnComputer, type ComposerMode } from "../lib/routing";
 
 // The status one pane reports up to the workspace so the sidebar can show a
 // progress bar (running), a pause glyph (a backgrounded computer task), or a
@@ -75,6 +75,19 @@ export function ConversationPane({
 }: Props) {
   const chat = useChatStream();
   const runner = useAutomationRunner();
+  // How this conversation handles what the user types, chosen with the toggle in
+  // the composer. Each pane keeps its own setting, starting from whatever the user
+  // last picked (Chat on a fresh install), so one chat can be answering questions
+  // while another works on the computer.
+  const [mode, setModeState] = useState<ComposerMode>(() => loadComposerMode());
+  // The last message typed on Chat that read like a task for the computer, offered
+  // above the composer as a one-click "Do it on my computer".
+  const [computerHint, setComputerHint] = useState("");
+  function setMode(next: ComposerMode): void {
+    setModeState(next);
+    saveComposerMode(next);
+    setComputerHint("");
+  }
   // Once a task has run in this pane, follow-ups that are not plain questions
   // re-run the task with the correction added, so the user can refine and re-run.
   const [automationTask, setAutomationTask] = useState("");
@@ -106,6 +119,15 @@ export function ConversationPane({
     }
   }, [budgetError]);
 
+  // Adding a folder to work in IS computer use: the engine reads, writes, and runs
+  // commands inside it. So the toggle moves with it, in plain sight, rather than a
+  // folder session quietly doing computer work while the switch still says Chat.
+  function addWorkingFolder(folder: WorkingFolder): void {
+    setWorkingFolder(folder);
+    setModeState("computer");
+    setComputerHint("");
+  }
+
   async function pickFolder(): Promise<void> {
     if (isWebBuild) {
       setDownloadGate("Working in a folder");
@@ -113,7 +135,7 @@ export function ConversationPane({
     }
     try {
       const picked = await window.workcrew.files.pickFolder();
-      if (picked) setWorkingFolder(picked);
+      if (picked) addWorkingFolder(picked);
     } catch {
       // Cancelled or unavailable: leave the current folder as is.
     }
@@ -165,6 +187,13 @@ export function ConversationPane({
     }
     const trimmed = task.trim();
     const folder = workingFolder;
+    // Anything that actually runs on the computer puts this pane's toggle on
+    // Computer use, so the switch always matches what is happening. It is not
+    // saved as the default here: only the user clicking the toggle does that, so a
+    // scheduled routine running in the background cannot change how the next new
+    // chat opens.
+    setModeState("computer");
+    setComputerHint("");
     // Folder mode routes every turn (including short replies like "ok") through the
     // engine, so only require a non-empty message there; otherwise require a real
     // task. The synchronous guards block a double-run.
@@ -190,7 +219,7 @@ export function ConversationPane({
     if ((initialTurns && initialTurns.length > 0) || initialConversationId) {
       chat.reset(initialTurns ?? [], initialConversationId);
     }
-    if (initialWorkingFolder) setWorkingFolder(initialWorkingFolder);
+    if (initialWorkingFolder) addWorkingFolder(initialWorkingFolder);
     if (initialAutomation && initialAutomation.task.trim().length >= 3) {
       runAutomation(initialAutomation.task, initialAutomation.label);
     }
@@ -300,20 +329,21 @@ export function ConversationPane({
     return `${head}${clamped || "(the folder listing could not be read)"}${tail}`;
   }
 
-  // Route a typed message. With a working folder set, this conversation is a
-  // hands-on session in that folder (like cowork): a plain question is answered
-  // directly in chat with the folder's listing injected as context (no run, no
-  // panel, nothing opens on screen), and everything else goes to the engine that
-  // works inside the folder. Otherwise: a file hand-off and questions stay in
-  // chat; imperative "do this on my machine" phrasing runs as an automation; a
-  // follow-up while iterating on a task re-runs it with the correction.
+  // Route a typed message. The composer toggle decides, so nothing is ever guessed
+  // into seizing the computer: on Chat every message is answered here (a request
+  // for a spreadsheet comes back as a file to download), and only on Computer use
+  // does WorkCrew act on screen. Two refinements sit on top of that. A plain
+  // question is answered in chat even on Computer use, and with a working folder
+  // set, Computer use is a hands-on session in that folder (the question is
+  // answered from the folder's listing, everything else runs the engine inside it);
+  // on Chat the folder is only context for the answer, and nothing runs.
   function send(text: string, attachments: AttachmentRef[], files: LocalFile[] = []): void {
     const paths = files.map((f) => f.path);
     const fileList = paths.length > 0
       ? `\n\nThe user attached these files; work with them at their real locations on the computer: ${paths.map((p) => `"${p}"`).join(", ")}`
       : "";
     if (workingFolder && !runner.running) {
-      if (isQuestionLike(text)) {
+      if (!shouldRunOnComputer(mode, text)) {
         const folder = workingFolder;
         runner.clear();
         setAutomationTask("");
@@ -327,29 +357,25 @@ export function ConversationPane({
       runAutomation(`${text}${fileList}`, "Task");
       return;
     }
-    const fileRequest = looksLikeFileRequest(text);
-    if (!runner.running && !fileRequest) {
-      if (paths.length > 0 && looksLikeAutomation(text)) {
-        runAutomation(`${text}${fileList}`, "Task");
+    if (!runner.running && shouldRunOnComputer(mode, text)) {
+      // While iterating on a task in this pane, a follow-up that is not a plain
+      // question is a correction: re-run the whole task with the fix added.
+      if (automationMode && attachments.length === 0 && files.length === 0) {
+        const combined = `${automationTask}\n\nThe last attempt was not right. Correction from the user: ${text}\nPlease do the whole task again with this fix.`;
+        runAutomation(combined, "Task");
         return;
       }
-      if (attachments.length === 0 && files.length === 0) {
-        if (automationMode && !isQuestionLike(text)) {
-          const combined = `${automationTask}\n\nThe last attempt was not right. Correction from the user: ${text}\nPlease do the whole task again with this fix.`;
-          runAutomation(combined, "Task");
-          return;
-        }
-        if (!automationMode && looksLikeAutomation(text)) {
-          runAutomation(text, "Task");
-          return;
-        }
-      }
+      runAutomation(`${text}${fileList}`, "Task");
+      return;
     }
     if (!runner.running) {
       runner.clear();
       setAutomationTask("");
       setAutomationMode(false);
     }
+    // Answered here, on Chat. If the message reads like a task for the computer,
+    // offer the switch rather than leaving the user wondering why nothing ran.
+    setComputerHint(mode === "chat" && looksLikeAutomation(text) ? text : "");
     // Chat path: local files are registered at send time inside the stream hook,
     // under the thinking state, so attaching never blocks on an upload.
     void chat.send({ text, model, attachments, files });
@@ -376,8 +402,13 @@ export function ConversationPane({
         workingFolder={workingFolder}
         onPickFolder={() => void pickFolder()}
         onClearFolder={() => setWorkingFolder(null)}
-        onAddFolder={isWebBuild ? undefined : (folder) => setWorkingFolder(folder)}
+        onAddFolder={isWebBuild ? undefined : addWorkingFolder}
         plan={plan}
+        mode={mode}
+        onModeChange={setMode}
+        computerHint={computerHint}
+        onRunOnComputer={() => runAutomation(computerHint, "Task")}
+        onDismissHint={() => setComputerHint("")}
       />
       {active && downloadGate && (
         <DownloadGateModal feature={downloadGate} onClose={() => setDownloadGate(null)} />
