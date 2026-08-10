@@ -136,6 +136,17 @@ async function hashPassword(password: string, salt: string): Promise<string> {
   return derived.toString("hex");
 }
 
+/**
+ * Derive a fresh salt and hash for a password, the single place a stored
+ * credential is minted. Exported so the admin dashboard can create an account or
+ * reset a password through exactly the same scrypt parameters as sign-up, rather
+ * than growing a second copy of the hashing code.
+ */
+export async function createPasswordCredential(password: string): Promise<{ passwordHash: string; passwordSalt: string }> {
+  const passwordSalt = randomBytes(SCRYPT_SALT_BYTES).toString("hex");
+  return { passwordHash: await hashPassword(password, passwordSalt), passwordSalt };
+}
+
 async function verifyPassword(password: string, salt: string, expectedHash: string): Promise<boolean> {
   const derived = (await scrypt(password, salt, SCRYPT_KEY_LENGTH)) as Buffer;
   const expected = Buffer.from(expectedHash, "hex");

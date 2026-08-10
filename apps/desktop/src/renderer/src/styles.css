@@ -820,6 +820,11 @@ select option:checked { background-color: var(--panel-2); }
 .modal-action { padding: 14px; border: 1px solid var(--line-3); border-radius: 11px; background: var(--field); }
 .modal-action strong { display: block; font-size: 13px; }
 .modal-action code { display: block; margin-top: 8px; color: var(--text-mid); font: 11px/1.5 Consolas, monospace; overflow-wrap: anywhere; }
+/* The billing contact address on the "we activate your plan by hand" modal, set
+   apart so it is easy to read off a screen and copy in one click. */
+.manual-pay-address { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.manual-pay-address code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text); font-size: var(--fs-ui); }
+.manual-pay-address button { flex: none; padding: 6px 12px; font-size: var(--fs-small); }
 .modal-buttons { display: flex; gap: 10px; margin-top: 20px; }
 .modal-buttons button { flex: 1; }
 .modal-allow-always { width: 100%; margin-top: 10px; padding: 11px; border: 1px solid var(--chip-accent-line); border-radius: 9px; cursor: pointer; color: var(--accent-soft); background: transparent; font-size: 13px; font-weight: 650; }

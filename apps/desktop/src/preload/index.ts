@@ -104,6 +104,10 @@ const workcrew = {
   api: {
     entitlement: (): Promise<SubscriptionState> => ipcRenderer.invoke("api:entitlement"),
     referral: (): Promise<ReferralInfo> => ipcRenderer.invoke("api:referral"),
+    // How this backend takes payment. "manual" means there is no card checkout:
+    // the user is told to email billingContactEmail and an admin activates them.
+    publicConfig: (): Promise<{ billingMode: string; billingContactEmail: string }> =>
+      ipcRenderer.invoke("api:public-config"),
     simulateCheckout: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState> => ipcRenderer.invoke("api:simulate", { plan, interval }),
     checkout: (plan: PlanId, interval: BillingInterval) => ipcRenderer.invoke("api:checkout", { plan, interval }),
     // Change plan. An upgrade opens a hosted Stripe payment page and resolves to

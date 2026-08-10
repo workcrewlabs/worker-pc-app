@@ -44,6 +44,18 @@ export class ApiClient {
     return payload;
   }
 
+  /**
+   * A GET against a public backend route, with no token attached. Used for the
+   * handful of facts a client needs before it has a session (how plans are paid
+   * for, and the billing contact address). Never send anything user-specific
+   * through here: the request carries no credential and proves nothing.
+   */
+  async requestPublic<T>(path: string): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, { signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error("WorkCrew request failed");
+    return await response.json() as T;
+  }
+
   private send(path: string, options: { method?: string; body?: unknown }, token: string): Promise<Response> {
     return fetch(`${this.baseUrl}${path}`, {
       method: options.method ?? "GET",

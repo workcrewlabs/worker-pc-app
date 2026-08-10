@@ -19,8 +19,18 @@ services:
         value: 0.0.0.0
       - key: AUTH_MODE
         value: local
+      # No payment processor: customers pay the team directly and an admin turns
+      # their access on from /admin. Access still expires by itself on the
+      # paid-until date. Switch back to "stripe" when a card processor is live.
       - key: BILLING_MODE
-        value: stripe
+        value: manual
+      # Who may open the /admin dashboard: a comma-separated list of emails of
+      # existing WorkCrew accounts. Empty closes the dashboard to everyone.
+      - key: WORKCREW_ADMIN_EMAILS
+        sync: false
+      # Shown in the app when someone asks to upgrade while billing is manual.
+      - key: WORKCREW_BILLING_CONTACT_EMAIL
+        value: workcrew.support@gmail.com
       - key: WORKCREW_ALLOWED_ORIGINS
         value: app://workcrew
       - key: WORKCREW_LOCAL_AUTH_SECRET
@@ -37,6 +47,9 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      # Stripe settings are only needed when BILLING_MODE is "stripe". They are
+      # listed here so switching back to card payments is a one-line change, and
+      # they can be left unset (or deleted in the dashboard) under manual billing.
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET

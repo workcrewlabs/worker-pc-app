@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { BillingInterval, ModelMode, ModelTier, PlanId } from "@workcrew/contracts";
 import { createDatabaseClient, type DatabaseClient } from "./database/driver.js";
 
@@ -256,7 +256,21 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       used_at_ms BIGINT,
       created_at_ms BIGINT NOT NULL
     )`,
-    `CREATE INDEX IF NOT EXISTS idx_email_tokens_user ON email_tokens(user_id, purpose)`
+    `CREATE INDEX IF NOT EXISTS idx_email_tokens_user ON email_tokens(user_id, purpose)`,
+    // Every action taken from the admin dashboard, so granting or removing paid
+    // access is always attributable after the fact. Holds ids, an action name,
+    // and a short plain detail string; never a password, token, or payload.
+    `CREATE TABLE IF NOT EXISTS admin_audit (
+      id TEXT PRIMARY KEY,
+      actor_user_id TEXT NOT NULL,
+      actor_email TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target_user_id TEXT,
+      target_email TEXT,
+      detail TEXT,
+      created_at_ms BIGINT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit(created_at_ms)`
   ], "write");
 
   // Migrate databases created before the run safety columns existed. SQLite
@@ -1422,6 +1436,121 @@ export async function getAttachment(id: string, userId: string): Promise<Attachm
   });
   const row = result.rows[0] as unknown as Record<string, unknown> | undefined;
   return row ? mapAttachment(row) : null;
+}
+
+// Admin dashboard queries ----------------------------------------------------
+// Read-only listing plus the audit trail. Everything that CHANGES a customer's
+// access goes through the existing upsertSubscription / user helpers above, so
+// there is exactly one write path for entitlements.
+
+/** One row of the admin customer list: the account plus its access state. */
+export type AdminCustomerRow = {
+  userId: string;
+  email: string;
+  name: string | null;
+  emailVerified: boolean;
+  createdAtMs: number;
+  plan: string | null;
+  status: string | null;
+  active: boolean;
+  currentPeriodEndMs: number | null;
+};
+
+function mapAdminCustomer(row: Record<string, unknown>): AdminCustomerRow {
+  return {
+    userId: String(row.id),
+    email: String(row.email),
+    name: row.name === null || row.name === undefined ? null : String(row.name),
+    emailVerified: Number(row.email_verified) === 1,
+    createdAtMs: Number(row.created_at_ms),
+    plan: row.plan === null || row.plan === undefined ? null : String(row.plan),
+    status: row.status === null || row.status === undefined ? null : String(row.status),
+    active: Number(row.active ?? 0) === 1,
+    currentPeriodEndMs:
+      row.current_period_end_ms === null || row.current_period_end_ms === undefined
+        ? null
+        : Number(row.current_period_end_ms)
+  };
+}
+
+/**
+ * List accounts with their subscription state, newest first. `search` matches a
+ * substring of the email (case-insensitive). The limit is applied by the caller's
+ * validated bound; one extra row is never fetched, so paging is offset based.
+ */
+export async function listAdminCustomers(input: {
+  search?: string;
+  limit: number;
+  offset: number;
+}): Promise<{ rows: AdminCustomerRow[]; total: number }> {
+  const like = input.search ? `%${input.search.toLowerCase()}%` : null;
+  const where = like ? "WHERE LOWER(u.email) LIKE ?" : "";
+  const filterArgs = like ? [like] : [];
+
+  const counted = await client.execute({
+    sql: `SELECT COUNT(*) AS total FROM users u ${where}`,
+    args: filterArgs
+  });
+  const total = Number((counted.rows[0] as unknown as { total?: unknown })?.total ?? 0);
+
+  const result = await client.execute({
+    sql: `SELECT u.id, u.email, u.name, u.email_verified, u.created_at_ms,
+            s.plan, s.status, s.active, s.current_period_end_ms
+          FROM users u
+          LEFT JOIN subscriptions s ON s.user_id = u.id
+          ${where}
+          ORDER BY u.created_at_ms DESC
+          LIMIT ? OFFSET ?`,
+    args: [...filterArgs, input.limit, input.offset]
+  });
+  return { rows: (result.rows as unknown as Record<string, unknown>[]).map(mapAdminCustomer), total };
+}
+
+/** Record one admin action. Detail is a short plain string, never a secret. */
+export async function recordAdminAction(input: {
+  actorUserId: string;
+  actorEmail: string;
+  action: string;
+  targetUserId?: string | null;
+  targetEmail?: string | null;
+  detail?: string | null;
+}): Promise<void> {
+  await client.execute({
+    sql: `INSERT INTO admin_audit(id, actor_user_id, actor_email, action, target_user_id, target_email, detail, created_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      randomUUID(),
+      input.actorUserId,
+      input.actorEmail,
+      input.action,
+      input.targetUserId ?? null,
+      input.targetEmail ?? null,
+      input.detail ?? null,
+      Date.now()
+    ]
+  });
+}
+
+/** The most recent admin actions, newest first, for the dashboard's activity list. */
+export async function listAdminAudit(limit: number): Promise<{
+  actorEmail: string;
+  action: string;
+  targetEmail: string | null;
+  detail: string | null;
+  createdAtMs: number;
+}[]> {
+  const result = await client.execute({
+    sql: `SELECT actor_email, action, target_email, detail, created_at_ms
+          FROM admin_audit ORDER BY created_at_ms DESC LIMIT ?`,
+    args: [limit]
+  });
+  return (result.rows as unknown as Record<string, unknown>[]).map((row) => ({
+    actorEmail: String(row.actor_email),
+    action: String(row.action),
+    targetEmail: row.target_email === null || row.target_email === undefined ? null : String(row.target_email),
+    detail: row.detail === null || row.detail === undefined ? null : String(row.detail),
+    createdAtMs: Number(row.created_at_ms)
+  }));
 }
 
 export { client };

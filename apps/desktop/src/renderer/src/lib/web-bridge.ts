@@ -275,6 +275,17 @@ export function createWebBridge(): WorkCrewBridge {
     api: {
       entitlement: () => apiRequest<SubscriptionState>("/v1/entitlement"),
       referral: () => apiRequest("/v1/referral"),
+      // Unauthenticated: how this backend takes payment. Falls back to the card
+      // flow if the backend is older than the route or cannot be reached.
+      publicConfig: async () => {
+        try {
+          const response = await fetch(`${BACKEND}/v1/config`);
+          if (!response.ok) throw new Error("unavailable");
+          return await response.json() as { billingMode: string; billingContactEmail: string };
+        } catch {
+          return { billingMode: "stripe", billingContactEmail: "" };
+        }
+      },
       simulateCheckout: (plan: PlanId, interval: BillingInterval) => apiRequest<SubscriptionState>("/v1/billing/simulate", { body: { plan, interval } }),
       checkout: async (plan: PlanId, interval: BillingInterval) => {
         const result = await apiRequest<{ url: string }>("/v1/billing/checkout", { body: { plan, interval } });
