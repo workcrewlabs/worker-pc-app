@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { app, nativeImage, shell } from "electron";
@@ -69,9 +69,13 @@ export class WindowsAgent {
   private endpoint: string | null = null;
   private token: string | null = null;
   private healthChecked = false;
-  // How much the last screenshot was shrunk (real pixels per picture pixel). The
-  // model works in picture pixels; this turns them back into screen pixels.
+  // How the last capture maps onto the real screen: how much the picture was
+  // shrunk (real pixels per picture pixel) and where the photographed window
+  // sits (its top left corner in screen coordinates). The model works purely in
+  // picture positions, exactly like the reference computer-use loops; these two
+  // turn a picture position back into the screen point to click.
   private captureScale = 1;
+  private captureOrigin = { x: 0, y: 0 };
 
   // Open a desktop app by name or full path. Launching is done here rather
   // than the helper, so it works without any extra setup; the helper is only
@@ -317,13 +321,26 @@ export class WindowsAgent {
     return (await this.executeWithImage(rawAction)).output;
   }
 
+  // Commands that change what is on screen. After each one, a fresh capture of
+  // the app window is attached to the result automatically. This is the heart of
+  // the reference computer-use loops (Anthropic's harness screenshots after
+  // every action; OpenAI's integrator does the same): the planner always sees
+  // what its last action did and never spends a step asking for eyes.
+  private static readonly AUTO_SCREENSHOT_AFTER = new Set([
+    "connect", "click", "set-text", "type-keys", "type-text", "press-key",
+    "click-at", "double-click-at", "right-click-at", "drag", "scroll-at", "key-combo"
+  ]);
+
+  // How long the app gets to settle before the automatic capture. The reference
+  // implementation waits two seconds; native Windows apps repaint faster than a
+  // remote sandbox, so a shorter pause keeps runs responsive without
+  // photographing a window mid-transition.
+  private static readonly SETTLE_MS = 1_200;
+
   /**
-   * Run one action and, for a screenshot, hand back the picture itself.
-   *
-   * The helper writes the capture to a temp file and returns its path, which is
-   * useless to a model: it cannot open files. Here the file is read, downscaled
-   * and re-encoded as JPEG so it can be shown to the planner as a real image
-   * without sending several megabytes of lossless PNG for every look.
+   * Run one action; the result carries the picture of what the screen looks
+   * like afterwards. A screenshot command returns its own capture, and every
+   * acting command is followed by an automatic one.
    */
   async executeWithImage(rawAction: unknown): Promise<ActionResult> {
     const action = windowsActionSchema.parse(rawAction);
@@ -332,15 +349,31 @@ export class WindowsAgent {
     if (action.command === "launch") {
       return { output: await this.launchApp(action.application ?? "") };
     }
+    const output = await this.postAction(this.toScreenCoordinates(action));
+    if (action.command === "screenshot") return this.readScreenshot(output);
+    if (!WindowsAgent.AUTO_SCREENSHOT_AFTER.has(action.command)) return { output };
+    // The action already succeeded; a capture failure only costs the picture,
+    // never the step.
+    try {
+      await new Promise((settle) => setTimeout(settle, WindowsAgent.SETTLE_MS));
+      const shot = await this.readScreenshot(await this.postAction({ kind: "windows", command: "screenshot" }));
+      if (shot.imageBase64) return { ...shot, output: `${output} ${shot.output}` };
+      return { output };
+    } catch {
+      return { output };
+    }
+  }
+
+  /** POST one already-converted action to the helper and return its text. */
+  private async postAction(action: Record<string, unknown>): Promise<string> {
     await this.start();
     await this.probeHealth();
-    const sent = this.toScreenCoordinates(action);
     let response: Response;
     try {
       response = await fetch(`${this.endpoint}/action`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
-        body: JSON.stringify(sent),
+        body: JSON.stringify(action),
         signal: AbortSignal.timeout(30_000)
       });
     } catch {
@@ -351,9 +384,7 @@ export class WindowsAgent {
     }
     const payload = await response.json() as { ok?: boolean; output?: string; error?: string };
     if (!response.ok || !payload.ok) throw new Error(payload.error ?? "Windows helper action failed");
-    const output = payload.output ?? "Action completed.";
-    if (action.command !== "screenshot") return { output };
-    return this.readScreenshot(output);
+    return payload.output ?? "Action completed.";
   }
 
   /**
@@ -365,12 +396,16 @@ export class WindowsAgent {
    * used to go astray.
    */
   private toScreenCoordinates(action: Record<string, unknown>): Record<string, unknown> {
-    const scale = this.captureScale;
-    if (!Number.isFinite(scale) || scale === 1) return action;
+    const scale = Number.isFinite(this.captureScale) && this.captureScale > 0 ? this.captureScale : 1;
+    const origin = this.captureOrigin;
     const scaled: Record<string, unknown> = { ...action };
-    for (const key of ["x", "y", "toX", "toY"]) {
+    for (const key of ["x", "toX"] as const) {
       const value = scaled[key];
-      if (typeof value === "number") scaled[key] = Math.round(value * scale);
+      if (typeof value === "number") scaled[key] = Math.round(value * scale) + origin.x;
+    }
+    for (const key of ["y", "toY"] as const) {
+      const value = scaled[key];
+      if (typeof value === "number") scaled[key] = Math.round(value * scale) + origin.y;
     }
     return scaled;
   }
@@ -384,18 +419,39 @@ export class WindowsAgent {
    * is the whole point of looking. If anything here fails the run continues with
    * the text alone rather than dying over a picture.
    */
-  private async readScreenshot(pathOrMessage: string): Promise<ActionResult> {
+  private async readScreenshot(helperOutput: string): Promise<ActionResult> {
     try {
-      const raw = await readFile(pathOrMessage);
+      // The helper answers with JSON naming the capture file and the window's
+      // screen origin. (An older helper answered with a bare path; origin 0,0
+      // keeps that build working during an update overlap.)
+      let path = helperOutput;
+      let origin = { x: 0, y: 0 };
+      try {
+        const meta = JSON.parse(helperOutput) as { path?: string; left?: number; top?: number };
+        if (meta && typeof meta.path === "string") {
+          path = meta.path;
+          if (typeof meta.left === "number" && typeof meta.top === "number") {
+            origin = { x: meta.left, y: meta.top };
+          }
+        }
+      } catch {
+        // Legacy bare-path output.
+      }
+      const raw = await readFile(path);
+      // The capture is consumed here and now. Window photographs left lying in
+      // the temp folder are a privacy liability, not a cache.
+      void unlink(path).catch(() => {});
       const image = nativeImage.createFromBuffer(raw);
       if (image.isEmpty()) return { output: "Took a screenshot, but it could not be read." };
       const { width, height } = image.getSize();
       const MAX_WIDTH = 1400;
       const shown = width > MAX_WIDTH ? image.resize({ width: MAX_WIDTH, quality: "good" }) : image;
       const size = shown.getSize();
-      // Remember how much this capture was shrunk. Every coordinate the model
-      // sends next is in the picture's own pixels and gets scaled back up here.
+      // Remember how this capture maps onto the screen. Every coordinate the
+      // model sends next is a position in this picture; the scale and the
+      // window origin turn it back into the real screen point.
       this.captureScale = size.width > 0 ? width / size.width : 1;
+      this.captureOrigin = origin;
       return {
         imageWidth: size.width,
         imageHeight: size.height,
@@ -403,8 +459,8 @@ export class WindowsAgent {
         // it can see, and this process converts. Telling it to multiply by a
         // scale factor instead was the single biggest source of misplaced clicks.
         output:
-          `Screenshot, ${size.width} by ${size.height} pixels. Give click coordinates as positions in THIS ` +
-          `picture, measured from its top left corner. They are converted for you.`,
+          `Screenshot of the app window, ${size.width} by ${size.height} pixels. Give click coordinates as ` +
+          `positions in THIS picture, measured from its top left corner. They are converted for you.`,
         imageBase64: shown.toJPEG(72).toString("base64")
       };
     } catch {

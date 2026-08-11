@@ -778,5 +778,45 @@ class ValidateActionKeepsCoordinates(unittest.TestCase):
                 agent.validate_action({"kind": "windows", "command": "click-at", **bad})
 
 
+class WindowOnlyCapture(unittest.TestCase):
+    """Captures are shown to the planner, so they leave the machine. An earlier
+    fallback grabbed the whole desktop when a window reported a useless
+    rectangle, and on a multi-monitor PC that photographed an unrelated display,
+    once including a live video call. The rule these tests pin: no connected
+    window means NO capture, and a window whose rectangle cannot be found means
+    an error, never a wider photograph."""
+
+    def test_refuses_to_capture_with_no_window(self):
+        with self.assertRaises(ValueError):
+            agent.capture_window_payload(None)
+
+    def test_refuses_when_the_window_cannot_be_located(self):
+        class NowhereWindow:
+            handle = None
+
+            def rectangle(self):
+                raise RuntimeError("no rectangle")
+
+            def set_focus(self):
+                return None
+
+        with self.assertRaises(ValueError):
+            agent.capture_window_payload(NowhereWindow())
+
+    def test_rect_helper_rejects_a_degenerate_rectangle(self):
+        class ZeroRectWindow:
+            handle = None
+
+            def rectangle(self):
+                class R:
+                    left = 0
+                    top = 0
+                    right = 0
+                    bottom = 0
+                return R()
+
+        self.assertIsNone(agent._connected_window_rect(ZeroRectWindow()))
+
+
 if __name__ == "__main__":
     unittest.main()

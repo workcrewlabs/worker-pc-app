@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import ctypes.wintypes
 import hmac
 import json
 import os
@@ -415,7 +416,22 @@ def connect_window(title: str) -> str:
         handle = resolved.handle
         application = Application(backend="uia").connect(handle=handle, timeout=10)
         window = application.window(handle=handle)
-        window.wait("exists visible ready", timeout=10)
+        # Wait only for the window to EXIST and be VISIBLE, not for UI Automation
+        # to call it "ready". Ready means enabled and responsive to UIA, and the
+        # very apps this most needs to drive, the ones that paint their own
+        # interface and expose almost nothing to accessibility, often never report
+        # ready even while sitting plainly on screen (Express Accounts is one).
+        # Requiring ready made connect time out on exactly those apps, blocking
+        # the screen path before it could start. Existence and visibility are
+        # enough: the screenshot-and-click path needs the handle, not UIA state.
+        try:
+            window.wait("exists visible", timeout=10)
+        except Exception:
+            # Even a visibility wait can time out on a stubborn app that is
+            # nonetheless real and on screen. list-windows already confirmed the
+            # window, so keep the connection: a failed wait must not deny the one
+            # path (working by eye) that does not depend on UIA at all.
+            pass
         STATE.application = application
         STATE.window = window
         # A new window invalidates any numbered controls from a prior inspect.
@@ -688,34 +704,84 @@ def require_point(action: dict[str, Any], x_key: str = "x", y_key: str = "y") ->
     return raw_x, raw_y
 
 
-def capture_screen_png(window: Any | None) -> Path:
-    """Capture the connected window, falling back to the whole screen.
+def _connected_window_rect(window: Any) -> tuple[int, int, int, int] | None:
+    """The window's true screen rectangle, asked of win32 directly.
 
-    Plenty of real business software reports a useless window rectangle to UI
-    Automation. Express Accounts, for instance, reports 0,0,0,0 while being
-    perfectly visible on screen. Capturing that window gives an empty image, and
-    an empty image is worse than none: the model is left with nothing to read and
-    invents coordinates, which is how a click ends up in the wrong place.
-
-    Whenever the window capture is missing or degenerate, grab the whole screen
-    instead. That is always usable, and it costs nothing in correctness because
-    the coordinates the model works in are screen-absolute anyway.
+    UI Automation lies about geometry for some real business apps: Express
+    Accounts reports its rectangle as 0,0,0,0 while sitting plainly on screen.
+    GetWindowRect on the raw handle answers correctly for exactly those apps, so
+    it is asked first and the UIA rectangle is only a fallback.
     """
-    image = None
-    if window is not None:
+    handle = None
+    try:
+        handle = getattr(window, "handle", None)
+    except Exception:
+        handle = None
+    if handle:
         try:
-            captured = window.capture_as_image()
-            if captured is not None and captured.width > 1 and captured.height > 1:
-                image = captured
+            rect = ctypes.wintypes.RECT()
+            if ctypes.windll.user32.GetWindowRect(ctypes.wintypes.HWND(int(handle)), ctypes.byref(rect)):
+                if rect.right - rect.left > 8 and rect.bottom - rect.top > 8:
+                    return (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom))
         except Exception:
-            image = None
-    if image is None:
-        from PIL import ImageGrab
+            pass
+    try:
+        rectangle = window.rectangle()
+        if rectangle.right - rectangle.left > 8 and rectangle.bottom - rectangle.top > 8:
+            return (int(rectangle.left), int(rectangle.top), int(rectangle.right), int(rectangle.bottom))
+    except Exception:
+        pass
+    return None
 
-        image = ImageGrab.grab()
+
+def _ensure_foreground(window: Any) -> None:
+    """Bring the connected window to the front before photographing the screen or
+    acting on it, so captures show the app rather than whatever covered it, and
+    screen clicks land in the app they were aimed at."""
+    if window is None:
+        return
+    try:
+        window.set_focus()
+        time.sleep(0.2)
+    except Exception:
+        pass
+
+
+def capture_window_payload(window: Any) -> dict[str, Any]:
+    """Capture ONLY the connected window, and say where it sits on screen.
+
+    There is deliberately no whole-desktop fallback. An earlier version grabbed
+    the full screen when a window reported a useless rectangle, and on a
+    multi-monitor PC that photographed an unrelated display, once including a
+    live video call. Captures are shown to the planner, so they leave the
+    machine; when the window cannot be located, the honest move is to say so,
+    never to photograph everything.
+
+    The returned left/top are the window's screen origin. They let the desktop
+    translate positions in the picture back into screen points, which is what
+    lets the planner work purely in the picture it was shown, the way the
+    reference computer-use loops do.
+    """
+    if window is None:
+        raise ValueError("Connect to the app's window first; WorkCrew only captures the app it is working in")
+    rect = _connected_window_rect(window)
+    if rect is None:
+        raise ValueError("This app's window cannot be located on screen, so it cannot be captured")
+    _ensure_foreground(window)
+    from PIL import ImageGrab
+
+    # Grab the whole virtual desktop in memory, crop to the window, and save only
+    # the crop. The full grab never touches disk and never leaves this function;
+    # cropping to the window's own rectangle is what keeps every other window out
+    # of the picture.
+    user32 = ctypes.windll.user32
+    virtual_left = int(user32.GetSystemMetrics(76))
+    virtual_top = int(user32.GetSystemMetrics(77))
+    whole = ImageGrab.grab(all_screens=True)
+    image = whole.crop((rect[0] - virtual_left, rect[1] - virtual_top, rect[2] - virtual_left, rect[3] - virtual_top))
     output = Path(tempfile.gettempdir()) / f"workcrew-window-{os.getpid()}.png"
     image.save(output)
-    return output
+    return {"path": str(output), "left": rect[0], "top": rect[1], "width": image.width, "height": image.height}
 
 
 def _foreground_window_title() -> str:
@@ -1191,11 +1257,11 @@ def execute_action(action: dict[str, Any]) -> str:
         if command == "inspect":
             return inspect_window()
         if command == "screenshot":
-            # With a connected window, capture just that window; before any
-            # connect, capture the whole screen instead of erroring out. The path
-            # is returned; the desktop reads the file, downscales it, and sends the
-            # picture itself to the planner.
-            return str(capture_screen_png(STATE.window))
+            # Window-only capture, returned as JSON with the window's screen
+            # origin so the desktop can map picture positions back to screen
+            # points. The desktop reads the file, downscales it, deletes it, and
+            # shows the picture itself to the planner.
+            return json.dumps(capture_window_payload(STATE.window), ensure_ascii=True)
 
         # Screen-level input. These deliberately do NOT resolve a control: they are
         # the fallback for apps that name nothing, so they act on the coordinates
@@ -1203,6 +1269,7 @@ def execute_action(action: dict[str, Any]) -> str:
         if command in {"click-at", "double-click-at", "right-click-at"}:
             from pywinauto import mouse
 
+            _ensure_foreground(STATE.window)
             x, y = require_point(action)
             button = "right" if command == "right-click-at" else "left"
             if command == "double-click-at":
@@ -1214,6 +1281,7 @@ def execute_action(action: dict[str, Any]) -> str:
         if command == "drag":
             from pywinauto import mouse
 
+            _ensure_foreground(STATE.window)
             start = require_point(action)
             end = require_point(action, "toX", "toY")
             mouse.press(button="left", coords=start)
@@ -1228,6 +1296,7 @@ def execute_action(action: dict[str, Any]) -> str:
         if command == "scroll-at":
             from pywinauto import mouse
 
+            _ensure_foreground(STATE.window)
             x, y = require_point(action)
             raw = action.get("scrollAmount")
             if not isinstance(raw, int) or isinstance(raw, bool) or not (-25 <= raw <= 25) or raw == 0:
