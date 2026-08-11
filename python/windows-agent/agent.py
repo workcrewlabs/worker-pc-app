@@ -71,8 +71,44 @@ ALLOWED_COMMANDS = {
     "press-key",
     "get-text",
     "screenshot",
+    # Screen-level input for apps that publish no usable controls.
+    "click-at",
+    "double-click-at",
+    "right-click-at",
+    "drag",
+    "scroll-at",
+    "key-combo",
     "record-start",
     "record-stop",
+}
+
+# Key combinations the model may send with key-combo. This is an allowlist, not a
+# parser: a free-form chord string would let a planner (or anything that could
+# influence one) reach Windows itself, so only these named combinations exist.
+# Nothing here can close a session, reach the Run dialog, or switch user.
+SAFE_COMBOS = {
+    "ctrl+s": "^s",
+    "ctrl+o": "^o",
+    "ctrl+p": "^p",
+    "ctrl+n": "^n",
+    "ctrl+c": "^c",
+    "ctrl+x": "^x",
+    "ctrl+v": "^v",
+    "ctrl+z": "^z",
+    "ctrl+y": "^y",
+    "ctrl+a": "^a",
+    "ctrl+f": "^f",
+    "ctrl+home": "^{HOME}",
+    "ctrl+end": "^{END}",
+    "alt+f4": "%{F4}",
+    "shift+tab": "+{TAB}",
+    "f2": "{F2}",
+    "f3": "{F3}",
+    "f5": "{F5}",
+    "f9": "{F9}",
+    "f10": "{F10}",
+    "f11": "{F11}",
+    "f12": "{F12}",
 }
 
 # Control types the model can actually act on. inspect returns only these, which
@@ -241,7 +277,14 @@ def optional_text(value: Any, maximum: int = 500) -> str | None:
 def validate_action(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Action must be an object")
-    permitted = {"kind", "command", "application", "windowTitle", "control", "value"}
+    # x/y/toX/toY/scrollAmount belong to the screen-level commands, which act on
+    # coordinates instead of a named control. Everything outside this set is
+    # refused outright rather than ignored, so an unexpected field is a loud
+    # error instead of a silently dropped instruction.
+    permitted = {
+        "kind", "command", "application", "windowTitle", "control", "value",
+        "x", "y", "toX", "toY", "scrollAmount"
+    }
     if set(value) - permitted:
         raise ValueError("Action contains unsupported fields")
     if value.get("kind") != "windows":
@@ -605,6 +648,32 @@ def _click_at(x: int, y: int) -> None:
     from pywinauto import mouse
 
     mouse.click(button="left", coords=(x, y))
+
+
+def require_point(action: dict[str, Any], x_key: str = "x", y_key: str = "y") -> tuple[int, int]:
+    """Read a screen point off an action, refusing anything that is not a real
+    coordinate. The transport already bounds these, but the agent is a separate
+    process that must not trust its caller."""
+    raw_x, raw_y = action.get(x_key), action.get(y_key)
+    if not isinstance(raw_x, int) or not isinstance(raw_y, int) or isinstance(raw_x, bool) or isinstance(raw_y, bool):
+        raise ValueError(f"{x_key} and {y_key} must be whole numbers")
+    if not (-20000 <= raw_x <= 20000) or not (-20000 <= raw_y <= 20000):
+        raise ValueError("Those coordinates are off the screen")
+    return raw_x, raw_y
+
+
+def capture_screen_png(window: Any | None) -> Path:
+    """Capture the connected window, or the whole screen when nothing is connected
+    yet, and return the file it was written to."""
+    if window is not None:
+        image = window.capture_as_image()
+    else:
+        from PIL import ImageGrab
+
+        image = ImageGrab.grab()
+    output = Path(tempfile.gettempdir()) / f"workcrew-window-{os.getpid()}.png"
+    image.save(output)
+    return output
 
 
 def _foreground_window_title() -> str:
@@ -1081,16 +1150,65 @@ def execute_action(action: dict[str, Any]) -> str:
             return inspect_window()
         if command == "screenshot":
             # With a connected window, capture just that window; before any
-            # connect, capture the whole screen instead of erroring out.
-            if STATE.window is not None:
-                image = STATE.window.capture_as_image()
-            else:
-                from PIL import ImageGrab
+            # connect, capture the whole screen instead of erroring out. The path
+            # is returned; the desktop reads the file, downscales it, and sends the
+            # picture itself to the planner.
+            return str(capture_screen_png(STATE.window))
 
-                image = ImageGrab.grab()
-            output = Path(tempfile.gettempdir()) / f"workcrew-window-{os.getpid()}.png"
-            image.save(output)
-            return str(output)
+        # Screen-level input. These deliberately do NOT resolve a control: they are
+        # the fallback for apps that name nothing, so they act on the coordinates
+        # the planner read off a screenshot, exactly like a person pointing.
+        if command in {"click-at", "double-click-at", "right-click-at"}:
+            from pywinauto import mouse
+
+            x, y = require_point(action)
+            button = "right" if command == "right-click-at" else "left"
+            if command == "double-click-at":
+                mouse.double_click(button=button, coords=(x, y))
+                return f"Double clicked at {x}, {y}"
+            mouse.click(button=button, coords=(x, y))
+            return f"{'Right clicked' if button == 'right' else 'Clicked'} at {x}, {y}"
+
+        if command == "drag":
+            from pywinauto import mouse
+
+            start = require_point(action)
+            end = require_point(action, "toX", "toY")
+            mouse.press(button="left", coords=start)
+            try:
+                mouse.move(coords=end)
+            finally:
+                # Always release, or the desktop is left with the button held down
+                # and every later click behaves as a drag.
+                mouse.release(button="left", coords=end)
+            return f"Dragged from {start[0]}, {start[1]} to {end[0]}, {end[1]}"
+
+        if command == "scroll-at":
+            from pywinauto import mouse
+
+            x, y = require_point(action)
+            raw = action.get("scrollAmount")
+            if not isinstance(raw, int) or isinstance(raw, bool) or not (-25 <= raw <= 25) or raw == 0:
+                raise ValueError("scrollAmount must be a whole number of notches between -25 and 25")
+            mouse.scroll(coords=(x, y), wheel_dist=raw)
+            return f"Scrolled {'up' if raw > 0 else 'down'} at {x}, {y}"
+
+        if command == "key-combo":
+            # One allowlisted key combination sent to the focused window. Unlike
+            # type-text this is NOT escaped, because a combination is the point;
+            # safety comes from the combination being on the list at all.
+            combo = require_text(action.get("value"), "value", 40).lower().replace(" ", "")
+            sequence = SAFE_COMBOS.get(combo)
+            if sequence is None:
+                raise ValueError("That key combination is not allowed")
+            window = STATE.window
+            if window is not None:
+                window.type_keys(sequence, set_foreground=True)
+            else:
+                from pywinauto import keyboard
+
+                keyboard.send_keys(sequence)
+            return f"Pressed {combo}"
         if command == "press-key":
             # Send one allowlisted navigation/editing key to the focused control,
             # for example to confirm a spreadsheet cell with Enter. Only the safe

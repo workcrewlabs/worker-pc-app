@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { AutomationAction } from "@workcrew/contracts";
+import type { ScreenCapture } from "../hooks/useAutomationRunner";
 
 // In app approval dialog that replaces window.confirm. It describes the exact
 // action WorkCrew wants to take and resolves the run loop based on the choice.
@@ -8,11 +9,19 @@ import type { AutomationAction } from "@workcrew/contracts";
 export function ApprovalModal({
   action,
   label,
+  screenshot,
+  point,
   onDecide,
   onAllowAlways
 }: {
   action: AutomationAction;
   label: string;
+  // Set only for an action aimed at a bare screen coordinate: the newest capture
+  // of the screen (base64 JPEG) and the spot about to be clicked, in real screen
+  // pixels. "Click at 740, 312" is not something a person can consent to; a
+  // picture with the target marked is.
+  screenshot?: ScreenCapture;
+  point?: { x: number; y: number };
   onDecide: (approved: boolean) => void;
   onAllowAlways: () => void;
 }) {
@@ -67,6 +76,7 @@ export function ApprovalModal({
           <strong>{label}</strong>
           {detail && <code>{detail}</code>}
         </div>
+        {screenshot && point && <ClickTarget screenshot={screenshot} point={point} />}
         <div className="modal-buttons">
           <button className="secondary" onClick={() => onDecide(false)}>
             Decline
@@ -90,5 +100,38 @@ export function ApprovalModal({
         )}
       </section>
     </div>
+  );
+}
+
+// The screenshot with a ring drawn on the spot about to be clicked.
+//
+// The capture is scaled down before it is shown, and the marker has to land in
+// the same place regardless, so the point is expressed as a PERCENTAGE of the
+// image rather than in pixels. The natural size of the loaded image gives the
+// ratio; until it loads there is nothing to place the marker against.
+function ClickTarget({ screenshot, point }: { screenshot: ScreenCapture; point: { x: number; y: number } }) {
+  // The point is in REAL screen pixels and the picture is downscaled, so the
+  // marker is placed as a percentage of the captured area, not of the image. Using
+  // the image's own size here would drift the marker further right and further
+  // down the more the capture was shrunk, and a marker in the wrong place is worse
+  // than none: the user would be approving something other than what they see.
+  const left = Math.max(0, Math.min(100, (point.x / screenshot.screenWidth) * 100));
+  const top = Math.max(0, Math.min(100, (point.y / screenshot.screenHeight) * 100));
+
+  return (
+    <figure className="approval-shot">
+      {/* The marker is positioned against THIS wrapper, which holds nothing but
+          the image. Anchoring it to the figure instead would measure the
+          percentage against the caption's height too and drop the ring below the
+          thing it is meant to be circling. */}
+      <span className="approval-shot-frame">
+        <img
+          src={`data:image/jpeg;base64,${screenshot.data}`}
+          alt="What is on screen now, with the spot WorkCrew wants to click marked"
+        />
+        <span className="approval-shot-target" style={{ left: `${left}%`, top: `${top}%` }} aria-hidden="true" />
+      </span>
+      <figcaption>WorkCrew will click the circled spot.</figcaption>
+    </figure>
   );
 }

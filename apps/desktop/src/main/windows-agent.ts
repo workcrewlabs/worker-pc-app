@@ -1,14 +1,26 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { app, shell } from "electron";
+import { app, nativeImage, shell } from "electron";
 import { APP_NAME, windowsActionSchema } from "@workcrew/contracts";
 import { defaultShortcutRoots, findAppShortcuts } from "./app-locator";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * What one action returns. A screenshot additionally carries the picture and the
+ * real captured size, so both the planner and the approval popup can map a point
+ * in the downscaled image back to a real screen coordinate.
+ */
+export type ActionResult = {
+  output: string;
+  imageBase64?: string;
+  screenWidth?: number;
+  screenHeight?: number;
+};
 
 // Where the packaged Windows helper executable lives. In an installed build it
 // is bundled under the app resources; in development it is the PyInstaller output
@@ -296,11 +308,23 @@ export class WindowsAgent {
   }
 
   async execute(rawAction: unknown): Promise<string> {
+    return (await this.executeWithImage(rawAction)).output;
+  }
+
+  /**
+   * Run one action and, for a screenshot, hand back the picture itself.
+   *
+   * The helper writes the capture to a temp file and returns its path, which is
+   * useless to a model: it cannot open files. Here the file is read, downscaled
+   * and re-encoded as JPEG so it can be shown to the planner as a real image
+   * without sending several megabytes of lossless PNG for every look.
+   */
+  async executeWithImage(rawAction: unknown): Promise<ActionResult> {
     const action = windowsActionSchema.parse(rawAction);
     // Launching an app does not need the helper, so handle it directly. Every
     // other command drives an existing window through the helper (pywinauto).
     if (action.command === "launch") {
-      return this.launchApp(action.application ?? "");
+      return { output: await this.launchApp(action.application ?? "") };
     }
     await this.start();
     await this.probeHealth();
@@ -320,7 +344,47 @@ export class WindowsAgent {
     }
     const payload = await response.json() as { ok?: boolean; output?: string; error?: string };
     if (!response.ok || !payload.ok) throw new Error(payload.error ?? "Windows helper action failed");
-    return payload.output ?? "Action completed.";
+    const output = payload.output ?? "Action completed.";
+    if (action.command !== "screenshot") return { output };
+    return this.readScreenshot(output);
+  }
+
+  /**
+   * Turn the helper's screenshot file into a downscaled JPEG the planner can see.
+   *
+   * The width cap is the real cost control: an image's token cost scales with its
+   * area, and a full 4K screen would cost several times what is useful. 1400px is
+   * wide enough to read menu labels and small buttons in business software, which
+   * is the whole point of looking. If anything here fails the run continues with
+   * the text alone rather than dying over a picture.
+   */
+  private async readScreenshot(pathOrMessage: string): Promise<ActionResult> {
+    try {
+      const raw = await readFile(pathOrMessage);
+      const image = nativeImage.createFromBuffer(raw);
+      if (image.isEmpty()) return { output: "Took a screenshot, but it could not be read." };
+      const { width, height } = image.getSize();
+      const MAX_WIDTH = 1400;
+      const shown = width > MAX_WIDTH ? image.resize({ width: MAX_WIDTH, quality: "good" }) : image;
+      const size = shown.getSize();
+      return {
+        // The real captured size travels with the picture: the model must give
+        // coordinates in REAL screen pixels, and the approval popup needs the
+        // same ratio to draw its marker in the right spot on the scaled image.
+        screenWidth: width,
+        screenHeight: height,
+        // Tell the model the scale it is looking at. Coordinates must be in REAL
+        // screen pixels, so a downscaled picture would otherwise send every click
+        // to the wrong place.
+        output:
+          `Screenshot of the window. The picture is ${size.width}x${size.height} pixels and the real screen area is ` +
+          `${width}x${height} pixels. To click something, multiply its position in the picture by ` +
+          `${(width / size.width).toFixed(3)} to get the real screen coordinate.`,
+        imageBase64: shown.toJPEG(72).toString("base64")
+      };
+    } catch {
+      return { output: "Took a screenshot, but it could not be read." };
+    }
   }
 
   // Begin recording the user's clicks in desktop apps. The helper polls the mouse

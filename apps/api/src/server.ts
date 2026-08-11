@@ -106,6 +106,34 @@ const APP_VERSION = "0.1.7";
 const MAX_RUN_STEPS = 24;
 
 /**
+ * Drop every screenshot from earlier turns, keeping only the newest one.
+ *
+ * A run can take a dozen screenshots, and each is worth far more input tokens
+ * than the text around it. Resending all of them on every step would multiply
+ * the cost of a long task and eventually breach the request size, while adding
+ * nothing: the planner acts on what is on screen NOW, and an image from six
+ * steps ago is stale. The text of each old result is left untouched, so the
+ * history of what happened stays intact; only the pixels go.
+ */
+export function stripOlderScreenshots(messages: unknown[]): void {
+  for (const raw of messages) {
+    // The history is replayed from storage, so a malformed or partial entry must
+    // skip rather than take the whole run down on the next step.
+    if (!raw || typeof raw !== "object") continue;
+    const message = raw as { content?: unknown };
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content as Record<string, unknown>[]) {
+      if (!block || block.type !== "tool_result" || !Array.isArray(block.content)) continue;
+      const parts = block.content as Record<string, unknown>[];
+      if (!parts.some((part) => part?.type === "image")) continue;
+      block.content = parts
+        .filter((part) => part?.type !== "image")
+        .concat([{ type: "text", text: "(screenshot from an earlier step, no longer shown)" }]);
+    }
+  }
+}
+
+/**
  * Number of consecutive identical assistant actions (same tool plus same
  * normalized input) that ends a run as a loop. The third identical action in a
  * row trips this and stops further budget spend.
@@ -759,13 +787,25 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
     if (!body.result || body.result.toolUseId !== run.pendingToolUseId) {
       throw Object.assign(new Error("The expected tool result was not supplied"), { statusCode: 409, code: "TOOL_RESULT_REQUIRED" });
     }
+    // A screenshot comes back as a picture, not a sentence, so the planner can
+    // actually SEE a window that publishes no named controls. Only the newest
+    // result carries one (older screenshots are stripped below), which keeps a
+    // long run from resending every image it has ever taken.
+    const resultContent: unknown[] = [{ type: "text", text: body.result.output }];
+    if (body.result.imageBase64) {
+      resultContent.push({
+        type: "image",
+        source: { type: "base64", media_type: "image/jpeg", data: body.result.imageBase64 }
+      });
+    }
+    stripOlderScreenshots(run.messages);
     run.messages.push({
       role: "user",
       content: [{
         type: "tool_result",
         tool_use_id: body.result.toolUseId,
         is_error: !body.result.ok,
-        content: body.result.output
+        content: resultContent
       }]
     });
     run.pendingToolUseId = null;

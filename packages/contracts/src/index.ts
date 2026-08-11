@@ -160,11 +160,29 @@ export const windowsCommandSchema = z.enum([
   "press-key",
   "get-text",
   "screenshot",
+  // Screen-level input, used when an app publishes no usable controls. Plenty of
+  // business software paints its own interface and names nothing, so a
+  // control-only automation surface simply cannot drive it. These commands work
+  // on pixels instead, exactly as the person sitting at the machine does: they
+  // take coordinates from the screenshot the model was just shown.
+  "click-at",
+  "double-click-at",
+  "right-click-at",
+  "drag",
+  "scroll-at",
+  // One key combination (for example ctrl+s) sent to the focused window. Distinct
+  // from press-key, which sends a single navigation key and no modifiers.
+  "key-combo",
   // Click recording: start begins capturing the user's clicks in desktop apps,
   // stop ends capture and returns the recorded steps as replayable actions.
   "record-start",
   "record-stop"
 ]);
+
+// A point on the virtual screen. Bounded well past any real display so a stray
+// value cannot be used to poke at something far off-screen, while still covering
+// multi-monitor setups (where a second display gives negative coordinates).
+const screenCoordinate = z.number().int().min(-20_000).max(20_000);
 
 export const windowsActionSchema = z.object({
   kind: z.literal("windows"),
@@ -172,7 +190,16 @@ export const windowsActionSchema = z.object({
   application: z.string().max(260).optional(),
   windowTitle: z.string().max(500).optional(),
   control: z.string().max(500).optional(),
-  value: z.string().max(10_000).optional()
+  value: z.string().max(10_000).optional(),
+  // Where a screen-level action happens. x/y is the target for the click,
+  // double-click, right-click and scroll commands, and the START of a drag.
+  x: screenCoordinate.optional(),
+  y: screenCoordinate.optional(),
+  // Where a drag ends.
+  toX: screenCoordinate.optional(),
+  toY: screenCoordinate.optional(),
+  // Wheel notches for scroll-at: positive scrolls up, negative scrolls down.
+  scrollAmount: z.number().int().min(-25).max(25).optional()
 }).strict();
 
 // Run one shell command on the user's computer, inside WorkCrew's workspace
@@ -268,7 +295,14 @@ export const createRunSchema = z.object({
 export const runToolResultSchema = z.object({
   toolUseId: z.string().min(1).max(200),
   ok: z.boolean(),
-  output: z.string().max(100_000)
+  output: z.string().max(100_000),
+  // A screenshot of what the action produced, as base64 JPEG, so the planner can
+  // SEE a window instead of only reading a list of named controls. Without this
+  // the model is blind on any app that publishes nothing to Windows
+  // accessibility, which is most older business software. The cap is generous
+  // enough for a downscaled full screen and small enough that one turn cannot
+  // blow the request size; the desktop downscales before sending.
+  imageBase64: z.string().max(4_000_000).optional()
 }).strict();
 
 export const nextRunStepSchema = z.object({

@@ -15,7 +15,13 @@ export function actionNeedsApproval(action: AutomationAction): boolean {
   // they can fill fields or submit a form, so they were missing here and slipped
   // past the approval gate entirely. The rest are reads (list-windows, connect,
   // inspect, get-text, screenshot) and never prompt.
-  return new Set(["launch", "click", "set-text", "type-keys", "type-text", "press-key"]).has(action.command);
+  // The screen-level commands are writes too, and the most consequential ones:
+  // they move the real mouse to a coordinate with no control to reason about, so
+  // they can land on anything currently under that point.
+  return new Set([
+    "launch", "click", "set-text", "type-keys", "type-text", "press-key",
+    "click-at", "double-click-at", "right-click-at", "drag", "scroll-at", "key-combo"
+  ]).has(action.command);
 }
 
 // The Permissions panel category an action belongs to, or null for actions with
