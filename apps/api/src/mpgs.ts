@@ -79,7 +79,13 @@ export async function startCheckout(input: {
   interval: BillingInterval;
 }): Promise<{ orderId: string; sessionId: string }> {
   if (!config.mpgs.configured) {
-    throw Object.assign(new Error("The card gateway is not configured"), { statusCode: 503, code: "MPGS_UNAVAILABLE" });
+    // A 4xx on purpose. Anything 5xx is replaced by a generic message before it
+    // reaches the caller, and the only people who can reach this route are the
+    // operators who need to know exactly which setting is missing.
+    throw Object.assign(
+      new Error("The card gateway is not configured. Set MPGS_MERCHANT_ID and MPGS_API_PASSWORD."),
+      { statusCode: 409, code: "MPGS_UNAVAILABLE" }
+    );
   }
   const orderId = `wc-${randomUUID()}`;
   const amountCents = planAmountCents(input.plan, input.interval);
@@ -125,12 +131,15 @@ export async function startCheckout(input: {
 
   if (!response.ok || payload.result !== "SUCCESS" || !payload.session?.id) {
     await setMpgsOrderStatus(orderId, "failed");
-    // The gateway's own explanation is useful to an operator but must not leak to
-    // a customer, so it is thrown as a plain message the route turns into a 502.
-    const detail = payload.error?.explanation ?? payload.error?.cause ?? `gateway responded ${response.status}`;
-    throw Object.assign(new Error(`The payment gateway refused to start a checkout (${detail})`), {
-      statusCode: 502,
-      code: "MPGS_SESSION_FAILED"
+    const detail = payload.error?.explanation ?? payload.error?.cause ?? `the gateway responded ${response.status}`;
+    // Reported as a 4xx so the operator actually sees the gateway's own words.
+    // A wrong password or merchant id is a configuration problem they can fix,
+    // and it is unfixable if every cause reads "the service could not complete
+    // the request". The gateway never echoes the credential itself.
+    throw Object.assign(new Error(`The payment gateway refused to start a checkout: ${detail}`), {
+      statusCode: 409,
+      code: "MPGS_SESSION_FAILED",
+      gatewayStatus: response.status
     });
   }
 
