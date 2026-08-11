@@ -138,6 +138,7 @@ export function adminPage(): string {
       <label>Plan<select id="pay-plan"><option value="pro">Pro</option><option value="ultra">Ultra</option></select></label>
       <label>Billing<select id="pay-interval"><option value="month">Monthly</option><option value="year">Yearly</option></select></label>
       <button id="pay-button" type="button">Open payment page</button>
+      <button class="ghost" id="diagnose-button" type="button">Diagnose</button>
     </div>
     <div id="pay-note" class="notice hidden"></div>
     <table class="audit" id="attempts-table">
@@ -406,6 +407,30 @@ export function adminPage(): string {
       // Show the gateway's recorded reason even when the message itself is the
       // backend's generic one.
       return loadAttempts();
+    }).finally(function () {
+      button.disabled = false;
+    });
+  });
+
+  // Asks the gateway which merchant id it accepts, so a refusal names the fix
+  // instead of sending the operator back to the bank's portal to guess again.
+  $("diagnose-button").addEventListener("click", function () {
+    var button = $("diagnose-button");
+    button.disabled = true;
+    note($("pay-note"), "Asking the gateway which settings it accepts...", true);
+    api("/v1/admin/card-diagnose").then(function (d) {
+      var lines = d.attempts.map(function (a) {
+        return (a.ok ? "OK   " : "no   ") + escapeText(a.merchantId) + "  -  " + escapeText(a.detail);
+      }).join("<br>");
+      var shape = "Password length " + d.passwordLength +
+        (d.passwordHasSurroundingWhitespace ? " (WARNING: it has a leading or trailing space)" : "") +
+        ", host " + escapeText(d.baseUrl);
+      note($("pay-note"), "", true);
+      $("pay-note").innerHTML = "<strong>" + escapeText(d.advice) + "</strong><br><br>" + lines + "<br><br>" + shape;
+      $("pay-note").className = "notice " + (d.worksWith ? "notice-ok" : "notice-error");
+      show($("pay-note"), true);
+    }).catch(function (error) {
+      note($("pay-note"), error.message, false);
     }).finally(function () {
       button.disabled = false;
     });

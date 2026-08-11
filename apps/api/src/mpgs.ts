@@ -283,3 +283,82 @@ export function webhookSecretMatches(provided: string | undefined): boolean {
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
+
+/**
+ * Work out WHY the gateway is refusing us, without anyone having to guess.
+ *
+ * Three rounds of "check the password" produced nothing, because the password was
+ * never the problem: on this gateway a TEST merchant profile carries a TEST
+ * prefix (the bank's own documentation shows a successful response from
+ * "TESTBOB"), so authenticating as merchant.WRKCREW against the test host fails
+ * exactly like a wrong password would. Rather than ask an operator to re-derive
+ * that, this tries each plausible merchant id with the configured password and
+ * reports which one the gateway actually accepts.
+ *
+ * It reveals nothing sensitive. The password is never returned, logged, or
+ * echoed; only its length and whether it carries stray whitespace, which is what
+ * catches a broken copy and paste that is otherwise invisible.
+ */
+export type MpgsDiagnosis = {
+  configuredMerchantId: string;
+  passwordLength: number;
+  passwordHasSurroundingWhitespace: boolean;
+  baseUrl: string;
+  attempts: { merchantId: string; httpStatus: number; ok: boolean; detail: string }[];
+  worksWith: string | null;
+  advice: string;
+};
+
+export async function diagnoseGateway(): Promise<MpgsDiagnosis> {
+  const configured = config.mpgs.merchantId;
+  const password = config.mpgs.apiPassword;
+
+  // Every id worth trying, in the order most likely to be right, with duplicates
+  // removed so a correctly configured deployment only makes one request.
+  const candidates = Array.from(new Set([
+    configured,
+    configured.toUpperCase(),
+    configured.toUpperCase().startsWith("TEST") ? configured.toUpperCase().slice(4) : `TEST${configured.toUpperCase()}`
+  ].filter(Boolean)));
+
+  const attempts: MpgsDiagnosis["attempts"] = [];
+  let worksWith: string | null = null;
+
+  for (const merchantId of candidates) {
+    const credentials = Buffer.from(`merchant.${merchantId}:${password}`).toString("base64");
+    try {
+      // Reading the merchant profile is the lightest authenticated call there is:
+      // it creates nothing, charges nothing, and answers the only question here,
+      // which is whether these credentials are accepted at all.
+      const response = await fetch(
+        `${config.mpgs.baseUrl}/api/rest/version/${API_VERSION}/merchant/${encodeURIComponent(merchantId)}`,
+        { headers: { authorization: `Basic ${credentials}` }, signal: AbortSignal.timeout(15_000) }
+      );
+      const payload = await response.json().catch(() => ({})) as { error?: { explanation?: string; cause?: string }; result?: string };
+      const detail = payload.error?.explanation ?? payload.error?.cause ?? payload.result ?? `HTTP ${response.status}`;
+      const ok = response.ok;
+      attempts.push({ merchantId, httpStatus: response.status, ok, detail });
+      if (ok && worksWith === null) worksWith = merchantId;
+    } catch {
+      attempts.push({ merchantId, httpStatus: 0, ok: false, detail: "could not reach the gateway" });
+    }
+  }
+
+  const advice = worksWith === null
+    ? "None of these merchant ids were accepted with the configured password. Generate a fresh API password under Integration Settings, make sure Enable Integration Access Via Password is ticked, and check with the bank which merchant id belongs to the TEST host."
+    : worksWith === configured
+      ? "The configured merchant id and password are accepted. If checkout still fails, the problem is in the checkout request rather than the credentials."
+      : `Set MPGS_MERCHANT_ID to ${worksWith} in Render. The password is correct; the merchant id was not.`;
+
+  return {
+    configuredMerchantId: configured,
+    passwordLength: password.length,
+    // A password copied with a trailing space or newline fails identically to a
+    // wrong one, and is impossible to spot by eye in an environment variable box.
+    passwordHasSurroundingWhitespace: password !== password.trim(),
+    baseUrl: config.mpgs.baseUrl,
+    attempts,
+    worksWith,
+    advice
+  };
+}

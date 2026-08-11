@@ -65,7 +65,7 @@ import {
   requireAdmin
 } from "./admin.js";
 import { adminPage } from "./admin-page.js";
-import { mpgsAvailableFor, orderIsFresh, settleOrder, startCheckout, webhookSecretMatches } from "./mpgs.js";
+import { diagnoseGateway, mpgsAvailableFor, orderIsFresh, settleOrder, startCheckout, webhookSecretMatches } from "./mpgs.js";
 import { mpgsCheckoutPage, mpgsResultPage } from "./mpgs-page.js";
 import { landingPage } from "./landing.js";
 import { pricingPage, privacyPage, refundPolicyPage, termsPage } from "./legal.js";
@@ -110,17 +110,22 @@ const APP_VERSION = "0.1.7";
 const MAX_RUN_STEPS = 24;
 
 /**
- * Drop every screenshot from earlier turns, keeping only the newest one.
+ * Trim screenshot history to the newest few, exactly as the reference
+ * computer-use loop does (its harness filters tool results down to the N most
+ * recent images).
  *
- * A run can take a dozen screenshots, and each is worth far more input tokens
- * than the text around it. Resending all of them on every step would multiply
- * the cost of a long task and eventually breach the request size, while adding
- * nothing: the planner acts on what is on screen NOW, and an image from six
- * steps ago is stale. The text of each old result is left untouched, so the
- * history of what happened stays intact; only the pixels go.
+ * Every acting step now carries a screenshot, and each is worth far more input
+ * tokens than the text around it, so resending all of them every step would
+ * multiply the cost of a long task and eventually breach the request size. The
+ * newest picture is what the planner acts on; the one before it gives just
+ * enough before-and-after context to tell whether the last action worked. The
+ * text of each older result is left untouched, so the history of what happened
+ * stays intact; only the stale pixels go.
  */
-export function stripOlderScreenshots(messages: unknown[]): void {
-  for (const raw of messages) {
+export function stripOlderScreenshots(messages: unknown[], keepNewest = 1): void {
+  let kept = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const raw = messages[index];
     // The history is replayed from storage, so a malformed or partial entry must
     // skip rather than take the whole run down on the next step.
     if (!raw || typeof raw !== "object") continue;
@@ -130,12 +135,55 @@ export function stripOlderScreenshots(messages: unknown[]): void {
       if (!block || block.type !== "tool_result" || !Array.isArray(block.content)) continue;
       const parts = block.content as Record<string, unknown>[];
       if (!parts.some((part) => part?.type === "image")) continue;
+      if (kept < keepNewest) {
+        kept += 1;
+        continue;
+      }
       block.content = parts
         .filter((part) => part?.type !== "image")
         .concat([{ type: "text", text: "(screenshot from an earlier step, no longer shown)" }]);
     }
   }
 }
+
+/**
+ * The same messages with every screenshot's bytes replaced by a stub, plus how
+ * many were removed. The budget estimators below count serialized BYTES as a
+ * token upper bound, which is honest for text but absurd for base64: one JPEG
+ * would be counted as a few hundred thousand tokens, and a single vision step
+ * would try to reserve more than a whole daily cap. The API actually prices an
+ * image by its dimensions, so images are estimated separately at a realistic
+ * per-image token cost.
+ */
+export function withoutImageBytes(messages: unknown[]): { messages: unknown[]; imageCount: number } {
+  let imageCount = 0;
+  const cleaned = JSON.parse(JSON.stringify(messages)) as unknown[];
+  for (const raw of cleaned) {
+    if (!raw || typeof raw !== "object") continue;
+    const message = raw as { content?: unknown };
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content as Record<string, unknown>[]) {
+      if (!block || block.type !== "tool_result" || !Array.isArray(block.content)) continue;
+      const parts = block.content as Record<string, unknown>[];
+      for (let index = 0; index < parts.length; index += 1) {
+        if (parts[index]?.type === "image") {
+          imageCount += 1;
+          parts[index] = { type: "text", text: "(screenshot)" };
+        }
+      }
+    }
+  }
+  return { messages: cleaned, imageCount };
+}
+
+/**
+ * Token cost of one screenshot. The realistic figure matches a 1400px-wide JPEG
+ * (the API charges roughly width times height over 750); the upper bound is the
+ * API's own ceiling for any single image after its 1568px resize. Used to price
+ * images into the budget without the byte-count fiction.
+ */
+const IMAGE_TOKEN_ESTIMATE = 1_800;
+const IMAGE_TOKEN_UPPER_BOUND = 3_500;
 
 /**
  * Number of consecutive identical assistant actions (same tool plus same
@@ -825,6 +873,20 @@ app.get("/v1/admin/card-attempts", routeLimit(30), async (request) => {
   return { attempts: await listMpgsAttempts(10) };
 });
 
+// Ask the gateway which merchant id it will actually accept, instead of an
+// operator working it out by trial and error. Admin only, and it returns no
+// secret: the password's length and whether it has stray whitespace, never its
+// value. Tighter rate limit because each call talks to the bank.
+app.get("/v1/admin/card-diagnose", routeLimit(6), async (request) => {
+  await requireAdmin(request);
+  const diagnosis = await diagnoseGateway();
+  request.log.info(
+    { event: "mpgs_diagnose", worksWith: diagnosis.worksWith, tried: diagnosis.attempts.length },
+    "card gateway diagnosed"
+  );
+  return diagnosis;
+});
+
 // The dashboard itself: one self-contained page that signs in with a normal
 // WorkCrew account and then drives the routes above. Its inline style and script
 // need a relaxed per-response CSP, like the landing page.
@@ -995,14 +1057,24 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
   async function planStep(tier: ConcreteModelTier): Promise<ModelResult> {
     const headroom = await budgetHeadroom(userId, subscription);
     const remaining = Math.min(headroom.daily, headroom.monthly);
-    const inputEstimate = estimatedInputMicrodollars(tier, modelRequestPayload(activeRun.messages, tier, STEP_MAX_OUTPUT_TOKENS));
+    // Screenshots are priced separately: the byte-based estimators would count a
+    // base64 image as hundreds of thousands of tokens and reject the step against
+    // the daily cap, when its real cost is under two thousand tokens.
+    const { messages: estimateMessages, imageCount } = withoutImageBytes(activeRun.messages);
+    const inputEstimate = estimatedInputMicrodollars(
+      tier,
+      modelRequestPayload(estimateMessages, tier, STEP_MAX_OUTPUT_TOKENS),
+      imageCount * IMAGE_TOKEN_ESTIMATE
+    );
     const outputPrice = MODEL_PRICES[tier].output;
     if (remaining - inputEstimate < MIN_STEP_OUTPUT_TOKENS * outputPrice) {
       throw exhaustionError(subscription.plan, headroom.daily <= headroom.monthly);
     }
     let maxOutputTokens = Math.min(STEP_MAX_OUTPUT_TOKENS, budgetLimitedOutputTokens(tier, remaining - inputEstimate));
-    const payload = modelRequestPayload(activeRun.messages, tier, maxOutputTokens);
-    const reservationAmount = maximumReservationMicrodollars(tier, payload, maxOutputTokens);
+    const payload = modelRequestPayload(estimateMessages, tier, maxOutputTokens);
+    const reservationAmount =
+      maximumReservationMicrodollars(tier, payload, maxOutputTokens) +
+      imageCount * IMAGE_TOKEN_UPPER_BOUND * MODEL_PRICES[tier].input;
     const reservation = await reserveBudget({ subscription, runId: activeRun.id, model: tier, amountMicrodollars: reservationAmount });
     // Re-cap output to what was actually reserved (minus input) after any concurrent
     // consumption; release the hold and stop if nothing meaningful is left.
