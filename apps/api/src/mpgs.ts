@@ -130,8 +130,12 @@ export async function startCheckout(input: {
   };
 
   if (!response.ok || payload.result !== "SUCCESS" || !payload.session?.id) {
-    await setMpgsOrderStatus(orderId, "failed");
     const detail = payload.error?.explanation ?? payload.error?.cause ?? `the gateway responded ${response.status}`;
+    // Written onto the order as well as thrown. A failure that only exists in an
+    // error message is gone the moment the page is refreshed, and the operator
+    // then has nothing to act on; on the row it can be read back in the
+    // dashboard whenever they look.
+    await setMpgsOrderStatus(orderId, "failed", `HTTP ${response.status}: ${detail}`);
     // Reported as a 4xx so the operator actually sees the gateway's own words.
     // A wrong password or merchant id is a configuration problem they can fix,
     // and it is unfixable if every cause reads "the service could not complete

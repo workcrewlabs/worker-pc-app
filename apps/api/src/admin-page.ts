@@ -140,6 +140,10 @@ export function adminPage(): string {
       <button id="pay-button" type="button">Open payment page</button>
     </div>
     <div id="pay-note" class="notice hidden"></div>
+    <table class="audit" id="attempts-table">
+      <thead><tr><th>When</th><th>Plan</th><th>Amount</th><th>Result</th></tr></thead>
+      <tbody id="attempt-rows"><tr><td colspan="4" class="muted">No attempts yet.</td></tr></tbody>
+    </table>
   </section>
 
   <section class="card">
@@ -284,7 +288,32 @@ export function adminPage(): string {
     });
   }
 
-  function refreshAll() { return Promise.all([loadCustomers(), loadActivity()]); }
+  // The gateway's own words for any refused payment. Without this the operator
+  // sees only the generic error the backend shows users, which names no cause.
+  function loadAttempts() {
+    return api("/v1/admin/card-attempts").then(function (payload) {
+      var attempts = payload.attempts || [];
+      $("attempt-rows").innerHTML = attempts.length === 0
+        ? '<tr><td colspan="4" class="muted">No attempts yet.</td></tr>'
+        : attempts.map(function (a) {
+            var ok = a.status === "paid";
+            var result = ok
+              ? '<span class="pill pill-paid">paid</span>'
+              : '<span class="pill pill-expired">' + escapeText(a.status) + "</span>" +
+                (a.failureReason ? ' <span class="muted">' + escapeText(a.failureReason) + "</span>" : "");
+            return "<tr>" +
+              "<td>" + escapeText(formatDate(a.createdAtMs)) + "</td>" +
+              "<td>" + escapeText(a.plan + " " + a.interval) + "</td>" +
+              "<td>$" + escapeText((a.amountCents / 100).toFixed(2)) + "</td>" +
+              "<td>" + result + "</td>" +
+            "</tr>";
+          }).join("");
+    }).catch(function () {
+      $("attempt-rows").innerHTML = '<tr><td colspan="4" class="muted">Could not load.</td></tr>';
+    });
+  }
+
+  function refreshAll() { return Promise.all([loadCustomers(), loadActivity(), loadAttempts()]); }
 
   $("signin-form").addEventListener("submit", function (event) {
     event.preventDefault();
@@ -371,8 +400,12 @@ export function adminPage(): string {
       // the bank's own page and the plan is granted after it confirms.
       window.open(payload.url, "_blank");
       note($("pay-note"), "Payment page opened in a new tab. Pay with a test card, then come back and press Refresh.", true);
+      return loadAttempts();
     }).catch(function (error) {
       note($("pay-note"), error.message, false);
+      // Show the gateway's recorded reason even when the message itself is the
+      // backend's generic one.
+      return loadAttempts();
     }).finally(function () {
       button.disabled = false;
     });
