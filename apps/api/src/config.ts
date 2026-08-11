@@ -33,6 +33,25 @@ const envSchema = z.object({
   // Where a user is told to write to arrange payment while billing is manual.
   // Shown in the app's upgrade screens and on the paywall.
   WORKCREW_BILLING_CONTACT_EMAIL: z.string().default("workcrew.support@gmail.com"),
+  // Mastercard Payment Gateway Services, as resold by the acquiring bank. This is
+  // an ADDITIONAL capability rather than a billing mode: while BILLING_MODE stays
+  // "manual", ordinary customers are still activated by hand, and only the
+  // accounts listed in MPGS_TEST_EMAILS are offered card payment. That is what
+  // lets a live deployment try the gateway end to end without putting a single
+  // real customer through an untested payment path.
+  MPGS_MERCHANT_ID: z.string().default(""),
+  MPGS_API_PASSWORD: z.string().default(""),
+  // The gateway host. The "test-" prefix is what keeps this in the sandbox, so
+  // going live later is a value change here rather than a code change.
+  MPGS_API_BASE_URL: z.preprocess(
+    (value) => (typeof value === "string" && value.length > 0 ? value : undefined),
+    z.string().url().default("https://test-bobsal.gateway.mastercard.com")
+  ),
+  // Proves an incoming payment notification really came from the gateway.
+  MPGS_WEBHOOK_SECRET: z.string().default(""),
+  // Who may reach card checkout at all. Empty means nobody, which is the correct
+  // default for a deployment whose real customers pay by hand.
+  MPGS_TEST_EMAILS: z.string().default(""),
   WORKCREW_LOCAL_AUTH_SECRET: z.string().optional(),
   WORKCREW_ALLOWED_ORIGINS: z.string().default("http://127.0.0.1:5173"),
   WORKCREW_LOG_LEVEL: z.string().default("info"),
@@ -275,6 +294,21 @@ export const config = {
     env.WORKCREW_ADMIN_EMAILS.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean)
   ),
   billingContactEmail: env.WORKCREW_BILLING_CONTACT_EMAIL.trim(),
+  mpgs: {
+    merchantId: env.MPGS_MERCHANT_ID.trim(),
+    apiPassword: env.MPGS_API_PASSWORD,
+    baseUrl: env.MPGS_API_BASE_URL.replace(/\/$/, ""),
+    webhookSecret: env.MPGS_WEBHOOK_SECRET,
+    // Card checkout is available only when the gateway is fully configured AND
+    // at least one account is allowed to reach it. Either missing means the
+    // whole surface stays closed rather than half-working.
+    testEmails: new Set(
+      env.MPGS_TEST_EMAILS.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean)
+    ),
+    get configured(): boolean {
+      return Boolean(env.MPGS_MERCHANT_ID.trim() && env.MPGS_API_PASSWORD);
+    }
+  },
   localAuthSecret,
   allowedOrigins: new Set([
     ...env.WORKCREW_ALLOWED_ORIGINS.split(",").map((item) => item.trim()).filter(Boolean),

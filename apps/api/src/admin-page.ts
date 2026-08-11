@@ -131,6 +131,17 @@ export function adminPage(): string {
     <div id="create-note" class="notice hidden"></div>
   </section>
 
+  <section class="card" id="card-test-card">
+    <h1>Test a card payment</h1>
+    <p class="sub">Opens the bank's payment page for your own account, using the test gateway. No real money moves, and your customers are unaffected.</p>
+    <div class="row">
+      <label>Plan<select id="pay-plan"><option value="pro">Pro</option><option value="ultra">Ultra</option></select></label>
+      <label>Billing<select id="pay-interval"><option value="month">Monthly</option><option value="year">Yearly</option></select></label>
+      <button id="pay-button" type="button">Open payment page</button>
+    </div>
+    <div id="pay-note" class="notice hidden"></div>
+  </section>
+
   <section class="card">
     <h1>Recent activity</h1>
     <table class="audit">
@@ -343,6 +354,25 @@ export function adminPage(): string {
       return refreshAll();
     }).catch(function (error) {
       note($("create-note"), error.message, false);
+    }).finally(function () {
+      button.disabled = false;
+    });
+  });
+
+  $("pay-button").addEventListener("click", function () {
+    var button = $("pay-button");
+    button.disabled = true;
+    note($("pay-note"), "Opening the bank's payment page...", true);
+    api("/v1/billing/mpgs/checkout", {
+      method: "POST",
+      body: { plan: $("pay-plan").value, interval: $("pay-interval").value }
+    }).then(function (payload) {
+      // Opened in a new tab so the dashboard stays put; the payment happens on
+      // the bank's own page and the plan is granted after it confirms.
+      window.open(payload.url, "_blank");
+      note($("pay-note"), "Payment page opened in a new tab. Pay with a test card, then come back and press Refresh.", true);
+    }).catch(function (error) {
+      note($("pay-note"), error.message, false);
     }).finally(function () {
       button.disabled = false;
     });
