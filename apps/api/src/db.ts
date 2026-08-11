@@ -270,7 +270,28 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       detail TEXT,
       created_at_ms BIGINT NOT NULL
     )`,
-    `CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit(created_at_ms)`
+    `CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit(created_at_ms)`,
+    // One card checkout at the payment gateway. The row is written BEFORE the
+    // payer is sent anywhere, so what they are buying is decided by the server
+    // and cannot be influenced by anything that comes back afterwards. granted_at_ms
+    // is the idempotency guard: a plan is handed out on the transition from NULL,
+    // so a replayed notification, a refreshed return page and a webhook arriving
+    // twice can between them grant access exactly once.
+    `CREATE TABLE IF NOT EXISTS mpgs_orders (
+      order_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      plan TEXT NOT NULL CHECK (plan IN ('pro', 'ultra')),
+      interval TEXT NOT NULL CHECK (interval IN ('month', 'year')),
+      amount_cents BIGINT NOT NULL,
+      currency TEXT NOT NULL,
+      session_id TEXT,
+      success_indicator TEXT,
+      status TEXT NOT NULL,
+      granted_at_ms BIGINT,
+      created_at_ms BIGINT NOT NULL,
+      updated_at_ms BIGINT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_mpgs_orders_user ON mpgs_orders(user_id)`
   ], "write");
 
   // Migrate databases created before the run safety columns existed. SQLite
@@ -1551,6 +1572,99 @@ export async function listAdminAudit(limit: number): Promise<{
     detail: row.detail === null || row.detail === undefined ? null : String(row.detail),
     createdAtMs: Number(row.created_at_ms)
   }));
+}
+
+// Card checkout orders ------------------------------------------------------
+
+export type MpgsOrderRow = {
+  orderId: string;
+  userId: string;
+  plan: "pro" | "ultra";
+  interval: "month" | "year";
+  amountCents: number;
+  currency: string;
+  sessionId: string | null;
+  successIndicator: string | null;
+  status: string;
+  grantedAtMs: number | null;
+  createdAtMs: number;
+};
+
+function mapMpgsOrder(row: Record<string, unknown>): MpgsOrderRow {
+  return {
+    orderId: String(row.order_id),
+    userId: String(row.user_id),
+    plan: String(row.plan) as "pro" | "ultra",
+    interval: String(row.interval) as "month" | "year",
+    amountCents: Number(row.amount_cents),
+    currency: String(row.currency),
+    sessionId: row.session_id === null || row.session_id === undefined ? null : String(row.session_id),
+    successIndicator:
+      row.success_indicator === null || row.success_indicator === undefined ? null : String(row.success_indicator),
+    status: String(row.status),
+    grantedAtMs: row.granted_at_ms === null || row.granted_at_ms === undefined ? null : Number(row.granted_at_ms),
+    createdAtMs: Number(row.created_at_ms)
+  };
+}
+
+/** Record an intended purchase before the payer is sent to the gateway. */
+export async function createMpgsOrder(input: {
+  orderId: string;
+  userId: string;
+  plan: "pro" | "ultra";
+  interval: "month" | "year";
+  amountCents: number;
+  currency: string;
+}): Promise<void> {
+  const now = Date.now();
+  await client.execute({
+    sql: `INSERT INTO mpgs_orders(order_id, user_id, plan, interval, amount_cents, currency,
+            session_id, success_indicator, status, granted_at_ms, created_at_ms, updated_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'created', NULL, ?, ?)`,
+    args: [input.orderId, input.userId, input.plan, input.interval, input.amountCents, input.currency, now, now]
+  });
+}
+
+/** Attach the gateway's session to an order once it has been opened. */
+export async function attachMpgsSession(orderId: string, sessionId: string, successIndicator: string | null): Promise<void> {
+  await client.execute({
+    sql: "UPDATE mpgs_orders SET session_id = ?, success_indicator = ?, status = 'pending', updated_at_ms = ? WHERE order_id = ?",
+    args: [sessionId, successIndicator, Date.now(), orderId]
+  });
+}
+
+export async function getMpgsOrder(orderId: string): Promise<MpgsOrderRow | null> {
+  const result = await client.execute({
+    sql: "SELECT * FROM mpgs_orders WHERE order_id = ? LIMIT 1",
+    args: [orderId]
+  });
+  const row = result.rows[0] as unknown as Record<string, unknown> | undefined;
+  return row ? mapMpgsOrder(row) : null;
+}
+
+export async function setMpgsOrderStatus(orderId: string, status: string): Promise<void> {
+  await client.execute({
+    sql: "UPDATE mpgs_orders SET status = ?, updated_at_ms = ? WHERE order_id = ?",
+    args: [status, Date.now(), orderId]
+  });
+}
+
+/**
+ * Claim the right to grant a plan for this order, exactly once.
+ *
+ * The UPDATE only matches while granted_at_ms IS NULL, and the database applies
+ * that test and the write as one operation, so of two notifications arriving
+ * together only one can come away with rowsAffected of 1. Whoever wins grants the
+ * plan; everyone else is told it is already done. This is what stops a replayed
+ * webhook, a refreshed return page, or a retry from stacking months onto an
+ * account that paid once.
+ */
+export async function claimMpgsOrderGrant(orderId: string): Promise<boolean> {
+  const result = await client.execute({
+    sql: "UPDATE mpgs_orders SET granted_at_ms = ?, status = 'paid', updated_at_ms = ? WHERE order_id = ? AND granted_at_ms IS NULL",
+    args: [Date.now(), Date.now(), orderId]
+  });
+  return result.rowsAffected === 1;
 }
 
 export { client };

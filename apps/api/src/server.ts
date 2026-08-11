@@ -65,6 +65,8 @@ import {
   requireAdmin
 } from "./admin.js";
 import { adminPage } from "./admin-page.js";
+import { mpgsAvailableFor, orderIsFresh, settleOrder, startCheckout, webhookSecretMatches } from "./mpgs.js";
+import { mpgsCheckoutPage, mpgsResultPage } from "./mpgs-page.js";
 import { landingPage } from "./landing.js";
 import { pricingPage, privacyPage, refundPolicyPage, termsPage } from "./legal.js";
 import { budgetHeadroom, budgetWindowFor, creditReferralOnPayment, exhaustionError, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
@@ -82,6 +84,7 @@ import {
   getConversation,
   getMessages,
   getRun,
+  getMpgsOrder,
   getSubscription,
   grantFreeSubscriptionIfAbsent,
   getUserById,
@@ -639,6 +642,126 @@ app.delete("/v1/account", routeLimit(5), async (request) => {
   await deleteAccount(userId);
   request.log.warn({ event: "account_deleted", userId }, "account deleted");
   return { ok: true };
+});
+
+// Card payment through the bank's gateway. This sits ALONGSIDE manual billing:
+// real customers are still activated by hand, and only the accounts listed in
+// MPGS_TEST_EMAILS can reach these routes at all, so a live deployment can
+// exercise a test gateway without exposing anyone to an untried payment path.
+const mpgsCheckoutSchema = z.object({
+  plan: z.enum(["pro", "ultra"]),
+  interval: z.enum(["month", "year"])
+}).strict();
+
+const mpgsOrderQuerySchema = z.object({
+  order: z.string().min(1).max(200)
+}).strict();
+
+app.post("/v1/billing/mpgs/checkout", routeLimit(10), async (request) => {
+  const userId = await authenticate(request);
+  const user = await getUserById(userId);
+  const availability = mpgsAvailableFor(user?.email);
+  if (!availability.available) {
+    request.log.warn({ event: "mpgs_checkout_denied", userId }, "card checkout denied");
+    throw Object.assign(new Error(availability.reason ?? "Card payment is not available"), {
+      statusCode: 403,
+      code: "MPGS_NOT_AVAILABLE"
+    });
+  }
+  const body = mpgsCheckoutSchema.parse(request.body);
+  const { orderId } = await startCheckout({ userId, plan: body.plan, interval: body.interval });
+  request.log.info({ event: "mpgs_checkout_started", userId, orderId }, "card checkout started");
+  // The payer is sent to a page on this backend, which hands over to the bank's
+  // own hosted form. The session id is never useful to anyone else.
+  return { url: `${config.publicUrl}/pay/${encodeURIComponent(orderId)}` };
+});
+
+// The hand-off page. Deliberately unauthenticated: the payer may open it in a
+// different browser from the app, and the order id is an unguessable uuid that
+// grants nothing on its own.
+app.get("/pay/:orderId", async (request, reply) => {
+  const { orderId } = z.object({ orderId: z.string().min(1).max(200) }).strict().parse(request.params);
+  const order = await getMpgsOrder(orderId);
+  if (!order || !order.sessionId || !orderIsFresh(order)) {
+    return reply
+      .code(404)
+      .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'")
+      .type("text/html")
+      .send(mpgsResultPage({ ok: false, heading: "This payment link has expired", message: "Start the upgrade again from WorkCrew." }));
+  }
+  if (order.grantedAtMs !== null) {
+    return reply
+      .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'")
+      .type("text/html")
+      .send(mpgsResultPage({ ok: true, heading: "Already paid", message: "This order is complete. Switch back to WorkCrew." }));
+  }
+  // The gateway's script is loaded from the bank's own host, so the CSP for this
+  // one page has to allow it, and nothing else.
+  const gateway = config.mpgs.baseUrl;
+  void reply
+    .header(
+      "content-security-policy",
+      `default-src 'none'; script-src 'unsafe-inline' ${gateway}; style-src 'unsafe-inline'; frame-src ${gateway}; connect-src ${gateway}; img-src ${gateway} data:`
+    )
+    .header("cache-control", "no-store")
+    .type("text/html")
+    .send(mpgsCheckoutPage({
+      sessionId: order.sessionId,
+      orderId: order.orderId,
+      planName: PLAN_CATALOG[order.plan].name,
+      amount: (order.amountCents / 100).toFixed(2)
+    }));
+});
+
+// Where the gateway returns the payer. The result shown here is decided by asking
+// the gateway what happened, never by anything in the URL.
+app.get("/billing/mpgs/return", async (request, reply) => {
+  const parsed = mpgsOrderQuerySchema.safeParse(request.query);
+  const send = (ok: boolean, heading: string, message: string): unknown =>
+    reply
+      .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'")
+      .header("cache-control", "no-store")
+      .type("text/html")
+      .send(mpgsResultPage({ ok, heading, message }));
+
+  if (!parsed.success) return send(false, "Something went wrong", "That payment link is not valid.");
+  try {
+    const result = await settleOrder(parsed.data.order);
+    if (result.granted) {
+      request.log.info({ event: "mpgs_payment_settled", orderId: parsed.data.order, repeat: result.alreadyGranted }, "card payment settled");
+      return send(true, "Payment received", "Your plan is active. Switch back to WorkCrew, it updates on its own.");
+    }
+    return send(false, "Payment not completed", `${result.reason} Nothing has been charged twice; you can try again from WorkCrew.`);
+  } catch (error) {
+    request.log.error({ event: "mpgs_settle_failed", orderId: parsed.data.order }, "card payment settle failed");
+    void error;
+    return send(false, "We could not confirm your payment", "If money left your account, contact support and we will sort it out.");
+  }
+});
+
+// The gateway's own notification, which is what catches a payment whose payer
+// closed the browser before returning. The secret proves it came from the bank;
+// the order is then verified with the gateway regardless, so even a valid-looking
+// notification cannot grant a plan the gateway did not actually take money for.
+app.post("/v1/billing/mpgs/webhook", routeLimit(60), async (request, reply) => {
+  const provided =
+    (request.headers["x-notification-secret"] as string | undefined) ??
+    (request.headers["x-webhook-secret"] as string | undefined);
+  if (!webhookSecretMatches(provided)) {
+    request.log.warn({ event: "mpgs_webhook_secret_failed" }, "card notification rejected: bad secret");
+    return reply.code(401).send({ error: "Unauthorized" });
+  }
+  const body = z.object({ order: z.object({ id: z.string().min(1).max(200) }).passthrough() }).passthrough().safeParse(request.body);
+  if (!body.success) return reply.code(400).send({ error: "Invalid notification" });
+  try {
+    const result = await settleOrder(body.data.order.id);
+    request.log.info({ event: "mpgs_webhook_processed", granted: result.granted }, "card notification processed");
+    return { received: true };
+  } catch {
+    // A 5xx asks the gateway to retry, which is what we want if our own lookup
+    // failed transiently.
+    return reply.code(503).send({ error: "Could not verify the order" });
+  }
 });
 
 // Admin dashboard API. Every route resolves the caller through requireAdmin,
