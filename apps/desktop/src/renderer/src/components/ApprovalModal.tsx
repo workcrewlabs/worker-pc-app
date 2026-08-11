@@ -110,13 +110,10 @@ export function ApprovalModal({
 // image rather than in pixels. The natural size of the loaded image gives the
 // ratio; until it loads there is nothing to place the marker against.
 function ClickTarget({ screenshot, point }: { screenshot: ScreenCapture; point: { x: number; y: number } }) {
-  // The point is in REAL screen pixels and the picture is downscaled, so the
-  // marker is placed as a percentage of the captured area, not of the image. Using
-  // the image's own size here would drift the marker further right and further
-  // down the more the capture was shrunk, and a marker in the wrong place is worse
-  // than none: the user would be approving something other than what they see.
-  const left = Math.max(0, Math.min(100, (point.x / screenshot.screenWidth) * 100));
-  const top = Math.max(0, Math.min(100, (point.y / screenshot.screenHeight) * 100));
+  // The point is already in the picture's own pixels, the same space the planner
+  // was shown, so the marker maps straight onto the image with no conversion.
+  const left = Math.max(0, Math.min(100, (point.x / screenshot.imageWidth) * 100));
+  const top = Math.max(0, Math.min(100, (point.y / screenshot.imageHeight) * 100));
 
   return (
     <figure className="approval-shot">

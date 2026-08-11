@@ -86,6 +86,7 @@ import {
   getRun,
   getMpgsOrder,
   getSubscription,
+  listMpgsAttempts,
   grantFreeSubscriptionIfAbsent,
   getUserById,
   initializeDatabase,
@@ -814,6 +815,14 @@ app.post("/v1/admin/customers/:userId/password", routeLimit(15), async (request)
 app.get("/v1/admin/activity", routeLimit(30), async (request) => {
   await requireAdmin(request);
   return { actions: await adminRecentActivity() };
+});
+
+// Recent card checkout attempts with the gateway's own reason for any refusal.
+// Admin only, and the reason comes from the gateway, which never echoes the
+// credential that was used.
+app.get("/v1/admin/card-attempts", routeLimit(30), async (request) => {
+  await requireAdmin(request);
+  return { attempts: await listMpgsAttempts(10) };
 });
 
 // The dashboard itself: one self-contained page that signs in with a normal

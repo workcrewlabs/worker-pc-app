@@ -29,9 +29,10 @@ function stepId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-// A capture of the screen plus the real size it was taken at, so a point in
-// the downscaled picture maps back to a real screen coordinate.
-export type ScreenCapture = { data: string; screenWidth: number; screenHeight: number };
+// A capture of the screen plus the size of the PICTURE itself. The planner gives
+// coordinates in that picture's pixels, so the approval marker can be placed
+// directly against it with no conversion.
+export type ScreenCapture = { data: string; imageWidth: number; imageHeight: number };
 
 export type AutomationRunner = {
   steps: RunStep[];
@@ -180,10 +181,7 @@ export function useAutomationRunner(): AutomationRunner {
     release?.();
   }
 
-  function requestApproval(
-    action: AutomationAction,
-    screenshot?: { data: string; screenWidth: number; screenHeight: number } | null
-  ): Promise<boolean> {
+  function requestApproval(action: AutomationAction, screenshot?: ScreenCapture | null): Promise<boolean> {
     return new Promise((resolve) => {
       approvalResolve.current = resolve;
       // A coordinate means nothing to a person, so when the action targets a
@@ -337,7 +335,7 @@ export function useAutomationRunner(): AutomationRunner {
     let lastSnapshot: string | null = null;
     // The newest screenshot taken during this run, shown in the approval popup
     // when the next action targets a bare screen coordinate.
-    let lastScreenshot: { data: string; screenWidth: number; screenHeight: number } | null = null;
+    let lastScreenshot: ScreenCapture | null = null;
     let finishSummary = "Task complete.";
 
     try {
@@ -404,8 +402,8 @@ export function useAutomationRunner(): AutomationRunner {
           // Keep the newest screenshot so the approval popup for the next screen
           // click can show the user WHERE it is about to click, rather than a
           // pair of numbers they cannot judge.
-          if (executed.imageBase64 && executed.screenWidth && executed.screenHeight) {
-            lastScreenshot = { data: executed.imageBase64, screenWidth: executed.screenWidth, screenHeight: executed.screenHeight };
+          if (executed.imageBase64 && executed.imageWidth && executed.imageHeight) {
+            lastScreenshot = { data: executed.imageBase64, imageWidth: executed.imageWidth, imageHeight: executed.imageHeight };
           }
           // Remember the latest snapshot so a following click can be resolved to
           // a stable name (recipe recording) and to its real label (approval

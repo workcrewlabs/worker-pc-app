@@ -274,6 +274,21 @@ def optional_text(value: Any, maximum: int = 500) -> str | None:
     return value
 
 
+def optional_int(value: Any, name: str, minimum: int, maximum: int) -> int | None:
+    """A whole number within range, or None when the field is absent.
+
+    Booleans are refused explicitly: in Python True is an int, so a sloppy check
+    would happily accept it and click at (1, 1).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{name} must be a whole number")
+    if not (minimum <= value <= maximum):
+        raise ValueError(f"{name} is out of range")
+    return value
+
+
 def validate_action(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Action must be an object")
@@ -292,6 +307,10 @@ def validate_action(value: Any) -> dict[str, Any]:
     command = value.get("command")
     if command not in ALLOWED_COMMANDS:
         raise ValueError("Unsupported Windows command")
+    # The action is rebuilt field by field rather than passed through, so an
+    # attacker cannot smuggle anything past the checks. That means EVERY field a
+    # command needs must be listed here: leaving one out silently drops it, and
+    # the command then fails as though the caller never sent it.
     result = {
         "kind": "windows",
         "command": command,
@@ -299,6 +318,13 @@ def validate_action(value: Any) -> dict[str, Any]:
         "windowTitle": optional_text(value.get("windowTitle"), 500),
         "control": optional_text(value.get("control"), 500),
         "value": optional_text(value.get("value"), MAX_TEXT_LENGTH),
+        # Screen coordinates for the pixel-level commands. Bounded well past any
+        # real display so a second monitor (negative coordinates) still works.
+        "x": optional_int(value.get("x"), "x", -20_000, 20_000),
+        "y": optional_int(value.get("y"), "y", -20_000, 20_000),
+        "toX": optional_int(value.get("toX"), "toX", -20_000, 20_000),
+        "toY": optional_int(value.get("toY"), "toY", -20_000, 20_000),
+        "scrollAmount": optional_int(value.get("scrollAmount"), "scrollAmount", -25, 25),
     }
     return result
 
@@ -663,11 +689,27 @@ def require_point(action: dict[str, Any], x_key: str = "x", y_key: str = "y") ->
 
 
 def capture_screen_png(window: Any | None) -> Path:
-    """Capture the connected window, or the whole screen when nothing is connected
-    yet, and return the file it was written to."""
+    """Capture the connected window, falling back to the whole screen.
+
+    Plenty of real business software reports a useless window rectangle to UI
+    Automation. Express Accounts, for instance, reports 0,0,0,0 while being
+    perfectly visible on screen. Capturing that window gives an empty image, and
+    an empty image is worse than none: the model is left with nothing to read and
+    invents coordinates, which is how a click ends up in the wrong place.
+
+    Whenever the window capture is missing or degenerate, grab the whole screen
+    instead. That is always usable, and it costs nothing in correctness because
+    the coordinates the model works in are screen-absolute anyway.
+    """
+    image = None
     if window is not None:
-        image = window.capture_as_image()
-    else:
+        try:
+            captured = window.capture_as_image()
+            if captured is not None and captured.width > 1 and captured.height > 1:
+                image = captured
+        except Exception:
+            image = None
+    if image is None:
         from PIL import ImageGrab
 
         image = ImageGrab.grab()

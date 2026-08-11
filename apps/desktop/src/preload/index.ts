@@ -24,7 +24,7 @@ type PickedFile = { path: string; name: string; size: number };
 // What running one automation action gives back. A desktop screenshot adds the
 // picture and the real captured size, so the planner can be shown the screen and
 // the approval popup can mark the exact spot a click will land.
-type ExecuteResult = { output: string; imageBase64?: string; screenWidth?: number; screenHeight?: number };
+type ExecuteResult = { output: string; imageBase64?: string; imageWidth?: number; imageHeight?: number };
 
 // What the renderer passes to chat.send. The request id is generated here and
 // returned so the caller can correlate streamed frames and issue a stop.

@@ -321,6 +321,9 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   await addColumnIfMissing(db, "subscriptions", "pending_plan", "TEXT CHECK (pending_plan IN ('pro', 'ultra'))");
   await addColumnIfMissing(db, "subscriptions", "pending_interval", "TEXT CHECK (pending_interval IN ('month', 'year'))");
   await addColumnIfMissing(db, "subscriptions", "pending_effective_ms", "BIGINT");
+  // Why a card checkout was refused, kept on the order so the operator can read
+  // the gateway's own words in the dashboard instead of digging through logs.
+  await addColumnIfMissing(db, "mpgs_orders", "failure_reason", "TEXT");
   // The user's token-spend mode (Economy vs Privacy), on existing subscription rows.
   await addColumnIfMissing(db, "subscriptions", "model_mode", "TEXT NOT NULL DEFAULT 'economy'");
   // Per-credit dedupe key on existing ledgers, so Stripe top-up fulfilment and
@@ -1642,11 +1645,43 @@ export async function getMpgsOrder(orderId: string): Promise<MpgsOrderRow | null
   return row ? mapMpgsOrder(row) : null;
 }
 
-export async function setMpgsOrderStatus(orderId: string, status: string): Promise<void> {
+export async function setMpgsOrderStatus(orderId: string, status: string, failureReason?: string): Promise<void> {
   await client.execute({
-    sql: "UPDATE mpgs_orders SET status = ?, updated_at_ms = ? WHERE order_id = ?",
-    args: [status, Date.now(), orderId]
+    sql: "UPDATE mpgs_orders SET status = ?, failure_reason = ?, updated_at_ms = ? WHERE order_id = ?",
+    args: [status, failureReason ?? null, Date.now(), orderId]
   });
+}
+
+/**
+ * The most recent card checkout attempts, for the dashboard. This exists because
+ * a payment that fails at the gateway is otherwise invisible to the operator: the
+ * generic 5xx message tells them nothing and the reason is buried in server logs
+ * they have no reason to be reading.
+ */
+export async function listMpgsAttempts(limit: number): Promise<{
+  orderId: string;
+  plan: string;
+  interval: string;
+  amountCents: number;
+  status: string;
+  failureReason: string | null;
+  createdAtMs: number;
+}[]> {
+  const result = await client.execute({
+    sql: `SELECT order_id, plan, interval, amount_cents, status, failure_reason, created_at_ms
+          FROM mpgs_orders ORDER BY created_at_ms DESC LIMIT ?`,
+    args: [limit]
+  });
+  return (result.rows as unknown as Record<string, unknown>[]).map((row) => ({
+    orderId: String(row.order_id),
+    plan: String(row.plan),
+    interval: String(row.interval),
+    amountCents: Number(row.amount_cents),
+    status: String(row.status),
+    failureReason:
+      row.failure_reason === null || row.failure_reason === undefined ? null : String(row.failure_reason),
+    createdAtMs: Number(row.created_at_ms)
+  }));
 }
 
 /**
