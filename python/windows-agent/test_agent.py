@@ -738,5 +738,45 @@ class ScreenInputValidation(unittest.TestCase):
             self.assertNotIn(forbidden, agent.SAFE_COMBOS)
 
 
+class ValidateActionKeepsCoordinates(unittest.TestCase):
+    """validate_action rebuilds the action field by field so nothing can be
+    smuggled past the checks. That also means a field left out of the rebuild is
+    silently dropped, which is exactly how the first version of the screen-click
+    commands shipped broken: the coordinates were accepted and then discarded, so
+    every click failed with "x and y must be whole numbers" while the caller was
+    sending perfectly good numbers. These tests pin the round trip, not just the
+    checks in isolation."""
+
+    def test_coordinates_survive_validation(self):
+        action = agent.validate_action({"kind": "windows", "command": "click-at", "x": 1459, "y": 702})
+        self.assertEqual(action["x"], 1459)
+        self.assertEqual(action["y"], 702)
+        # And the point helper, which runs on the rebuilt action, can read them.
+        self.assertEqual(agent.require_point(action), (1459, 702))
+
+    def test_drag_endpoints_survive_validation(self):
+        action = agent.validate_action(
+            {"kind": "windows", "command": "drag", "x": 10, "y": 20, "toX": 30, "toY": 40}
+        )
+        self.assertEqual(agent.require_point(action), (10, 20))
+        self.assertEqual(agent.require_point(action, "toX", "toY"), (30, 40))
+
+    def test_scroll_amount_survives_validation(self):
+        action = agent.validate_action(
+            {"kind": "windows", "command": "scroll-at", "x": 5, "y": 6, "scrollAmount": -3}
+        )
+        self.assertEqual(action["scrollAmount"], -3)
+
+    def test_absent_coordinates_stay_absent(self):
+        action = agent.validate_action({"kind": "windows", "command": "inspect"})
+        self.assertIsNone(action["x"])
+        self.assertIsNone(action["y"])
+
+    def test_rejects_out_of_range_and_non_numeric_coordinates(self):
+        for bad in ({"x": 99999, "y": 1}, {"x": "1459", "y": 702}, {"x": 1.5, "y": 2}, {"x": True, "y": 2}):
+            with self.assertRaises(ValueError):
+                agent.validate_action({"kind": "windows", "command": "click-at", **bad})
+
+
 if __name__ == "__main__":
     unittest.main()

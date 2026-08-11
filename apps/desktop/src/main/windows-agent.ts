@@ -12,14 +12,17 @@ const execFileAsync = promisify(execFile);
 
 /**
  * What one action returns. A screenshot additionally carries the picture and the
- * real captured size, so both the planner and the approval popup can map a point
- * in the downscaled image back to a real screen coordinate.
+ * picture's own size. The model then works entirely in picture coordinates and
+ * this process converts them, so nothing downstream has to do arithmetic.
  */
 export type ActionResult = {
   output: string;
   imageBase64?: string;
-  screenWidth?: number;
-  screenHeight?: number;
+  // The size of the PICTURE that was sent, not of the screen. The model reads
+  // coordinates straight off that picture and this process scales them back up,
+  // so the model is never asked to convert between two coordinate spaces.
+  imageWidth?: number;
+  imageHeight?: number;
 };
 
 // Where the packaged Windows helper executable lives. In an installed build it
@@ -66,6 +69,9 @@ export class WindowsAgent {
   private endpoint: string | null = null;
   private token: string | null = null;
   private healthChecked = false;
+  // How much the last screenshot was shrunk (real pixels per picture pixel). The
+  // model works in picture pixels; this turns them back into screen pixels.
+  private captureScale = 1;
 
   // Open a desktop app by name or full path. Launching is done here rather
   // than the helper, so it works without any extra setup; the helper is only
@@ -328,12 +334,13 @@ export class WindowsAgent {
     }
     await this.start();
     await this.probeHealth();
+    const sent = this.toScreenCoordinates(action);
     let response: Response;
     try {
       response = await fetch(`${this.endpoint}/action`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
-        body: JSON.stringify(action),
+        body: JSON.stringify(sent),
         signal: AbortSignal.timeout(30_000)
       });
     } catch {
@@ -347,6 +354,25 @@ export class WindowsAgent {
     const output = payload.output ?? "Action completed.";
     if (action.command !== "screenshot") return { output };
     return this.readScreenshot(output);
+  }
+
+  /**
+   * Convert an action's coordinates from picture pixels into screen pixels.
+   *
+   * The model points at what it can see; only this process knows how much the
+   * picture was shrunk to keep it affordable. Doing the conversion here is the
+   * whole reason the model never has to multiply anything, which is where clicks
+   * used to go astray.
+   */
+  private toScreenCoordinates(action: Record<string, unknown>): Record<string, unknown> {
+    const scale = this.captureScale;
+    if (!Number.isFinite(scale) || scale === 1) return action;
+    const scaled: Record<string, unknown> = { ...action };
+    for (const key of ["x", "y", "toX", "toY"]) {
+      const value = scaled[key];
+      if (typeof value === "number") scaled[key] = Math.round(value * scale);
+    }
+    return scaled;
   }
 
   /**
@@ -367,19 +393,18 @@ export class WindowsAgent {
       const MAX_WIDTH = 1400;
       const shown = width > MAX_WIDTH ? image.resize({ width: MAX_WIDTH, quality: "good" }) : image;
       const size = shown.getSize();
+      // Remember how much this capture was shrunk. Every coordinate the model
+      // sends next is in the picture's own pixels and gets scaled back up here.
+      this.captureScale = size.width > 0 ? width / size.width : 1;
       return {
-        // The real captured size travels with the picture: the model must give
-        // coordinates in REAL screen pixels, and the approval popup needs the
-        // same ratio to draw its marker in the right spot on the scaled image.
-        screenWidth: width,
-        screenHeight: height,
-        // Tell the model the scale it is looking at. Coordinates must be in REAL
-        // screen pixels, so a downscaled picture would otherwise send every click
-        // to the wrong place.
+        imageWidth: size.width,
+        imageHeight: size.height,
+        // No arithmetic is asked of the model: it reads a position off the image
+        // it can see, and this process converts. Telling it to multiply by a
+        // scale factor instead was the single biggest source of misplaced clicks.
         output:
-          `Screenshot of the window. The picture is ${size.width}x${size.height} pixels and the real screen area is ` +
-          `${width}x${height} pixels. To click something, multiply its position in the picture by ` +
-          `${(width / size.width).toFixed(3)} to get the real screen coordinate.`,
+          `Screenshot, ${size.width} by ${size.height} pixels. Give click coordinates as positions in THIS ` +
+          `picture, measured from its top left corner. They are converted for you.`,
         imageBase64: shown.toJPEG(72).toString("base64")
       };
     } catch {

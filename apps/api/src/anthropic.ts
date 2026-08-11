@@ -84,9 +84,9 @@ Never delete data, send a message, publish content, or submit a consequential fo
 Use element references from the latest accessibility snapshot. Do not invent references. For desktop apps, the windows_action inspect command lists interactable controls as numbered lines like 12 Button "Save"; reference a control by its number in the control field. inspect labels every button by the words shown on it, including custom buttons in older business apps, so to press a button the user named (for example "Exit Accounts Suite"), inspect the connected window and click the numbered line whose label matches. After a click changes the screen, inspect again before the next click.
 
 WORKING BY EYE. Some Windows apps publish no usable controls at all: older business software, anything that paints its own interface, and most grids. inspect returns nothing helpful for those, and clicking by control number is impossible. When that happens, switch to working from the screen exactly as the person would:
-1. Take a screenshot. You are shown the real picture of the window, with its size in pixels.
-2. Read the picture and decide where to click, using coordinates from that picture.
-3. Act with click-at, double-click-at, right-click-at, drag or scroll-at, giving x and y.
+1. Take a screenshot. You are shown the picture and told its size in pixels.
+2. Read the picture and decide where to click.
+3. Act with click-at, double-click-at, right-click-at, drag or scroll-at, giving x and y AS POSITIONS IN THAT PICTURE, measured from its top left corner. Never scale, convert, or adjust them: WorkCrew does that for you. Aim at the middle of the thing you want.
 4. Take another screenshot to confirm what changed before the next step.
 Prefer named controls whenever inspect does list them: they are exact and cost far less than a picture. Only fall back to the screen when inspect gives you nothing usable, or when the same control click has already failed twice. Never guess a coordinate you have not seen in a screenshot from THIS run, and never re-use coordinates from an earlier screen: after any click, menu or dialog, the layout has moved, so screenshot again. To type into a field you found by eye, click it first, then use type-text. Only the newest screenshot is kept; earlier ones are replaced by a note, so work from the latest one.
 To enter a value into a specific spreadsheet cell (for example in Excel): select the cell, type the value, then confirm. To select a cell, first inspect to list the controls and find the cell-reference box (often a ComboBox or Edit near the top left, the Name Box); click it by its number, use type-text to enter the cell reference like B1, then press-key with value "enter". If no such box is listed, just type into the currently selected cell. Then use type-text to type the value and press-key "enter" to confirm. Use type-text for literal text into the focused cell or field, press-key for enter/tab/arrow keys, and type-keys or set-text only when you must target a specific numbered control.
@@ -131,10 +131,10 @@ const TOOLS = [
         windowTitle: { type: "string" },
         control: { type: "string" },
         value: { type: "string", description: "Text to type, or for key-combo one of: ctrl+s, ctrl+o, ctrl+p, ctrl+n, ctrl+c, ctrl+x, ctrl+v, ctrl+z, ctrl+y, ctrl+a, ctrl+f, ctrl+home, ctrl+end, alt+f4, shift+tab, f2, f3, f5, f9, f10, f11, f12." },
-        x: { type: "integer", description: "Screen x for click-at, double-click-at, right-click-at and scroll-at, or the START x of a drag. Read it off the latest screenshot." },
-        y: { type: "integer", description: "Screen y for the same commands, or the START y of a drag." },
-        toX: { type: "integer", description: "Screen x where a drag ends." },
-        toY: { type: "integer", description: "Screen y where a drag ends." },
+        x: { type: "integer", description: "Horizontal position IN THE LATEST SCREENSHOT, measured in that picture's own pixels from its left edge. Used by click-at, double-click-at, right-click-at and scroll-at, and as the start of a drag. Do not convert or scale it." },
+        y: { type: "integer", description: "Vertical position in the latest screenshot, in that picture's own pixels from its top edge." },
+        toX: { type: "integer", description: "Horizontal position in the latest screenshot where a drag ends." },
+        toY: { type: "integer", description: "Vertical position in the latest screenshot where a drag ends." },
         scrollAmount: { type: "integer", description: "Wheel notches for scroll-at: positive scrolls up, negative scrolls down. Three is about one comfortable scroll." }
       }
     }
