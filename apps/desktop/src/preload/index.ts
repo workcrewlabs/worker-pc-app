@@ -21,6 +21,11 @@ import type { AnalyticsEvent, AnalyticsProps } from "../shared/analytics-events"
 // A file the user picked locally, before it is uploaded.
 type PickedFile = { path: string; name: string; size: number };
 
+// What running one automation action gives back. A desktop screenshot adds the
+// picture and the real captured size, so the planner can be shown the screen and
+// the approval popup can mark the exact spot a click will land.
+type ExecuteResult = { output: string; imageBase64?: string; screenWidth?: number; screenHeight?: number };
+
 // What the renderer passes to chat.send. The request id is generated here and
 // returned so the caller can correlate streamed frames and issue a stop.
 type ChatSendPayload = {
@@ -116,7 +121,7 @@ const workcrew = {
     changePlan: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState | { opened: boolean }> => ipcRenderer.invoke("api:change-plan", { plan, interval }),
     portal: () => ipcRenderer.invoke("api:portal"),
     createRun: (task: string, model: ModelTier): Promise<{ runId: string }> => ipcRenderer.invoke("api:create-run", { task, model }),
-    nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string }): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result })
+    nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string; imageBase64?: string }): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result })
   },
   chat: {
     // Start a streamed chat turn. A request id is generated here so the caller
@@ -145,12 +150,15 @@ const workcrew = {
   automation: {
     // cwd is the conversation's working folder (when the user added one), so a
     // shell command runs inside their folder instead of the hidden workspace.
-    execute: (action: AutomationAction, cwd?: string): Promise<string> => {
-      if (action.kind === "browser") return ipcRenderer.invoke("automation:browser", action);
-      if (action.kind === "windows") return ipcRenderer.invoke("automation:windows", action);
-      if (action.kind === "shell") return ipcRenderer.invoke("shell:run", { command: action.command, cwd });
-      if (action.kind === "write_file") return ipcRenderer.invoke("file:write", { path: action.path, content: action.content, cwd });
-      return Promise.resolve(action.summary);
+    // Resolves to the action's text output plus, for a desktop screenshot, the
+    // picture itself as base64 JPEG, so the planner can be shown what is on
+    // screen in an app that publishes no named controls.
+    execute: async (action: AutomationAction, cwd?: string): Promise<ExecuteResult> => {
+      if (action.kind === "browser") return { output: await ipcRenderer.invoke("automation:browser", action) as string };
+      if (action.kind === "windows") return await ipcRenderer.invoke("automation:windows", action) as ExecuteResult;
+      if (action.kind === "shell") return { output: await ipcRenderer.invoke("shell:run", { command: action.command, cwd }) as string };
+      if (action.kind === "write_file") return { output: await ipcRenderer.invoke("file:write", { path: action.path, content: action.content, cwd }) as string };
+      return { output: action.summary };
     },
     launchBrowser: (): Promise<{ launched: boolean; message: string }> => ipcRenderer.invoke("automation:launch-browser"),
     stop: () => ipcRenderer.invoke("automation:stop"),

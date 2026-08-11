@@ -693,5 +693,50 @@ class KeyboardCaptureTests(unittest.TestCase):
         self.assertEqual(rec._events[-1]["text"], "1")
 
 
+class ScreenInputValidation(unittest.TestCase):
+    """Screen-level input is the fallback for apps that name none of their
+    controls, so it takes raw coordinates instead of a control. That makes the
+    validation the only thing standing between a planner's arithmetic slip and a
+    click somewhere unintended, and it runs in a separate process that must not
+    trust its caller."""
+
+    def test_accepts_a_real_point(self):
+        self.assertEqual(agent.require_point({"x": 120, "y": 340}), (120, 340))
+
+    def test_accepts_a_second_monitor_to_the_left(self):
+        # A display left of the primary one gives genuinely negative coordinates.
+        self.assertEqual(agent.require_point({"x": -900, "y": 200}), (-900, 200))
+
+    def test_rejects_missing_or_non_numeric_coordinates(self):
+        for bad in ({}, {"x": 10}, {"y": 10}, {"x": "10", "y": 10}, {"x": 1.5, "y": 2}, {"x": None, "y": 0}):
+            with self.assertRaises(ValueError):
+                agent.require_point(bad)
+
+    def test_rejects_booleans_that_python_would_treat_as_numbers(self):
+        # True is an int in Python, so a sloppy check would click at (1, 1).
+        with self.assertRaises(ValueError):
+            agent.require_point({"x": True, "y": 4})
+
+    def test_rejects_coordinates_far_off_screen(self):
+        with self.assertRaises(ValueError):
+            agent.require_point({"x": 99999, "y": 0})
+
+    def test_reads_a_drag_endpoint_from_its_own_keys(self):
+        action = {"x": 1, "y": 2, "toX": 30, "toY": 40}
+        self.assertEqual(agent.require_point(action), (1, 2))
+        self.assertEqual(agent.require_point(action, "toX", "toY"), (30, 40))
+
+    def test_screen_commands_are_allowed(self):
+        for command in ("click-at", "double-click-at", "right-click-at", "drag", "scroll-at", "key-combo"):
+            self.assertIn(command, agent.ALLOWED_COMMANDS)
+
+    def test_key_combos_are_an_allowlist(self):
+        # A free-form chord string would let a planner reach Windows itself, so
+        # only named combinations exist and anything else is refused.
+        self.assertIn("ctrl+s", agent.SAFE_COMBOS)
+        for forbidden in ("ctrl+alt+delete", "win+r", "ctrl+shift+esc", "alt+tab"):
+            self.assertNotIn(forbidden, agent.SAFE_COMBOS)
+
+
 if __name__ == "__main__":
     unittest.main()

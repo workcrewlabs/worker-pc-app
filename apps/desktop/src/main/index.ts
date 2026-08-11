@@ -810,7 +810,9 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));
-  ipcMain.handle("automation:windows", (_event, action) => windowsAgent.execute(action));
+  // Returns { output, imageBase64? }: a screenshot comes back as the picture
+  // itself so the planner can see a window that names none of its controls.
+  ipcMain.handle("automation:windows", (_event, action) => windowsAgent.executeWithImage(action));
   // Voice input: transcribe 16 kHz mono PCM samples sent from the renderer.
   ipcMain.handle("dictation:transcribe", (_event, buffer: unknown) => {
     // Validate and cap the audio before allocating. Without this, a renderer

@@ -29,6 +29,10 @@ function stepId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+// A capture of the screen plus the real size it was taken at, so a point in
+// the downscaled picture maps back to a real screen coordinate.
+export type ScreenCapture = { data: string; screenWidth: number; screenHeight: number };
+
 export type AutomationRunner = {
   steps: RunStep[];
   status: RunStatus;
@@ -36,7 +40,9 @@ export type AutomationRunner = {
   error: string;
   running: boolean;
   label: string;
-  pending: { action: AutomationAction; label: string } | null;
+  // screenshot is the newest capture of the screen, and point the spot about to
+  // be clicked, so a screen-level approval can show WHERE rather than a number.
+  pending: { action: AutomationAction; label: string; screenshot?: ScreenCapture; point?: { x: number; y: number } } | null;
   // workingFolder, when set, is the absolute path of the user's chosen folder; any
   // shell command in this run executes inside it instead of the hidden workspace.
   run: (task: string, model: ModelTier, label?: string, workingFolder?: string) => Promise<void>;
@@ -63,7 +69,7 @@ export function useAutomationRunner(): AutomationRunner {
   const [summary, setSummary] = useState("");
   const [error, setError] = useState("");
   const [label, setLabel] = useState("");
-  const [pending, setPending] = useState<{ action: AutomationAction; label: string } | null>(null);
+  const [pending, setPending] = useState<{ action: AutomationAction; label: string; screenshot?: ScreenCapture; point?: { x: number; y: number } } | null>(null);
   // A paused run is one whose conversation is no longer on screen. The loop parks
   // between steps until resumed, so the mouse is never driven for a background chat.
   const [paused, setPaused] = useState(false);
@@ -174,10 +180,24 @@ export function useAutomationRunner(): AutomationRunner {
     release?.();
   }
 
-  function requestApproval(action: AutomationAction): Promise<boolean> {
+  function requestApproval(
+    action: AutomationAction,
+    screenshot?: { data: string; screenWidth: number; screenHeight: number } | null
+  ): Promise<boolean> {
     return new Promise((resolve) => {
       approvalResolve.current = resolve;
-      setPending({ action, label: actionLabel(action) });
+      // A coordinate means nothing to a person, so when the action targets a
+      // screen point, hand the popup the latest screenshot and that point and let
+      // it show the user exactly what is about to be clicked.
+      const point =
+        action.kind === "windows" && typeof action.x === "number" && typeof action.y === "number"
+          ? { x: action.x, y: action.y }
+          : undefined;
+      setPending({
+        action,
+        label: actionLabel(action),
+        ...(point && screenshot ? { screenshot, point } : {})
+      });
     });
   }
 
@@ -315,11 +335,14 @@ export function useAutomationRunner(): AutomationRunner {
     // reference into a stable name at record time.
     const recorded: { action: AutomationAction; snapshot: string | null; ok: boolean }[] = [];
     let lastSnapshot: string | null = null;
+    // The newest screenshot taken during this run, shown in the approval popup
+    // when the next action targets a bare screen coordinate.
+    let lastScreenshot: { data: string; screenWidth: number; screenHeight: number } | null = null;
     let finishSummary = "Task complete.";
 
     try {
       const { runId } = await window.workcrew.api.createRun(trimmed, model);
-      let result: { toolUseId: string; ok: boolean; output: string } | undefined;
+      let result: { toolUseId: string; ok: boolean; output: string; imageBase64?: string } | undefined;
 
       for (let step = 0; step < MAX_STEPS; step += 1) {
         // Park here if the conversation left the screen; resume picks up the same
@@ -356,7 +379,7 @@ export function useAutomationRunner(): AutomationRunner {
         // writes use the in-app approval based on Always allow and the per-category
         // Permissions toggles.
         if (shouldPrompt(action, lastSnapshot)) {
-          const approved = await requestApproval(action);
+          const approved = await requestApproval(action, lastScreenshot);
           if (!approved) {
             recordEntry.ok = false;
             setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "declined" } : item)));
@@ -367,9 +390,23 @@ export function useAutomationRunner(): AutomationRunner {
 
         try {
           showOverlayFor(action);
-          const output = await window.workcrew.automation.execute(action, workingFolderRef.current);
+          const executed = await window.workcrew.automation.execute(action, workingFolderRef.current);
+          const output = executed.output;
           setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
-          result = { toolUseId: response.toolUseId, ok: true, output: redactResult(output) };
+          // A screenshot travels back as the picture itself, so the planner can
+          // see an app that publishes no named controls. Everything else is text.
+          result = {
+            toolUseId: response.toolUseId,
+            ok: true,
+            output: redactResult(output),
+            ...(executed.imageBase64 ? { imageBase64: executed.imageBase64 } : {})
+          };
+          // Keep the newest screenshot so the approval popup for the next screen
+          // click can show the user WHERE it is about to click, rather than a
+          // pair of numbers they cannot judge.
+          if (executed.imageBase64 && executed.screenWidth && executed.screenHeight) {
+            lastScreenshot = { data: executed.imageBase64, screenWidth: executed.screenWidth, screenHeight: executed.screenHeight };
+          }
           // Remember the latest snapshot so a following click can be resolved to
           // a stable name (recipe recording) and to its real label (approval
           // gate). Windows inspect lists controls; every browser command returns

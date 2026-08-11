@@ -425,6 +425,8 @@ export function ConversationPane({
         <ApprovalModal
           action={runner.pending.action}
           label={runner.pending.label}
+          screenshot={runner.pending.screenshot}
+          point={runner.pending.point}
           onDecide={runner.decide}
           onAllowAlways={() => {
             onAlwaysAllowChange(true);

@@ -820,6 +820,20 @@ select option:checked { background-color: var(--panel-2); }
 .modal-action { padding: 14px; border: 1px solid var(--line-3); border-radius: 11px; background: var(--field); }
 .modal-action strong { display: block; font-size: 13px; }
 .modal-action code { display: block; margin-top: 8px; color: var(--text-mid); font: 11px/1.5 Consolas, monospace; overflow-wrap: anywhere; }
+/* The screenshot shown when approving a click aimed at a bare screen coordinate.
+   A ring marks the exact spot, because a pair of numbers is not something anyone
+   can meaningfully agree to. The image is capped in height so a tall screen does
+   not push the Allow and Decline buttons out of reach. */
+.approval-shot { margin: 12px 0 0; }
+/* The marker is placed as a percentage of THIS box, so it must wrap the image and
+   nothing else, and the image must fill it exactly. Any letterboxing (object-fit)
+   or extra content here would put the ring somewhere other than the pixel that is
+   about to be clicked, which would make the approval misleading. */
+.approval-shot-frame { position: relative; display: block; }
+.approval-shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.approval-shot-target { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border: 2px solid var(--danger); border-radius: 50%; box-shadow: 0 0 0 2px rgba(0,0,0,.35), 0 0 10px rgba(255,121,121,.65); pointer-events: none; }
+.approval-shot figcaption { margin-top: 7px; color: var(--muted); font-size: 11px; }
+
 /* The crash screen shown by the error boundary in place of an empty window. It
    reuses the loading shell's centered layout, so it never depends on the part of
    the app that just failed. */
