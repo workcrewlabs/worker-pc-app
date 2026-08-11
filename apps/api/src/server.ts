@@ -702,9 +702,14 @@ const mpgsCheckoutSchema = z.object({
   interval: z.enum(["month", "year"])
 }).strict();
 
-const mpgsOrderQuerySchema = z.object({
+// The gateway appends its OWN parameters to the return URL (resultIndicator,
+// sessionVersion, checkoutVersion and friends), and they vary by gateway version.
+// So this reads the one parameter we put there and ignores the rest: a strict
+// schema here rejected a perfectly good return and showed the payer an error
+// immediately after their money had been taken.
+export const mpgsOrderQuerySchema = z.object({
   order: z.string().min(1).max(200)
-}).strict();
+}).passthrough();
 
 app.post("/v1/billing/mpgs/checkout", routeLimit(10), async (request) => {
   const userId = await authenticate(request);
