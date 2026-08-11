@@ -669,7 +669,18 @@ app.post("/v1/billing/mpgs/checkout", routeLimit(10), async (request) => {
     });
   }
   const body = mpgsCheckoutSchema.parse(request.body);
-  const { orderId } = await startCheckout({ userId, plan: body.plan, interval: body.interval });
+  let orderId: string;
+  try {
+    ({ orderId } = await startCheckout({ userId, plan: body.plan, interval: body.interval }));
+  } catch (error) {
+    // Log the gateway's status alongside the failure so the cause is in the
+    // server log too, not only on the operator's screen.
+    request.log.warn(
+      { event: "mpgs_session_failed", userId, gatewayStatus: (error as { gatewayStatus?: number }).gatewayStatus },
+      "card checkout session failed"
+    );
+    throw error;
+  }
   request.log.info({ event: "mpgs_checkout_started", userId, orderId }, "card checkout started");
   // The payer is sent to a page on this backend, which hands over to the bank's
   // own hosted form. The session id is never useful to anyone else.
