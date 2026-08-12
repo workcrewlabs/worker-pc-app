@@ -1,4 +1,4 @@
-import type { AttachmentRef, AutomationAction, BillingInterval, ChatDeltaFrame, ModelTier, PlanId, RecordedEvent, SubscriptionState } from "@workcrew/contracts";
+import type { AttachmentRef, AutomationAction, BillingInterval, ChatDeltaFrame, ModelTier, PlanId, RecordedEvent, RunKind, SubscriptionState } from "@workcrew/contracts";
 import type { WorkCrewBridge } from "../../../preload/index";
 import { generateExport } from "../../../main/file-export.js";
 import type { SaveFileRequest, SaveFileResult } from "../../../shared/export-formats.js";
@@ -305,7 +305,8 @@ export function createWebBridge(): WorkCrewBridge {
         window.open(result.url, "_blank");
         return { opened: true };
       },
-      createRun: (task: string, model: ModelTier) => apiRequest<{ runId: string }>("/v1/runs", { body: { task, model } }),
+      createRun: (task: string, model: ModelTier, kind: RunKind = "screen") =>
+        apiRequest<{ runId: string }>("/v1/runs", { body: { task, model, kind } }),
       nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string }) =>
         apiRequest(`/v1/runs/${runId}/next`, { body: { result } })
     },

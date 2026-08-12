@@ -18,6 +18,7 @@ import {
   summarizeRecordingRequestSchema,
   type ConversationSummary,
   type ReferralInfo,
+  type RunKind,
   type RunStepResponse,
   type SubscriptionState
 } from "@workcrew/contracts";
@@ -114,11 +115,23 @@ import {
 const APP_VERSION = "0.1.7";
 
 /**
- * Maximum number of model planning steps a single run may consume. The desktop
- * client caps its own loop at 24, but a malicious or buggy client could bypass
- * that, so the server enforces the same ceiling authoritatively.
+ * Maximum number of model planning steps a single run may consume, by what the
+ * run is doing. A client caps its own loop, but a malicious or buggy one could
+ * bypass that, so the server enforces the ceiling authoritatively.
+ *
+ * Screen work keeps the original limit: it drives the mouse and keyboard over
+ * whatever is in front of the user, so a loop that will not stop does real damage
+ * and 24 steps is already a lot of clicking.
+ *
+ * Work inside an attached folder is a different job with different risks. Reading
+ * a dozen files, writing several, running the tests, reading the failures and
+ * fixing them is ordinary work that a person would take a hundred small steps
+ * over, and every command in it is still approved and still confined to that
+ * folder. Cutting it off at 24 stopped real tasks halfway, which leaves a
+ * half-finished edit: worse than either finishing or never starting. The guards
+ * that matter here are the repeat detector and the token budget, and both stay.
  */
-const MAX_RUN_STEPS = 24;
+export const MAX_RUN_STEPS: Record<RunKind, number> = { screen: 24, folder: 120 };
 
 /**
  * Trim screenshot history to the newest few, exactly as the reference
@@ -1021,6 +1034,7 @@ app.post("/v1/runs", routeLimit(30), async (request) => {
     id,
     userId,
     model: body.model,
+    kind: body.kind,
     status: "ready",
     messages: [{ role: "user", content: body.task }],
     pendingToolUseId: null,
@@ -1083,13 +1097,14 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
 
   // Enforce the server side step ceiling before spending any budget. This is
   // authoritative even when a client ignores its own limit.
-  if (run.stepCount >= MAX_RUN_STEPS) {
+  const stepCeiling = MAX_RUN_STEPS[run.kind];
+  if (run.stepCount >= stepCeiling) {
     run.status = "failed";
     await updateRun(run);
     return {
       runId: run.id,
       status: "failed",
-      message: `This run stopped after reaching the safety limit of ${MAX_RUN_STEPS} steps.`
+      message: `This run stopped after reaching the safety limit of ${stepCeiling} steps.`
     };
   }
   run.stepCount += 1;
