@@ -411,6 +411,10 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   const [upgradeError, setUpgradeError] = useState("");
   const isUltra = entitlement.plan === "ultra";
   const [view, setView] = useState<PanelView>("chat");
+  // Narrow windows (the app snapped to half a screen) turn the sidebar into a
+  // drawer over the chat. On a wide window this flag does nothing: the CSS keeps
+  // the sidebar in the layout and hides the button that sets it.
+  const [navOpen, setNavOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [recorderOpen, setRecorderOpen] = useState(false);
@@ -551,6 +555,15 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
     void refreshRecents();
   }, []);
 
+  // Escape closes the sidebar drawer, the same way it closes every other
+  // temporary layer in the app.
+  useEffect(() => {
+    if (!navOpen) return;
+    const onKey = (event: KeyboardEvent): void => { if (event.key === "Escape") setNavOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navOpen]);
+
   // Close the open Recents menu on any outside click or Escape.
   useEffect(() => {
     if (!recentMenuId) return;
@@ -636,7 +649,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
         key={item.id}
         className={`recent-item${item.id === activeConversationId ? " recent-active" : ""}${running ? " is-running" : ""}${paused ? " is-paused" : ""}${unread ? " is-unread" : ""}${recentMenuId === item.id ? " recent-menu-open" : ""}`}
       >
-        <button className="recent-open" onClick={() => void openConversation(item.id)} title={item.title}>
+        <button className="recent-open" onClick={() => { setNavOpen(false); void openConversation(item.id); }} title={item.title}>
           {item.pinnedAtMs != null && (
             <svg className="recent-pin" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
               <path fill="currentColor" d="M9 4V2h6v2h-1v6l2 2v2h-4v6l-1 1-1-1v-6H6v-2l2-2V4z" />
@@ -685,6 +698,9 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   }, []);
 
   function startNewChat() {
+    // Picking something in the drawer should reveal the result, not leave the
+    // menu covering it. Harmless on a wide window, where the flag is unused.
+    setNavOpen(false);
     // Reuse an open blank pane if one exists; otherwise add a fresh pane and prune
     // any abandoned empty ones. Existing panes keep running in the background.
     const blank = panes.find((pane) => {
@@ -769,7 +785,10 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   const updateText = updateReady ? "Restart to update" : `Downloading update ${update?.percent ?? 0}%`;
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${navOpen ? " nav-open" : ""}`}>
+      {/* Only reachable when the window is narrow enough for the sidebar to be a
+          drawer; on a wide window the CSS keeps it out of the way entirely. */}
+      <button className="nav-scrim" aria-label="Close the menu" tabIndex={-1} onClick={() => setNavOpen(false)} />
       <aside className="sidebar">
         <div className="sidebar-brand-row">
           <Brand compact />
@@ -790,21 +809,21 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
           <button
             className={view === "routines" ? "nav-active" : ""}
             aria-current={view === "routines" ? "page" : undefined}
-            onClick={() => { setRoutineSeed(""); setView("routines"); }}
+            onClick={() => { setNavOpen(false); setRoutineSeed(""); setView("routines"); }}
           >
             <span className="nav-icon"><BoltIcon /></span> Routines
           </button>
           <button
             className={view === "permissions" ? "nav-active" : ""}
             aria-current={view === "permissions" ? "page" : undefined}
-            onClick={() => setView("permissions")}
+            onClick={() => { setNavOpen(false); setView("permissions"); }}
           >
             <span className="nav-icon"><LockIcon /></span> Permissions
           </button>
           <button
             className={view === "settings" ? "nav-active" : ""}
             aria-current={view === "settings" ? "page" : undefined}
-            onClick={() => setView("settings")}
+            onClick={() => { setNavOpen(false); setView("settings"); }}
           >
             <span className="nav-icon"><GearIcon /></span> Settings
           </button>
@@ -843,7 +862,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
             </span>
           </button>
         )}
-        <button className="invite-button" onClick={() => setInviteOpen(true)} aria-label="Invite a friend and earn tokens">
+        <button className="invite-button" onClick={() => { setNavOpen(false); setInviteOpen(true); }} aria-label="Invite a friend and earn tokens">
           <span className="invite-gift" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="20 12 20 22 4 22 4 12" />
@@ -867,7 +886,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
             <span>{updateText}</span>
           </button>
         )}
-        <button className="account-button" onClick={() => setAccountOpen(true)} aria-label="Open account">
+        <button className="account-button" onClick={() => { setNavOpen(false); setAccountOpen(true); }} aria-label="Open account">
           <span className="avatar">{(userName?.trim()?.[0] ?? "A").toUpperCase()}</span>
           <span><strong>{userName?.trim() || "Account"}</strong><small>{planLabel}</small></span>
           <span className="signout">View</span>
@@ -875,6 +894,18 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
       </aside>
       <section className="workspace">
         <header className="workspace-header">
+          <button
+            className="nav-toggle"
+            onClick={() => setNavOpen((open) => !open)}
+            aria-label={navOpen ? "Close the menu" : "Open the menu"}
+            aria-expanded={navOpen}
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="4" y1="7" x2="20" y2="7" />
+              <line x1="4" y1="12" x2="20" y2="12" />
+              <line x1="4" y1="17" x2="20" y2="17" />
+            </svg>
+          </button>
           <h1 className="workspace-title" title={chatTitle}>{chatTitle}</h1>
           <div className="header-right">
             {entitlement.plan === "free" ? (

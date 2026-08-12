@@ -22,7 +22,15 @@ import { z } from "zod";
 import { ApiClient } from "./api-client.js";
 import { AuthVault } from "./auth-vault.js";
 import { BrowserCli } from "./browser-cli.js";
-import { getAnalyticsOptOut, getBackendUrl, setAnalyticsOptOut, setBackendUrl } from "./settings.js";
+import {
+  getAnalyticsOptOut,
+  getBackendUrl,
+  getWindowBounds,
+  setAnalyticsOptOut,
+  setBackendUrl,
+  setWindowBounds
+} from "./settings.js";
+import { chooseStartingBounds, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from "./window-bounds.js";
 import { capture as analyticsCapture, deviceId as analyticsDeviceId, identify as analyticsIdentify } from "./analytics.js";
 import { ANALYTICS_EVENTS } from "../shared/analytics-events.js";
 import { transcribeSamples } from "./transcription.js";
@@ -250,13 +258,19 @@ function createWindow(): void {
   // A development (unpackaged) run is labelled "Dev WorkCrew" so it is obvious at
   // a glance which window is the local build versus the installed public app.
   const windowTitle = app.isPackaged ? APP_NAME : `Dev ${APP_NAME}`;
+  const startAt = chooseStartingBounds(
+    getWindowBounds(),
+    screen.getAllDisplays().map((display) => display.workArea),
+    screen.getPrimaryDisplay().workAreaSize
+  );
   mainWindow = new BrowserWindow({
     title: windowTitle,
     icon: join(__dirname, "../../resources/icon.ico"),
-    width: 1_440,
-    height: 920,
-    minWidth: 1_040,
-    minHeight: 700,
+    ...(startAt.x !== undefined && startAt.y !== undefined ? { x: startAt.x, y: startAt.y } : {}),
+    width: startAt.width,
+    height: startAt.height,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     show: false,
     backgroundColor: "#1F1E1D",
     autoHideMenuBar: true,
@@ -305,7 +319,37 @@ function createWindow(): void {
       Menu.buildFromTemplate(template).popup({ window: mainWindow });
     }
   });
-  mainWindow.once("ready-to-show", () => mainWindow?.show());
+  mainWindow.once("ready-to-show", () => {
+    if (startAt.maximized) mainWindow?.maximize();
+    mainWindow?.show();
+  });
+
+  // Remember the size the user chose. Resizing fires continuously while the
+  // mouse is down, so the write is delayed until the drag settles rather than
+  // rewriting settings.json on every frame. getNormalBounds is deliberate: while
+  // maximized it reports the restored size, so un-maximizing later gives back
+  // the window the user actually sized, not the full screen.
+  let saveTimer: NodeJS.Timeout | null = null;
+  const rememberBounds = (): void => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) return;
+    const { x, y, width, height } = mainWindow.getNormalBounds();
+    setWindowBounds({ x, y, width, height, maximized: mainWindow.isMaximized() });
+  };
+  const rememberBoundsSoon = (): void => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(rememberBounds, 400);
+  };
+  mainWindow.on("resize", rememberBoundsSoon);
+  mainWindow.on("move", rememberBoundsSoon);
+  mainWindow.on("maximize", rememberBoundsSoon);
+  mainWindow.on("unmaximize", rememberBoundsSoon);
+  // Write the final size synchronously on close: the delayed save above may not
+  // have fired yet, and after "closed" the window is gone and cannot be measured.
+  mainWindow.on("close", () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    rememberBounds();
+  });
+
   // Destroy the overlay when the main window closes. It is a separate top-level
   // window, so leaving it alive would stop "window-all-closed" from firing and the
   // app would never quit on Windows/Linux.
