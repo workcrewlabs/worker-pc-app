@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { AutomationAction, ModelTier } from "@workcrew/contracts";
+import type { AutomationAction, ModelTier, RunKind } from "@workcrew/contracts";
 import { actionDetail, actionLabel } from "../lib/automation";
 import { redactResult, requiresApproval } from "../security";
 import { addHistory } from "../lib/storage";
@@ -12,7 +12,13 @@ import { browserRefLabel, buildRecipe, getRecipe, isReplayEnabled, normalizeTask
 // or hits the safety ceiling. A single instance is shared by the Automation
 // panel and the routine scheduler so only one task ever runs at once.
 
-const MAX_STEPS = 24;
+// How many planning steps a run may take, by what it is doing. Driving the
+// screen keeps the short ceiling: a loop that will not stop is clicking on the
+// user's own desktop. Work inside a folder they attached is ordinary engineering
+// (read a dozen files, write several, run the tests, fix what failed) which
+// genuinely takes that many small steps, and stopping partway leaves a
+// half-finished edit. The backend enforces the same two numbers.
+const MAX_STEPS: Record<RunKind, number> = { screen: 24, folder: 120 };
 
 // Windows commands that do NOT move the mouse or type (read-only or app launch).
 // The overlay is raised for every OTHER windows command, so a future command that
@@ -339,10 +345,11 @@ export function useAutomationRunner(): AutomationRunner {
     let finishSummary = "Task complete.";
 
     try {
-      const { runId } = await window.workcrew.api.createRun(trimmed, model);
+      const kind: RunKind = workingFolder ? "folder" : "screen";
+      const { runId } = await window.workcrew.api.createRun(trimmed, model, kind);
       let result: { toolUseId: string; ok: boolean; output: string; imageBase64?: string } | undefined;
 
-      for (let step = 0; step < MAX_STEPS; step += 1) {
+      for (let step = 0; step < MAX_STEPS[kind]; step += 1) {
         // Park here if the conversation left the screen; resume picks up the same
         // run (the backend run id is still valid, so no work is lost).
         await waitIfPaused();

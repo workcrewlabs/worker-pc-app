@@ -287,9 +287,25 @@ export const createCheckoutSchema = z.object({
   interval: billingIntervalSchema
 }).strict();
 
+/**
+ * What kind of work a run is, which decides how many steps it is allowed.
+ *
+ * "screen" drives the mouse and keyboard over whatever is in front of the user,
+ * where a loop that will not stop is genuinely dangerous and a short ceiling is
+ * the right guard. "folder" is work inside one folder the user attached: reading
+ * files, writing them, running builds and tests. That is the same work a person
+ * would take a hundred small steps over, every command is still approved, and
+ * stopping it partway through leaves a half-finished edit, which is worse than
+ * letting it finish.
+ */
+export const runKindSchema = z.enum(["screen", "folder"]);
+export type RunKind = z.infer<typeof runKindSchema>;
+
 export const createRunSchema = z.object({
   task: z.string().trim().min(3).max(20_000),
-  model: modelTierSchema.default("auto")
+  model: modelTierSchema.default("auto"),
+  // Older desktop builds do not send this, and a run they start is screen work.
+  kind: runKindSchema.default("screen")
 }).strict();
 
 export const runToolResultSchema = z.object({

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import type { BillingInterval, ModelMode, ModelTier, PlanId } from "@workcrew/contracts";
+import type { BillingInterval, ModelMode, ModelTier, PlanId, RunKind } from "@workcrew/contracts";
 import { createDatabaseClient, type DatabaseClient } from "./database/driver.js";
 
 // Referral codes use an unambiguous uppercase alphabet (no O/0, I/1, L) so a
@@ -50,6 +50,8 @@ export type RunRow = {
   id: string;
   userId: string;
   model: ModelTier;
+  /** Screen work, or work inside a folder the user attached. Sets the step ceiling. */
+  kind: RunKind;
   status: string;
   messages: unknown[];
   pendingToolUseId: string | null;
@@ -139,6 +141,7 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       model TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'screen',
       status TEXT NOT NULL,
       messages_json TEXT NOT NULL,
       pending_tool_use_id TEXT,
@@ -314,6 +317,7 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   // has no ADD COLUMN IF NOT EXISTS, so each ALTER is attempted and a duplicate
   // column error is treated as already migrated. workcrew.db is gitignored and
   // rebuilt by this function, so this only matters for long lived local files.
+  await addColumnIfMissing(db, "runs", "kind", "TEXT NOT NULL DEFAULT 'screen'");
   await addColumnIfMissing(db, "runs", "step_count", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "runs", "last_action_signature", "TEXT");
   await addColumnIfMissing(db, "runs", "repeat_count", "INTEGER NOT NULL DEFAULT 0");
@@ -649,16 +653,17 @@ export async function recordStripeEvent(eventId: string, eventType: string): Pro
 export async function createRun(run: RunRow): Promise<void> {
   await client.execute({
     sql: `INSERT INTO runs(
-        id, user_id, model, status, messages_json, pending_tool_use_id,
+        id, user_id, model, kind, status, messages_json, pending_tool_use_id,
         step_count, last_action_signature, repeat_count, escalated,
         tokens_input, tokens_cache_read, tokens_cache_write, tokens_output,
         created_at_ms, updated_at_ms
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       run.id,
       run.userId,
       run.model,
+      run.kind,
       run.status,
       JSON.stringify(run.messages),
       run.pendingToolUseId,
@@ -687,6 +692,9 @@ export async function getRun(runId: string, userId: string): Promise<RunRow | nu
     id: String(row.id),
     userId: String(row.user_id),
     model: String(row.model) as ModelTier,
+    // Rows written before this column existed are screen work, which is also
+    // what the column defaults to.
+    kind: row.kind === "folder" ? "folder" : "screen",
     status: String(row.status),
     messages: JSON.parse(String(row.messages_json)) as unknown[],
     pendingToolUseId: row.pending_tool_use_id ? String(row.pending_tool_use_id) : null,

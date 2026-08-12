@@ -10,6 +10,7 @@ import type {
   PlanId,
   RecordedEvent,
   ReferralInfo,
+  RunKind,
   RunStepResponse,
   SubscriptionState
 } from "@workcrew/contracts";
@@ -120,7 +121,8 @@ const workcrew = {
     // a downgrade applies immediately and resolves to the refreshed entitlement.
     changePlan: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState | { opened: boolean }> => ipcRenderer.invoke("api:change-plan", { plan, interval }),
     portal: () => ipcRenderer.invoke("api:portal"),
-    createRun: (task: string, model: ModelTier): Promise<{ runId: string }> => ipcRenderer.invoke("api:create-run", { task, model }),
+    createRun: (task: string, model: ModelTier, kind: RunKind = "screen"): Promise<{ runId: string }> =>
+      ipcRenderer.invoke("api:create-run", { task, model, kind }),
     nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string; imageBase64?: string }): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result })
   },
   chat: {
