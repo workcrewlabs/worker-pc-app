@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { TEST_LINK_TTL_MS, testLinksAllowed } from "./mpgs.js";
+import { MAX_ORDER_ID_LENGTH, TEST_LINK_TTL_MS, newOrderId, testLinksAllowed } from "./mpgs.js";
 import {
   claimMpgsOrderGrant,
   client,
@@ -27,6 +27,29 @@ describe("where shared links are allowed at all", () => {
 
   it("stays usable long enough for an email exchange", () => {
     expect(TEST_LINK_TTL_MS).toBeGreaterThan(7 * 24 * 60 * 60 * 1000);
+  });
+});
+
+describe("the order ids sent to the gateway", () => {
+  // The first shared link failed here. "wc-test-" in front of a full UUID is 44
+  // characters, the gateway refused the checkout for being over its limit, and
+  // because that path reported any refusal as a bad link, the page blamed the
+  // link. Both halves of that are fixed; this is the half that must stay fixed.
+  it("fits the gateway's limit, for a customer and for a shared link alike", () => {
+    expect(newOrderId("wc").length).toBeLessThanOrEqual(MAX_ORDER_ID_LENGTH);
+    expect(newOrderId("wct").length).toBeLessThanOrEqual(MAX_ORDER_ID_LENGTH);
+  });
+
+  it("refuses an overlong prefix here rather than letting the gateway refuse the payment", () => {
+    expect(() => newOrderId("workcrew-shared-test-link")).toThrow(/too long/i);
+  });
+
+  it("allows a prefix that lands exactly on the limit", () => {
+    expect(newOrderId("wc-test").length).toBe(MAX_ORDER_ID_LENGTH);
+  });
+
+  it("is different every time", () => {
+    expect(newOrderId("wc")).not.toBe(newOrderId("wc"));
   });
 });
 
@@ -68,7 +91,7 @@ describe("a shared test link", () => {
   it("produces orders that grant nothing, however they are settled", async () => {
     // The safety property that matters: even a fully paid order from a shared
     // link must leave every subscription untouched.
-    const orderId = `wc-test-${randomUUID()}`;
+    const orderId = newOrderId("wct");
     await createMpgsOrder({
       orderId,
       userId: randomUUID(),
