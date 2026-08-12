@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "cross-env DOTENV_CONFIG_PATH=../../.env node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --no-file-parallelism"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",

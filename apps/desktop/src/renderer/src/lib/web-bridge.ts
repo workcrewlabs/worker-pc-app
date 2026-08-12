@@ -360,6 +360,7 @@ export function createWebBridge(): WorkCrewBridge {
       pick: () => pickViaDialog(),
       pickFolder: async () => desktopOnly("Working in a folder"),
       folderTree: async () => desktopOnly("Working in a folder"),
+      projectInstructions: async () => null,
       pathKind: async (path: string) => (pickedFiles.has(path) ? ("file" as const) : ("missing" as const)),
       pathForFile: (file: File) => rememberFile(file).path,
       save: async (payload: SaveFileRequest): Promise<SaveFileResult> => {

@@ -10,7 +10,26 @@ import { app } from "electron";
 // (see shell:run) so a command runs only with the user's permission.
 
 const MAX_OUTPUT_CHARS = 60_000;
-const COMMAND_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * How long a command may take.
+ *
+ * The thing to measure is silence, not duration. Packaging an installer or
+ * uploading one to a release honestly takes an hour, and a flat ten-minute limit
+ * killed that work halfway through with nothing to show for it. A command that is
+ * still printing is still working; one that has said nothing for a quarter of an
+ * hour has hung, whatever its total runtime. The total is only a backstop against
+ * something that chatters forever.
+ */
+export type CommandLimits = { idleMs: number; totalMs: number };
+export const COMMAND_LIMITS: CommandLimits = { idleMs: 15 * 60 * 1000, totalMs: 3 * 60 * 60 * 1000 };
+
+function minutes(ms: number): string {
+  const total = Math.round(ms / 60_000);
+  if (total < 60) return `${total} minute${total === 1 ? "" : "s"}`;
+  const hours = Math.round((ms / 3_600_000) * 10) / 10;
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
+}
 
 export function workspaceDir(): string {
   return join(app.getPath("userData"), "workspace");
@@ -59,7 +78,11 @@ function killTree(pid: number | undefined): void {
   } catch { /* already gone */ }
 }
 
-export async function runShellCommand(command: string, folder?: string | null): Promise<string> {
+export async function runShellCommand(
+  command: string,
+  folder?: string | null,
+  limits: CommandLimits = COMMAND_LIMITS
+): Promise<string> {
   const cwd = await resolveWorkingDir(folder);
   try {
     await mkdir(cwd, { recursive: true });
@@ -80,34 +103,54 @@ export async function runShellCommand(command: string, folder?: string | null): 
 
     let out = "";
     let settled = false;
+    // Reset by every chunk of output, so the idle clock measures silence rather
+    // than how long the work has taken.
+    let idleTimer: NodeJS.Timeout | undefined;
+    let totalTimer: NodeJS.Timeout | undefined;
+    const stopTimers = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (totalTimer) clearTimeout(totalTimer);
+    };
+    const settle = (text: string): void => {
+      if (settled) return;
+      settled = true;
+      stopTimers();
+      child.stdout?.removeAllListeners("data");
+      child.stderr?.removeAllListeners("data");
+      resolve(text);
+    };
+    const giveUp = (note: string): void => {
+      killTree(child.pid);
+      settle(`${clamp(out).trim()}\n[${note}]`);
+    };
+    const resetIdle = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => giveUp(`The command stopped producing any output for ${minutes(limits.idleMs)}, so it and anything it started were stopped.`),
+        limits.idleMs
+      );
+    };
     const append = (chunk: Buffer): void => {
+      resetIdle();
       if (out.length >= MAX_OUTPUT_CHARS) return;
       const text = chunk.toString("utf8");
       const remaining = MAX_OUTPUT_CHARS - out.length;
       out += text.length > remaining ? text.slice(0, remaining) : text;
     };
-    const settle = (text: string): void => {
-      if (settled) return;
-      settled = true;
-      child.stdout?.removeAllListeners("data");
-      child.stderr?.removeAllListeners("data");
-      resolve(text);
-    };
 
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
 
-    const timer = setTimeout(() => {
-      killTree(child.pid);
-      settle(`${clamp(out).trim()}\n[The command ran too long, so it and anything it started were stopped.]`);
-    }, COMMAND_TIMEOUT_MS);
+    totalTimer = setTimeout(
+      () => giveUp(`The command ran for ${minutes(limits.totalMs)}, so it and anything it started were stopped.`),
+      limits.totalMs
+    );
+    resetIdle();
 
     child.on("error", (error) => {
-      clearTimeout(timer);
       settle(`Could not run the command: ${error instanceof Error ? error.message : String(error)}`);
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
       settle(`${clamp(out).trim() || "(no output)"}\n[Exit code ${code ?? 0}]`);
     });
   });
