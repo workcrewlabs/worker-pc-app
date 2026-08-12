@@ -16,6 +16,7 @@
     "pretest:e2e": "npm run build -w @workcrew/contracts && npm run build -w @workcrew/desktop",
     "test:e2e": "playwright test",
     "make:icon": "node scripts/make-icon.cjs",
+    "ship": "node scripts/ship-release.mjs",
     "pretypecheck": "npm run build -w @workcrew/contracts",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },

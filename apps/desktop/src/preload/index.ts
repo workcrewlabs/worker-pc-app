@@ -188,6 +188,9 @@ const workcrew = {
     // Pick a folder to work in, and read a shallow listing of it for the model.
     pickFolder: (): Promise<{ path: string; name: string } | null> => ipcRenderer.invoke("dialog:open-folder"),
     folderTree: (path: string): Promise<string> => ipcRenderer.invoke("workspace:tree", path),
+    // What the project itself says about how to work in it, when it says anything.
+    projectInstructions: (path: string): Promise<{ name: string; text: string } | null> =>
+      ipcRenderer.invoke("workspace:instructions", path),
     // Whether a dropped path is a file or a folder, so a dropped folder becomes
     // the working folder instead of a failed file upload.
     pathKind: (path: string): Promise<"file" | "directory" | "missing"> => ipcRenderer.invoke("files:path-kind", path),

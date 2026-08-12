@@ -85,21 +85,37 @@ There is no installer and no download for backend changes.
 
 Only needed when the app's own screens/behavior change.
 
-1. **Bump the version** in `apps/desktop/package.json` (for example `0.1.14`).
-2. **Build the installer** (from `apps/desktop`). The reliable offline recipe
-   (because the build's downloads are flaky on this machine):
-   - Seed the electron-builder tool archives into the local cache and use the
-     already-installed Electron runtime, then:
-     `npm run build` then
-     `ELECTRON_BUILDER_BINARIES_MIRROR="https://registry.npmmirror.com/-/binary/electron-builder-binaries/" npx electron-builder --win nsis -c.electronDist=../../node_modules/electron/dist -c.electronVersion=<installed electron version>`
-   - Output: `apps/desktop/dist/{WorkCrew-Setup.exe, WorkCrew-Setup.exe.blockmap, latest.yml}`.
-   - Full details and the flaky-download fix are in `reference-desktop-release-build`
-     (Claude's memory) and can be reproduced by asking Claude.
-3. **Publish a GitHub Release** on `workcrewlabs/worker-pc-app`: create the release
-   with tag `v0.1.x`, upload the three files above, then mark it the latest release.
-   The installer is large (~200 MB) and your upstream upload is slow, so the upload
-   can take 45 to 90 minutes; upload the two small files first, then the installer.
-4. Installed apps pick up the new release and auto-update.
+All of it is one command now. From the repository root, with `main` merged and
+pulled:
+
+    npm run ship               builds and checks everything, publishes nothing
+    npm run ship -- --publish  the same, then publishes the release
+
+`scripts/ship-release.mjs` does what this section used to describe by hand:
+
+1. **Version.** Read from `apps/desktop/package.json`. Bump it as part of the
+   change that is being shipped, so it arrives on `main` through the usual PR.
+2. **Checks before building.** Refuses to publish from anything but a clean `main`
+   that matches GitHub, refuses a version that has already been released, and
+   rebuilds the Windows helper when `agent.py` is newer than the bundled exe.
+3. **Verification.** Runs `npm run typecheck` and every workspace's tests.
+4. **Build.** `electron-vite build`, then electron-builder with the two settings
+   this machine needs: the npmmirror binaries mirror (electron-builder's own
+   downloads are flaky here) and the already-installed Electron runtime, so it does
+   not fetch a second 100 MB copy.
+   Output: `apps/desktop/dist/{WorkCrew-Setup.exe, WorkCrew-Setup.exe.blockmap, latest.yml}`.
+5. **Feed check.** Confirms `latest.yml` names this version and that its sha512
+   matches the installer beside it. A mismatch here is invisible until every user's
+   auto-update fails after a 200 MB download.
+6. **Publish.** Creates the GitHub release as a **draft**, uploads the two small
+   files and then the installer (45 to 90 minutes on this upstream, with progress
+   printed), and only then makes it visible and marks it latest. Nothing can
+   download a release whose installer is still uploading.
+
+Installed apps pick up the new release and auto-update.
+
+If the token cannot create releases, the script says so and stops after building;
+the files in `apps/desktop/dist` can then be uploaded to a release by hand.
 
 **Desktop update feed:** the app's auto-update setting and the website download both
 point at `workcrewlabs` (`apps/desktop/package.json` -> `build.publish.owner`). Keep

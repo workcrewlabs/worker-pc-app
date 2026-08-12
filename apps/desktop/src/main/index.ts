@@ -31,6 +31,7 @@ import { closeAutomationOverlay, setAutomationOverlay } from "./overlay.js";
 import { extractOfficeText } from "./office.js";
 import { extractPdfText, looksLikeText } from "./pdf-text.js";
 import { EXPORT_EXTENSIONS, generateExport, sanitizeExportName, type ExportExtension } from "./file-export.js";
+import { readProjectInstructions } from "./project-instructions.js";
 import { confinePath, resolveWorkingDir, runShellCommand } from "./shell-cli.js";
 import { WindowsAgent } from "./windows-agent.js";
 
@@ -808,6 +809,11 @@ function registerIpc(): void {
     await walk(dir, "", 0);
     return lines.join("\n").slice(0, 12_000);
   });
+
+  // The working folder's own instructions for whoever works in it (WORKCREW.md,
+  // AGENTS.md, CLAUDE.md). Read-only, root only, and bounded by the reader.
+  ipcMain.handle("workspace:instructions", async (_event, raw) =>
+    readProjectInstructions(typeof raw === "string" ? raw : ""));
 
   ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));
   // Returns { output, imageBase64? }: a screenshot comes back as the picture
