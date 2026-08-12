@@ -332,6 +332,7 @@ const notes = notesArg ?? (commits
 // try to download and fail on.
 const release = await api("POST", `/repos/${repo}/releases`, {
   tag_name: tag,
+  target_commitish: "main",
   name: `WorkCrew ${version}`,
   body: notes,
   draft: true,
@@ -339,9 +340,31 @@ const release = await api("POST", `/repos/${repo}/releases`, {
 });
 note(`draft created (${release.id}).`);
 
+// The upstream here is slow and unreliable, and GitHub cannot resume an upload:
+// a connection that drops at 80% has to start again, and it leaves a stub
+// registered under that name which blocks the retry. So clear it and go again.
+async function uploadWithRetry(name, attempts = 3) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await uploadAsset(release.upload_url, name);
+      return;
+    } catch (error) {
+      note(`${name} failed on attempt ${attempt}: ${error.message}`);
+      const assets = await api("GET", `/repos/${repo}/releases/${release.id}/assets`);
+      const stale = Array.isArray(assets) ? assets.find((asset) => asset.name === name) : null;
+      if (stale) await api("DELETE", `/repos/${repo}/releases/assets/${stale.id}`);
+      if (attempt === attempts) {
+        fail(`${name} could not be uploaded after ${attempts} attempts.`,
+          `The release is still a draft, so nothing has reached any user. Finish it at ${release.html_url}, or delete that draft and run this again.`);
+      }
+      note("retrying from the start of the file.");
+    }
+  }
+}
+
 for (const name of ARTIFACTS) {
   note(`uploading ${name}...`);
-  await uploadAsset(release.upload_url, name);
+  await uploadWithRetry(name);
 }
 
 // By id, not by tag: a draft release has no tag on GitHub yet, so it cannot be
