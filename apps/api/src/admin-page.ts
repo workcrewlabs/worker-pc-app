@@ -140,6 +140,11 @@ export function adminPage(): string {
       <button id="pay-button" type="button">Open payment page</button>
     </div>
     <div id="pay-note" class="notice hidden"></div>
+    <div class="row" style="margin-top:14px">
+      <label class="grow">Link for someone outside the business (for example the bank's tester)<input id="link-label" type="text" placeholder="Bank of Beirut test" /></label>
+      <button class="ghost" id="link-button" type="button">Create shareable link</button>
+    </div>
+    <div id="link-note" class="notice hidden"></div>
     <table class="audit" id="attempts-table">
       <thead><tr><th>When</th><th>Plan</th><th>Amount</th><th>Result</th></tr></thead>
       <tbody id="attempt-rows"><tr><td colspan="4" class="muted">No attempts yet.</td></tr></tbody>
@@ -406,6 +411,33 @@ export function adminPage(): string {
       // Show the gateway's recorded reason even when the message itself is the
       // backend's generic one.
       return loadAttempts();
+    }).finally(function () {
+      button.disabled = false;
+    });
+  });
+
+  // A link the bank's own tester can use with no account and no dashboard access.
+  // Every visit starts a fresh payment, and none of them grant anyone a plan.
+  $("link-button").addEventListener("click", function () {
+    var button = $("link-button");
+    button.disabled = true;
+    api("/v1/admin/card-test-link", {
+      method: "POST",
+      body: {
+        label: $("link-label").value.trim() || "Test link",
+        plan: $("pay-plan").value,
+        interval: $("pay-interval").value
+      }
+    }).then(function (link) {
+      var until = formatDate(link.expiresAtMs);
+      $("link-note").className = "notice notice-ok";
+      $("link-note").innerHTML =
+        "Send this link. It works without any login, can be used repeatedly, and grants nobody a plan.<br><br>" +
+        "<code>" + escapeText(link.url) + "</code><br><br>Valid until " + escapeText(until) + ".";
+      show($("link-note"), true);
+      if (navigator.clipboard) navigator.clipboard.writeText(link.url).catch(function () {});
+    }).catch(function (error) {
+      note($("link-note"), error.message, false);
     }).finally(function () {
       button.disabled = false;
     });

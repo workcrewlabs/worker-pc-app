@@ -1,11 +1,14 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { PLAN_CATALOG, type BillingInterval, type PaidPlanId } from "@workcrew/contracts";
 import { config } from "./config.js";
 import {
   attachMpgsSession,
   claimMpgsOrderGrant,
+  countMpgsTestLinkUse,
   createMpgsOrder,
+  createMpgsTestLink,
   getMpgsOrder,
+  getMpgsTestLink,
   getSubscription,
   getUserById,
   recordAdminAction,
@@ -100,19 +103,48 @@ export async function startCheckout(input: {
     currency
   });
 
+  const session = await openGatewaySession({
+    orderId,
+    amountCents,
+    currency,
+    description: `WorkCrew ${PLAN_CATALOG[input.plan].name} (${input.interval === "year" ? "yearly" : "monthly"})`,
+    throwOnFailure: true
+  });
+  if (!session) throw new Error("The payment gateway refused to start a checkout");
+
+  await attachMpgsSession(orderId, session.sessionId, session.successIndicator);
+  return { orderId, sessionId: session.sessionId };
+}
+
+/**
+ * Ask the gateway to open a checkout session for an order that is already
+ * recorded. The single place this integration talks to the gateway about
+ * starting a payment, so the request shape cannot drift between the two callers.
+ *
+ * throwOnFailure distinguishes the two audiences: an operator clicking Test needs
+ * the gateway's own words, while a stranger following a shared link gets a plain
+ * "not valid" page and no detail about the merchant configuration behind it.
+ */
+async function openGatewaySession(input: {
+  orderId: string;
+  amountCents: number;
+  currency: string;
+  description: string;
+  throwOnFailure?: boolean;
+}): Promise<{ sessionId: string; successIndicator: string | null } | null> {
   const body = {
     apiOperation: "INITIATE_CHECKOUT",
     interaction: {
       operation: "PURCHASE",
       merchant: { name: "WorkCrew" },
-      returnUrl: `${config.publicUrl}/billing/mpgs/return?order=${encodeURIComponent(orderId)}`
+      returnUrl: `${config.publicUrl}/billing/mpgs/return?order=${encodeURIComponent(input.orderId)}`
     },
     order: {
-      currency,
-      id: orderId,
+      currency: input.currency,
+      id: input.orderId,
       // The gateway takes a decimal amount, not minor units.
-      amount: (amountCents / 100).toFixed(2),
-      description: `WorkCrew ${PLAN_CATALOG[input.plan].name} (${input.interval === "year" ? "yearly" : "monthly"})`
+      amount: (input.amountCents / 100).toFixed(2),
+      description: input.description
     }
   };
 
@@ -135,7 +167,8 @@ export async function startCheckout(input: {
     // error message is gone the moment the page is refreshed, and the operator
     // then has nothing to act on; on the row it can be read back in the
     // dashboard whenever they look.
-    await setMpgsOrderStatus(orderId, "failed", `HTTP ${response.status}: ${detail}`);
+    await setMpgsOrderStatus(input.orderId, "failed", `HTTP ${response.status}: ${detail}`);
+    if (!input.throwOnFailure) return null;
     // Reported as a 4xx so the operator actually sees the gateway's own words.
     // A wrong password or merchant id is a configuration problem they can fix,
     // and it is unfixable if every cause reads "the service could not complete
@@ -147,8 +180,7 @@ export async function startCheckout(input: {
     });
   }
 
-  await attachMpgsSession(orderId, payload.session.id, payload.successIndicator ?? null);
-  return { orderId, sessionId: payload.session.id };
+  return { sessionId: payload.session.id, successIndicator: payload.successIndicator ?? null };
 }
 
 type GatewayOrder = {
@@ -208,6 +240,14 @@ export async function settleOrder(orderId: string): Promise<SettleResult> {
   if (paidCents !== order.amountCents || (remote.currency ?? order.currency) !== order.currency) {
     await setMpgsOrderStatus(orderId, "amount_mismatch");
     return { granted: false, reason: "The amount paid does not match the order." };
+  }
+
+  // An order opened from a shared test link proves the payment works and stops
+  // there. Nobody's subscription moves, which is what makes it safe to hand the
+  // link to someone outside the business.
+  if (!order.grantsPlan) {
+    await setMpgsOrderStatus(orderId, "paid");
+    return { granted: false, reason: "This was a test payment. It completed successfully and granted no plan." };
   }
 
   if (!(await claimMpgsOrderGrant(orderId))) {
@@ -282,4 +322,90 @@ export function webhookSecretMatches(provided: string | undefined): boolean {
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
+}
+
+
+/**
+ * Whether this deployment may hand out shareable payment links at all.
+ *
+ * Only against a TEST gateway. A link that anyone holding the URL can use to run
+ * a real card payment has no place pointed at production, and the host name is
+ * the one thing that cannot be got wrong by accident: the bank issues an
+ * entirely separate address for live traffic.
+ */
+export function testLinksAllowed(): boolean {
+  const host = config.mpgs.baseUrl.replace(/^https?:\/\//i, "").toLowerCase();
+  return config.mpgs.configured && (host.startsWith("test-") || host.startsWith("test."));
+}
+
+/** How long a shared link stays usable. Long enough for an email exchange. */
+export const TEST_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Mint a link that lets someone with no account run test payments.
+ *
+ * The token IS the credential, so it is 32 random bytes: long enough that
+ * guessing one is not a strategy. Opening the link creates a fresh order every
+ * time, so a single link covers as many test transactions as the recipient wants
+ * to run, including deliberate declines.
+ */
+export async function createTestLink(input: {
+  label: string;
+  plan: PaidPlanId;
+  interval: BillingInterval;
+  createdBy: string;
+}): Promise<{ token: string; url: string; expiresAtMs: number }> {
+  if (!testLinksAllowed()) {
+    throw Object.assign(
+      new Error("Shareable payment links are only available against a test gateway."),
+      { statusCode: 409, code: "MPGS_TEST_LINKS_DISABLED" }
+    );
+  }
+  const token = randomBytes(32).toString("base64url");
+  const expiresAtMs = Date.now() + TEST_LINK_TTL_MS;
+  await createMpgsTestLink({
+    token,
+    label: input.label.slice(0, 120),
+    plan: input.plan,
+    interval: input.interval,
+    createdBy: input.createdBy,
+    expiresAtMs
+  });
+  return { token, url: `${config.publicUrl}/pay/link/${token}`, expiresAtMs };
+}
+
+/**
+ * Open a fresh checkout from a shared link. Returns null when the link is
+ * unknown, revoked, expired, or the deployment has since been pointed at a live
+ * gateway, in which case the caller shows a plain "not valid" page rather than
+ * explaining which of those it was.
+ */
+export async function startCheckoutFromLink(token: string): Promise<{ orderId: string } | null> {
+  if (!testLinksAllowed()) return null;
+  const link = await getMpgsTestLink(token);
+  if (!link || link.revoked || link.expiresAtMs <= Date.now()) return null;
+
+  const orderId = `wc-test-${randomUUID()}`;
+  const amountCents = planAmountCents(link.plan, link.interval);
+  await createMpgsOrder({
+    orderId,
+    // Attributed to the link's creator for the audit trail, but it grants
+    // nothing, so this cannot move anyone's subscription.
+    userId: link.createdBy,
+    plan: link.plan,
+    interval: link.interval,
+    amountCents,
+    currency: "USD",
+    grantsPlan: false
+  });
+  const session = await openGatewaySession({
+    orderId,
+    amountCents,
+    currency: "USD",
+    description: `WorkCrew ${PLAN_CATALOG[link.plan].name} (test payment)`
+  });
+  if (!session) return null;
+  await attachMpgsSession(orderId, session.sessionId, session.successIndicator);
+  await countMpgsTestLinkUse(token);
+  return { orderId };
 }

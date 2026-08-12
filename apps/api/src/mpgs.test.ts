@@ -38,7 +38,7 @@ describe("order freshness", () => {
   const order = {
     orderId: "wc-1", userId: "u", plan: "pro" as const, interval: "month" as const,
     amountCents: 2700, currency: "USD", sessionId: "s", successIndicator: null,
-    status: "pending", grantedAtMs: null, createdAtMs: 1_000_000
+    status: "pending", grantedAtMs: null, grantsPlan: true, createdAtMs: 1_000_000
   };
 
   it("accepts an order opened moments ago", () => {
