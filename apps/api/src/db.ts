@@ -291,7 +291,23 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       created_at_ms BIGINT NOT NULL,
       updated_at_ms BIGINT NOT NULL
     )`,
-    `CREATE INDEX IF NOT EXISTS idx_mpgs_orders_user ON mpgs_orders(user_id)`
+    `CREATE INDEX IF NOT EXISTS idx_mpgs_orders_user ON mpgs_orders(user_id)`,
+    // A shareable link that lets someone outside the business (the bank's own
+    // tester, an auditor) run a card payment without an account and without any
+    // access to the dashboard. The token is the whole credential, so it is long
+    // and random; opening the link mints a FRESH order each time, so one link
+    // covers as many test transactions as they want to run.
+    `CREATE TABLE IF NOT EXISTS mpgs_test_links (
+      token TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      plan TEXT NOT NULL CHECK (plan IN ('pro', 'ultra')),
+      interval TEXT NOT NULL CHECK (interval IN ('month', 'year')),
+      created_by TEXT NOT NULL,
+      uses INTEGER NOT NULL DEFAULT 0,
+      revoked INTEGER NOT NULL DEFAULT 0,
+      expires_at_ms BIGINT NOT NULL,
+      created_at_ms BIGINT NOT NULL
+    )`
   ], "write");
 
   // Migrate databases created before the run safety columns existed. SQLite
@@ -324,6 +340,10 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   // Why a card checkout was refused, kept on the order so the operator can read
   // the gateway's own words in the dashboard instead of digging through logs.
   await addColumnIfMissing(db, "mpgs_orders", "failure_reason", "TEXT");
+  // Whether settling this order should hand someone a paid plan. Orders opened
+  // from a shared test link verify the payment but grant nothing: the point is
+  // to prove the gateway works, not to put months on an account.
+  await addColumnIfMissing(db, "mpgs_orders", "grants_plan", "INTEGER NOT NULL DEFAULT 1");
   // The user's token-spend mode (Economy vs Privacy), on existing subscription rows.
   await addColumnIfMissing(db, "subscriptions", "model_mode", "TEXT NOT NULL DEFAULT 'economy'");
   // Per-credit dedupe key on existing ledgers, so Stripe top-up fulfilment and
@@ -1590,6 +1610,8 @@ export type MpgsOrderRow = {
   successIndicator: string | null;
   status: string;
   grantedAtMs: number | null;
+  /** False when this order came from a shared test link and must grant nothing. */
+  grantsPlan: boolean;
   createdAtMs: number;
 };
 
@@ -1606,6 +1628,7 @@ function mapMpgsOrder(row: Record<string, unknown>): MpgsOrderRow {
       row.success_indicator === null || row.success_indicator === undefined ? null : String(row.success_indicator),
     status: String(row.status),
     grantedAtMs: row.granted_at_ms === null || row.granted_at_ms === undefined ? null : Number(row.granted_at_ms),
+    grantsPlan: Number(row.grants_plan ?? 1) === 1,
     createdAtMs: Number(row.created_at_ms)
   };
 }
@@ -1618,13 +1641,18 @@ export async function createMpgsOrder(input: {
   interval: "month" | "year";
   amountCents: number;
   currency: string;
+  /** False for an order opened from a shared test link: verify, but grant nothing. */
+  grantsPlan?: boolean;
 }): Promise<void> {
   const now = Date.now();
   await client.execute({
     sql: `INSERT INTO mpgs_orders(order_id, user_id, plan, interval, amount_cents, currency,
-            session_id, success_indicator, status, granted_at_ms, created_at_ms, updated_at_ms)
-          VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'created', NULL, ?, ?)`,
-    args: [input.orderId, input.userId, input.plan, input.interval, input.amountCents, input.currency, now, now]
+            session_id, success_indicator, status, granted_at_ms, grants_plan, created_at_ms, updated_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'created', NULL, ?, ?, ?)`,
+    args: [
+      input.orderId, input.userId, input.plan, input.interval, input.amountCents, input.currency,
+      input.grantsPlan === false ? 0 : 1, now, now
+    ]
   });
 }
 
@@ -1700,6 +1728,77 @@ export async function claimMpgsOrderGrant(orderId: string): Promise<boolean> {
     args: [Date.now(), Date.now(), orderId]
   });
   return result.rowsAffected === 1;
+}
+
+// Shareable test links ------------------------------------------------------
+
+export type MpgsTestLinkRow = {
+  token: string;
+  label: string;
+  /** The admin who minted it: orders from this link are attributed to them. */
+  createdBy: string;
+  plan: "pro" | "ultra";
+  interval: "month" | "year";
+  uses: number;
+  revoked: boolean;
+  expiresAtMs: number;
+  createdAtMs: number;
+};
+
+function mapTestLink(row: Record<string, unknown>): MpgsTestLinkRow {
+  return {
+    token: String(row.token),
+    label: String(row.label),
+    createdBy: String(row.created_by),
+    plan: String(row.plan) as "pro" | "ultra",
+    interval: String(row.interval) as "month" | "year",
+    uses: Number(row.uses ?? 0),
+    revoked: Number(row.revoked ?? 0) === 1,
+    expiresAtMs: Number(row.expires_at_ms),
+    createdAtMs: Number(row.created_at_ms)
+  };
+}
+
+export async function createMpgsTestLink(input: {
+  token: string;
+  label: string;
+  plan: "pro" | "ultra";
+  interval: "month" | "year";
+  createdBy: string;
+  expiresAtMs: number;
+}): Promise<void> {
+  const now = Date.now();
+  await client.execute({
+    sql: `INSERT INTO mpgs_test_links(token, label, plan, interval, created_by, uses, revoked, expires_at_ms, created_at_ms)
+          VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)`,
+    args: [input.token, input.label, input.plan, input.interval, input.createdBy, input.expiresAtMs, now]
+  });
+}
+
+export async function getMpgsTestLink(token: string): Promise<MpgsTestLinkRow | null> {
+  const result = await client.execute({ sql: "SELECT * FROM mpgs_test_links WHERE token = ? LIMIT 1", args: [token] });
+  const row = result.rows[0] as unknown as Record<string, unknown> | undefined;
+  return row ? mapTestLink(row) : null;
+}
+
+export async function countMpgsTestLinkUse(token: string): Promise<void> {
+  await client.execute({ sql: "UPDATE mpgs_test_links SET uses = uses + 1 WHERE token = ?", args: [token] });
+}
+
+export async function revokeMpgsTestLink(token: string): Promise<boolean> {
+  const result = await client.execute({
+    sql: "UPDATE mpgs_test_links SET revoked = 1 WHERE token = ? AND revoked = 0",
+    args: [token]
+  });
+  return result.rowsAffected === 1;
+}
+
+export async function listMpgsTestLinks(limit: number): Promise<MpgsTestLinkRow[]> {
+  const result = await client.execute({
+    sql: "SELECT * FROM mpgs_test_links ORDER BY created_at_ms DESC LIMIT ?",
+    args: [limit]
+  });
+  return (result.rows as unknown as Record<string, unknown>[]).map(mapTestLink);
 }
 
 export { client };

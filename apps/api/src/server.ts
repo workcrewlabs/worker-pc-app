@@ -65,7 +65,16 @@ import {
   requireAdmin
 } from "./admin.js";
 import { adminPage } from "./admin-page.js";
-import { mpgsAvailableFor, orderIsFresh, settleOrder, startCheckout, webhookSecretMatches } from "./mpgs.js";
+import {
+  createTestLink,
+  mpgsAvailableFor,
+  orderIsFresh,
+  settleOrder,
+  startCheckout,
+  startCheckoutFromLink,
+  testLinksAllowed,
+  webhookSecretMatches
+} from "./mpgs.js";
 import { mpgsCheckoutPage, mpgsResultPage } from "./mpgs-page.js";
 import { landingPage } from "./landing.js";
 import { pricingPage, privacyPage, refundPolicyPage, termsPage } from "./legal.js";
@@ -87,6 +96,8 @@ import {
   getMpgsOrder,
   getSubscription,
   listMpgsAttempts,
+  listMpgsTestLinks,
+  revokeMpgsTestLink,
   grantFreeSubscriptionIfAbsent,
   getUserById,
   initializeDatabase,
@@ -702,9 +713,14 @@ const mpgsCheckoutSchema = z.object({
   interval: z.enum(["month", "year"])
 }).strict();
 
-const mpgsOrderQuerySchema = z.object({
+// The gateway appends its OWN parameters to the return URL (resultIndicator,
+// sessionVersion, checkoutVersion and friends), and they vary by gateway version.
+// So this reads the one parameter we put there and ignores the rest: a strict
+// schema here rejected a perfectly good return and showed the payer an error
+// immediately after their money had been taken.
+export const mpgsOrderQuerySchema = z.object({
   order: z.string().min(1).max(200)
-}).strict();
+}).passthrough();
 
 app.post("/v1/billing/mpgs/checkout", routeLimit(10), async (request) => {
   const userId = await authenticate(request);
@@ -771,6 +787,51 @@ app.get("/pay/:orderId", async (request, reply) => {
       planName: PLAN_CATALOG[order.plan].name,
       amount: (order.amountCents / 100).toFixed(2)
     }));
+});
+
+// Mint a link the operator can email to the bank's own tester. Admin only, and
+// refused outright unless the gateway is a test host.
+app.post("/v1/admin/card-test-link", routeLimit(10), async (request) => {
+  const actor = await requireAdmin(request);
+  const body = z.object({
+    label: z.string().trim().min(1).max(120),
+    plan: z.enum(["pro", "ultra"]),
+    interval: z.enum(["month", "year"])
+  }).strict().parse(request.body);
+  const link = await createTestLink({ ...body, createdBy: actor.userId });
+  request.log.info({ event: "mpgs_test_link_created", actor: actor.email }, "card test link created");
+  return link;
+});
+
+app.get("/v1/admin/card-test-links", routeLimit(30), async (request) => {
+  await requireAdmin(request);
+  return { links: await listMpgsTestLinks(10), allowed: testLinksAllowed() };
+});
+
+app.post("/v1/admin/card-test-links/:token/revoke", routeLimit(20), async (request) => {
+  const actor = await requireAdmin(request);
+  const { token } = z.object({ token: z.string().min(1).max(200) }).strict().parse(request.params);
+  const revoked = await revokeMpgsTestLink(token);
+  request.log.info({ event: "mpgs_test_link_revoked", actor: actor.email, revoked }, "card test link revoked");
+  return { ok: revoked };
+});
+
+// A shared test link. No account, no sign-in: the token is the whole credential,
+// and every visit mints a FRESH order, so one link covers as many test payments
+// as the recipient wants to run. Nothing it produces can grant anyone a plan.
+app.get("/pay/link/:token", async (request, reply) => {
+  const { token } = z.object({ token: z.string().min(1).max(400) }).strict().parse(request.params);
+  const started = await startCheckoutFromLink(token);
+  if (!started) {
+    return reply
+      .code(404)
+      .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'")
+      .type("text/html")
+      .send(mpgsResultPage({ ok: false, heading: "This link is not valid", message: "Ask for a new test payment link." }));
+  }
+  // Straight to the ordinary payment page, so the tester sees exactly what a
+  // customer would.
+  return reply.redirect(`${config.publicUrl}/pay/${encodeURIComponent(started.orderId)}`);
 });
 
 // Where the gateway returns the payer. The result shown here is decided by asking
