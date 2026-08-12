@@ -822,12 +822,28 @@ app.post("/v1/admin/card-test-links/:token/revoke", routeLimit(20), async (reque
 app.get("/pay/link/:token", async (request, reply) => {
   const { token } = z.object({ token: z.string().min(1).max(400) }).strict().parse(request.params);
   const started = await startCheckoutFromLink(token);
-  if (!started) {
-    return reply
-      .code(404)
+  const fail = (code: number, heading: string, message: string): unknown =>
+    reply
+      .code(code)
       .header("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'")
+      .header("cache-control", "no-store")
       .type("text/html")
-      .send(mpgsResultPage({ ok: false, heading: "This link is not valid", message: "Ask for a new test payment link." }));
+      .send(mpgsResultPage({ ok: false, heading, message }));
+
+  if (!started.ok) {
+    if (started.cause === "unknown") {
+      return fail(404, "This link is not valid", "Ask for a new test payment link.");
+    }
+    // The link was fine; the gateway would not open a checkout. Calling that an
+    // invalid link points whoever is testing at the wrong thing entirely. The
+    // reference is the refused order, and the gateway's own words for it are on
+    // that row in the dashboard.
+    request.log.warn({ event: "mpgs_test_link_session_failed", orderId: started.orderId }, "shared link checkout refused");
+    return fail(
+      502,
+      "Could not start this test payment",
+      `Nothing has been charged. Please try again, and if it keeps happening quote this reference: ${started.orderId}`
+    );
   }
   // Straight to the ordinary payment page, so the tester sees exactly what a
   // customer would.

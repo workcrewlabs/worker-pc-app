@@ -71,6 +71,27 @@ export function planAmountCents(plan: PaidPlanId, interval: BillingInterval): nu
 }
 
 /**
+ * The longest order id the gateway accepts. Exceeding it is refused at the moment
+ * the checkout is opened, which reaches whoever clicked as "this did not work"
+ * with no hint of the cause, so order ids are minted in one place and checked
+ * here instead of being discovered in production.
+ */
+export const MAX_ORDER_ID_LENGTH = 40;
+
+/**
+ * A fresh order id. The random part is a UUID with the dashes removed: the same
+ * 128 bits, 32 characters, which leaves room for a prefix without running into
+ * the gateway's limit.
+ */
+export function newOrderId(prefix: string): string {
+  const orderId = `${prefix}-${randomUUID().replace(/-/g, "")}`;
+  if (orderId.length > MAX_ORDER_ID_LENGTH) {
+    throw new Error(`Order id prefix "${prefix}" is too long for the gateway.`);
+  }
+  return orderId;
+}
+
+/**
  * Ask the gateway to open a checkout session for a new order.
  *
  * The order id and the amount are minted here and stored before the request, so
@@ -90,7 +111,7 @@ export async function startCheckout(input: {
       { statusCode: 409, code: "MPGS_UNAVAILABLE" }
     );
   }
-  const orderId = `wc-${randomUUID()}`;
+  const orderId = newOrderId("wc");
   const amountCents = planAmountCents(input.plan, input.interval);
   const currency = "USD";
 
@@ -375,17 +396,26 @@ export async function createTestLink(input: {
 }
 
 /**
- * Open a fresh checkout from a shared link. Returns null when the link is
- * unknown, revoked, expired, or the deployment has since been pointed at a live
- * gateway, in which case the caller shows a plain "not valid" page rather than
- * explaining which of those it was.
+ * What following a shared link produced.
+ *
+ * "unknown" covers a link that is not ours, revoked, expired, or a deployment
+ * since pointed at a live gateway, and deliberately does not say which. "gateway"
+ * means the link was perfectly good and the gateway refused to open the checkout:
+ * a different problem with a different owner, and reporting it as a bad link
+ * sends whoever is testing hunting for a fault that is not there.
  */
-export async function startCheckoutFromLink(token: string): Promise<{ orderId: string } | null> {
-  if (!testLinksAllowed()) return null;
-  const link = await getMpgsTestLink(token);
-  if (!link || link.revoked || link.expiresAtMs <= Date.now()) return null;
+export type SharedLinkStart =
+  | { ok: true; orderId: string }
+  | { ok: false; cause: "unknown" }
+  | { ok: false; cause: "gateway"; orderId: string };
 
-  const orderId = `wc-test-${randomUUID()}`;
+/** Open a fresh checkout from a shared link. */
+export async function startCheckoutFromLink(token: string): Promise<SharedLinkStart> {
+  if (!testLinksAllowed()) return { ok: false, cause: "unknown" };
+  const link = await getMpgsTestLink(token);
+  if (!link || link.revoked || link.expiresAtMs <= Date.now()) return { ok: false, cause: "unknown" };
+
+  const orderId = newOrderId("wct");
   const amountCents = planAmountCents(link.plan, link.interval);
   await createMpgsOrder({
     orderId,
@@ -404,8 +434,11 @@ export async function startCheckoutFromLink(token: string): Promise<{ orderId: s
     currency: "USD",
     description: `WorkCrew ${PLAN_CATALOG[link.plan].name} (test payment)`
   });
-  if (!session) return null;
+  // The reason the gateway gave is already written onto the order row by
+  // openGatewaySession, so the operator can read it in the dashboard while the
+  // stranger who followed the link is told only that it did not start.
+  if (!session) return { ok: false, cause: "gateway", orderId };
   await attachMpgsSession(orderId, session.sessionId, session.successIndicator);
   await countMpgsTestLinkUse(token);
-  return { orderId };
+  return { ok: true, orderId };
 }
