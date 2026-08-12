@@ -15,6 +15,17 @@ type DesktopSettings = {
   analyticsDeviceId?: string;
   // When true, the user has opted out of anonymous product analytics.
   analyticsOptOut?: boolean;
+  // Where and how big the window was when it was last closed, so reopening the
+  // app gives back the size the user chose instead of the factory default.
+  windowBounds?: WindowBounds;
+};
+
+export type WindowBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  maximized: boolean;
 };
 
 // The production cloud backend. Packaged installs talk to this by default.
@@ -136,4 +147,50 @@ export function getAnalyticsOptOut(): boolean {
 export function setAnalyticsOptOut(value: boolean): boolean {
   persist({ ...load(), analyticsOptOut: value === true });
   return value === true;
+}
+
+// Nothing outside this range is a window a person meant to have. The upper bound
+// is generous enough for a wide multi-monitor span; the lower bound matches the
+// smallest window the layout still reads at.
+const MIN_REMEMBERED_SIZE = 320;
+const MAX_REMEMBERED_SIZE = 20_000;
+
+function isSaneBounds(value: unknown): value is WindowBounds {
+  if (typeof value !== "object" || value === null) return false;
+  const bounds = value as Record<string, unknown>;
+  for (const key of ["x", "y", "width", "height"] as const) {
+    const number = bounds[key];
+    if (typeof number !== "number" || !Number.isFinite(number)) return false;
+  }
+  const { width, height } = bounds as { width: number; height: number };
+  if (width < MIN_REMEMBERED_SIZE || height < MIN_REMEMBERED_SIZE) return false;
+  if (width > MAX_REMEMBERED_SIZE || height > MAX_REMEMBERED_SIZE) return false;
+  return typeof bounds.maximized === "boolean";
+}
+
+/**
+ * The window size and position from the last session, or null when there is
+ * none (first run) or the stored value is not a window anyone could have had.
+ * A corrupt or hand-edited file must never be able to place the window
+ * somewhere the user cannot reach it, so anything odd is discarded here and the
+ * caller falls back to the default size.
+ */
+export function getWindowBounds(): WindowBounds | null {
+  const stored = load().windowBounds;
+  return isSaneBounds(stored) ? stored : null;
+}
+
+/** Remember the window size and position for the next launch. */
+export function setWindowBounds(bounds: WindowBounds): void {
+  if (!isSaneBounds(bounds)) return;
+  persist({
+    ...load(),
+    windowBounds: {
+      x: Math.round(bounds.x),
+      y: Math.round(bounds.y),
+      width: Math.round(bounds.width),
+      height: Math.round(bounds.height),
+      maximized: bounds.maximized
+    }
+  });
 }

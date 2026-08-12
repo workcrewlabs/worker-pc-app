@@ -947,15 +947,106 @@ button.danger:disabled { opacity: .6; cursor: default; }
 @keyframes panel-in { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 @keyframes modal-in { from { transform: translateY(10px) scale(.99); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
 
+/* ---------------------------------------------------------------------------
+   Resizing down to half a screen.
+
+   People run WorkCrew beside the app it is working in, so every width from the
+   window minimum (640) upwards has to be usable, not merely non-broken. Three
+   things give way, in this order: the header meters (the same numbers live in
+   Account), then the sidebar becomes a drawer, then the reading gutters narrow.
+   --------------------------------------------------------------------------- */
+
+/* The drawer machinery is inert at full width: the button and the scrim are
+   hidden and the sidebar is an ordinary grid column. */
+.app-shell { position: relative; }
+.nav-toggle { display: none; }
+.nav-scrim { display: none; }
+
+@media (max-width: 1120px) {
+  .app-shell { grid-template-columns: 216px 1fr; }
+  .workspace-header { padding: 12px 18px; }
+  .header-right { gap: 10px; }
+  .usage-box { width: 118px; }
+}
+
+/* No room for two meters beside the title. They are dropped rather than
+   squeezed, because a meter too narrow to read its own label is just noise. */
+@media (max-width: 980px) {
+  .header-right .usage-box { display: none; }
+}
+
 @media (max-width: 900px) {
-  .app-shell { grid-template-columns: 76px 1fr; }
-  .sidebar .brand-name, .sidebar nav button span + * { }
-  .sidebar nav button { justify-content: center; }
-  .sidebar nav button { font-size: 0; }
-  .sidebar nav button span { font-size: 13px; }
-  .sidebar-security div, .account-button > span:not(.avatar) { display: none; }
-  .price-grid { grid-template-columns: 1fr; }
+  .app-shell { grid-template-columns: 1fr; }
+
+  /* The sidebar slides over the chat instead of taking a column from it. */
+  .sidebar {
+    position: absolute;
+    z-index: 26;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(272px, 84%);
+    transform: translateX(-100%);
+    transition: transform .18s ease;
+    box-shadow: 18px 0 48px rgba(0, 0, 0, .42);
+  }
+  .nav-open .sidebar { transform: none; }
+  .nav-scrim {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 25;
+    padding: 0;
+    border: 0;
+    cursor: default;
+    background: rgba(6, 8, 11, .5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s ease;
+  }
+  .nav-open .nav-scrim { opacity: 1; pointer-events: auto; }
+
+  .nav-toggle {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: 32px;
+    height: 32px;
+    margin-right: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--muted);
+    background: transparent;
+  }
+  .nav-toggle:hover { color: var(--text); border-color: var(--muted); }
+  .nav-toggle:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; }
+  /* The title has to yield to the button, and the header is a flex row with
+     space-between, so the two must sit together on the left. */
+  .workspace-header { justify-content: flex-start; }
+  .workspace-header .header-right { margin-left: auto; }
+
+  /* A full-width panel is easier to read here than a 460px sheet on a 640px
+     window, and the reading column keeps a smaller gutter. */
   .panel { width: 100%; }
+  .price-grid { grid-template-columns: 1fr; }
+  .chat-empty-inner,
+  .message-list,
+  .composer-dock { width: min(720px, calc(100% - 32px)); }
+}
+
+@media (max-width: 760px) {
+  .workspace-header { padding: 10px 14px; }
+  /* Chips read badly two-up once each is barely wider than its own text. */
+  .suggestion-chips { grid-template-columns: 1fr; }
+  /* The composer row carries a mode toggle, attach buttons and a model picker;
+     let it stack rather than push the model picker off the edge. */
+  .composer-tools { flex-wrap: wrap; row-gap: 8px; }
+  .composer-tools .wc-dropdown { margin-left: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .nav-scrim { transition: none; }
 }
 
 /* Mandatory-update gate: a full-window blocker shown once a release is past its
