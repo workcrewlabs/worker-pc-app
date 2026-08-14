@@ -8,6 +8,7 @@ import {
   MODEL_PRICES,
   PROMPT_VERSION,
   chooseModel,
+  engineSeesImages,
   modelId,
   provider,
   type ConcreteModelTier
@@ -350,6 +351,36 @@ function mockResponse(messages: unknown[], tier: ConcreteModelTier): ModelResult
   };
 }
 
+/**
+ * Replace image blocks with a plain note when the engine cannot see them.
+ *
+ * The Economy engine accepts an image, ignores it, and answers anyway, so the
+ * picture costs input tokens and buys a made up answer. Routing already keeps
+ * images away from it; this is the layer underneath, so that a call site which
+ * forgets produces a model that KNOWS it was not shown the picture instead of
+ * one that invents what was in it. Deliberately not a tier switch: the budget
+ * for this call was already reserved against the tier it was given.
+ */
+export function withoutUnseeableImages(messages: unknown[], tier: ConcreteModelTier): unknown[] {
+  if (engineSeesImages(tier)) return messages;
+  const note = { type: "text", text: "[An image was attached here. This engine cannot see images, so it was not shown. Say so rather than describing it.]" };
+  let replaced = false;
+  const cleaned = messages.map((message) => {
+    if (!message || typeof message !== "object") return message;
+    const { content, ...rest } = message as { content?: unknown };
+    if (!Array.isArray(content)) return message;
+    const blocks = content.map((block) => {
+      if (block && typeof block === "object" && (block as { type?: string }).type === "image") {
+        replaced = true;
+        return note;
+      }
+      return block;
+    });
+    return { ...rest, content: blocks };
+  });
+  return replaced ? cleaned : messages;
+}
+
 export async function callModel(input: {
   tier: ConcreteModelTier;
   messages: unknown[];
@@ -375,7 +406,7 @@ export async function callModel(input: {
     // without a matching tool_result and the next request would be rejected.
     tool_choice: { type: "auto", disable_parallel_tool_use: true },
     ...(supportsEffort ? { output_config: { effort: AUTOMATION_EFFORT } } : {}),
-    messages: withRollingCacheBreakpoint(input.messages)
+    messages: withRollingCacheBreakpoint(withoutUnseeableImages(input.messages, input.tier))
   };
   const response = await fetch(endpoint.url, {
     method: "POST",

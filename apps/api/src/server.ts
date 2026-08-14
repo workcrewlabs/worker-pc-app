@@ -1187,7 +1187,11 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
   try {
     // Economy runs the loop on the cost-efficient engine; Privacy (or an unconfigured
     // engine) uses cheap Claude Haiku. Once escalated, every step is Claude.
-    let tier = routeAutomationTier({ mode, escalated: run.escalated, ultra: isUltra });
+    // A run whose history carries screenshots leaves Economy regardless: that
+    // engine cannot see them, and a planner working from a picture it never saw
+    // clicks in the wrong place with total confidence.
+    const runHasImage = withoutImageBytes(run.messages).imageCount > 0;
+    let tier = routeAutomationTier({ mode, escalated: run.escalated, ultra: isUltra, hasImage: runHasImage });
     let result: ModelResult;
     try {
       result = await planStep(tier);

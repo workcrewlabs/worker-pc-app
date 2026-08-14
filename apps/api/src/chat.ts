@@ -6,7 +6,7 @@ import {
   type ChatDeltaFrame,
   type ChatSend
 } from "@workcrew/contracts";
-import { actualCostMicrodollars, budgetLimitedOutputTokens, estimatedInputMicrodollars, maximumReservationMicrodollars, withRollingCacheBreakpoint } from "./anthropic.js";
+import { actualCostMicrodollars, budgetLimitedOutputTokens, estimatedInputMicrodollars, maximumReservationMicrodollars, withRollingCacheBreakpoint, withoutUnseeableImages } from "./anthropic.js";
 import { blocksForRow, estimateMediaTokens } from "./attachments.js";
 import { budgetHeadroom, exhaustionError, getBudgetUsage, releaseBudget, reserveBudget, settleBudget } from "./budget.js";
 import { config } from "./config.js";
@@ -230,10 +230,15 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
   // conversation titled from the first user message. Economy mode runs the turn on
   // the cost-efficient engine; Privacy mode uses the capability-aware Claude routing
   // (auto/haiku/sonnet/opus).
+  // A turn carrying a picture has to run on an engine that can look at it, which
+  // the Economy engine cannot, so the attachment kinds are known before the
+  // engine is chosen rather than after.
+  const hasImage = body.attachments.some((attachment) => attachment.kind === "image");
   const tier: ConcreteModelTier = routeChatTier({
     mode: input.subscription.modelMode,
     requested: body.model,
-    task: body.text
+    task: body.text,
+    hasImage
   });
   let conversationId = body.conversationId ?? null;
   let isNewConversation = false;
@@ -420,7 +425,9 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
             model: modelId(attemptTier),
             max_tokens: effectiveMaxTokens,
             system: cachedSystem,
-            messages: withRollingCacheBreakpoint(modelMessages) as Anthropic.Messages.MessageParam[]
+            messages: withRollingCacheBreakpoint(
+              withoutUnseeableImages(modelMessages, attemptTier)
+            ) as Anthropic.Messages.MessageParam[]
           },
           { signal: input.signal }
         );
