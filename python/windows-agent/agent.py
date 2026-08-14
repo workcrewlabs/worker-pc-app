@@ -330,6 +330,97 @@ def validate_action(value: Any) -> dict[str, Any]:
     return result
 
 
+# Windows that belong to the desktop itself and are never what a user means.
+_SHELL_WINDOW_TITLES = {
+    "program manager",
+    "windows input experience",
+    "microsoft text input application",
+    "windows shell experience host",
+    "settings",
+    "search",
+    "start",
+}
+
+
+def _visible_windows_win32() -> list[tuple[int, str]]:
+    """Every real, visible, titled top-level window, asked of Windows directly.
+
+    This is the listing that still answers when UI Automation does not. A program
+    running as administrator is invisible to a program that is not: Windows
+    blocks the accessibility tree across that boundary, so an ERP started with
+    "Run as administrator" is simply absent from the UIA listing while sitting
+    plainly on screen, and the app reports that it cannot find a window the user
+    is looking straight at. EnumWindows is not blocked that way, so comparing the
+    two listings turns "I cannot see it" into the actual reason.
+    """
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    found: list[tuple[int, str]] = []
+
+    def collect(hwnd: int, _param: int) -> bool:
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            title = _window_title_of(int(hwnd)).strip()
+            if not title or title.lower() in _SHELL_WINDOW_TITLES:
+                return True
+            # Cloaked windows are the ones the shell keeps alive off screen
+            # (background store apps, a virtual desktop that is not showing).
+            # They report themselves visible and are not on screen.
+            cloaked = ctypes.c_int(0)
+            try:
+                ctypes.windll.dwmapi.DwmGetWindowAttribute(  # type: ignore[attr-defined]
+                    ctypes.wintypes.HWND(int(hwnd)), 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
+                )
+            except Exception:
+                cloaked = ctypes.c_int(0)
+            if cloaked.value:
+                return True
+            # Anything this small is a tooltip or a stray host window, not an app.
+            rect = ctypes.wintypes.RECT()
+            if not user32.GetWindowRect(ctypes.wintypes.HWND(int(hwnd)), ctypes.byref(rect)):
+                return True
+            if rect.right - rect.left < 200 or rect.bottom - rect.top < 120:
+                return True
+            found.append((int(hwnd), title[:500]))
+        except Exception:
+            # One bad window must never stop the walk.
+            pass
+        return True
+
+    callback = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)(collect)
+    user32.EnumWindows(callback, 0)
+    return found
+
+
+BLOCKED_WINDOW_NOTE = (
+    "This window is on screen but WorkCrew cannot see inside it or click it. That is Windows blocking it, "
+    "and it happens when the program was started as administrator while WorkCrew was not. Tell the user to "
+    "close WorkCrew and start it with Run as administrator (or to reopen this program normally), then try "
+    "again. Do not report this window as missing or closed: it is open."
+)
+
+
+def merge_window_listings(
+    controllable: list[dict[str, Any]], on_screen: list[tuple[int, str]]
+) -> list[dict[str, Any]]:
+    """Combine the windows UI Automation can drive with everything Windows says
+    is on screen, so a window that is present but unreachable is reported as
+    exactly that rather than silently dropped."""
+    known = {entry.get("handle") for entry in controllable if entry.get("handle")}
+    merged: list[dict[str, Any]] = list(controllable)
+    for handle, title in on_screen:
+        if handle in known:
+            continue
+        merged.append({
+            "title": title,
+            "type": "Window",
+            "handle": handle,
+            "controllable": False,
+            "note": BLOCKED_WINDOW_NOTE,
+        })
+    return merged
+
+
 def list_windows() -> str:
     _, Desktop = _load_pywinauto()
     windows: list[dict[str, Any]] = []
@@ -339,14 +430,27 @@ def list_windows() -> str:
             if not title or not window.is_visible():
                 continue
             rectangle = window.rectangle()
+            handle = 0
+            try:
+                handle = int(getattr(window, "handle", 0) or 0)
+            except Exception:
+                handle = 0
             windows.append({
                 "title": title[:500],
                 "type": window.element_info.control_type,
+                "handle": handle,
+                "controllable": True,
                 "rectangle": [rectangle.left, rectangle.top, rectangle.right, rectangle.bottom],
             })
         except Exception:
             # A single inaccessible window must never abort the whole listing.
             continue
+    try:
+        windows = merge_window_listings(windows, _visible_windows_win32())
+    except Exception:
+        # The second opinion is a diagnosis aid, never a reason to fail the
+        # listing that already worked.
+        pass
     return json.dumps(windows[:100], ensure_ascii=True)
 
 
@@ -400,6 +504,22 @@ def resolve_window(requested: str) -> Any:
         except Exception:
             continue
     if best is None:
+        # Before reporting it missing, ask Windows itself. A window that is on
+        # screen but absent from the accessibility tree is the signature of a
+        # program running as administrator while WorkCrew is not, and saying
+        # "no such window" about an app the user is looking straight at is the
+        # single most confusing thing this tool can do.
+        try:
+            blocked = [title for _, title in _visible_windows_win32() if score_window_title(requested, title)]
+        except Exception:
+            blocked = []
+        if blocked:
+            raise ValueError(
+                f'"{blocked[0]}" is open on screen, but Windows will not let WorkCrew see inside it or click it. '
+                "This happens when a program runs as administrator and WorkCrew does not. Tell the user to close "
+                "WorkCrew and start it with Run as administrator (or to reopen that program normally), then try "
+                "again. Do not tell the user the window is missing or closed: it is open."
+            )
         raise ValueError(
             f'No open window matches "{requested}". Use list-windows to see the open windows and connect with one of those titles.'
         )
