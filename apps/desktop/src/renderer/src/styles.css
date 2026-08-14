@@ -624,7 +624,11 @@ select option:checked { background-color: var(--panel-2); }
 .pane:not(.pane-active) { display: none; }
 /* The "+" add menu: choose photos/files or a folder to work in. Opens downward. */
 .add-menu-wrap { position: relative; display: inline-flex; }
-.add-menu { position: absolute; top: calc(100% + 8px); left: 0; z-index: 20; min-width: 210px; display: flex; flex-direction: column; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 12px 30px rgba(0,0,0,.28); }
+/* Opens UPWARD, like the effort menu beside it. The + sits in the composer at the
+   bottom of the window, so a menu dropping downwards runs straight off the bottom
+   edge: the first item showed and "Add a folder to work in" was underneath the
+   window, invisible and unclickable. */
+.add-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 20; min-width: 210px; display: flex; flex-direction: column; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 12px 30px rgba(0,0,0,.28); }
 .add-menu button { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: var(--fs-ui); text-align: left; cursor: pointer; }
 .add-menu button:hover { background: var(--panel-2); }
 .add-menu-icon { flex: none; display: inline-flex; color: var(--accent-soft); }
