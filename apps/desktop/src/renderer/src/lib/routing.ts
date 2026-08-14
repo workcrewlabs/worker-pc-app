@@ -12,6 +12,21 @@ export type ComposerMode = "chat" | "computer";
 // Whether a typed message should run on the computer. Only Computer use mode acts,
 // and even there a plain question ("what is in this folder") is answered in chat
 // rather than opening anything on screen.
+/**
+ * The mode a conversation is really in.
+ *
+ * A folder added to the conversation IS computer use: WorkCrew reads, writes and
+ * runs commands inside it, and there is nothing else it could mean. That was set
+ * once, when the folder was attached, and could drift afterwards, which left the
+ * switch reading Chat with a folder sitting right below it. The engine then
+ * answered with a listing it could not act on and told the user to attach the
+ * folder that was already attached. Derived rather than assigned, so the two
+ * cannot disagree again.
+ */
+export function effectiveMode(mode: ComposerMode, hasWorkingFolder: boolean): ComposerMode {
+  return hasWorkingFolder ? "computer" : mode;
+}
+
 export function shouldRunOnComputer(mode: ComposerMode, text: string): boolean {
   if (mode !== "computer") return false;
   return !isQuestionLike(text);

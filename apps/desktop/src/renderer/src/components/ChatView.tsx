@@ -55,14 +55,21 @@ function MicIcon() {
 // single, explicit choice for how the next message is handled, so WorkCrew never
 // has to guess: on Chat it answers here and hands back any file as a download, and
 // only on Computer use does it open apps and work on screen.
-function ModeToggle({ mode, onChange }: { mode: ComposerMode; onChange: (mode: ComposerMode) => void }) {
+// locked is set while a folder is attached: that folder IS the computer-use
+// session, so the switch shows it and cannot be moved out of it. Removing the
+// folder (the x on its pill) is what goes back to plain chat, which keeps the
+// switch and the folder from ever telling the user two different things.
+function ModeToggle({ mode, onChange, locked }: { mode: ComposerMode; onChange: (mode: ComposerMode) => void; locked?: boolean }) {
   return (
-    <div className="mode-toggle" role="group" aria-label="How WorkCrew should handle your message">
+    <div className={`mode-toggle${locked ? " mode-toggle-locked" : ""}`} role="group" aria-label="How WorkCrew should handle your message">
       <button
         type="button"
         className={mode === "chat" ? "is-active" : ""}
         aria-pressed={mode === "chat"}
-        title="Answer in the chat. WorkCrew never touches your computer, and a file you ask for comes back as a download."
+        disabled={locked}
+        title={locked
+          ? "WorkCrew is working in the folder shown below. Remove the folder to go back to Chat."
+          : "Answer in the chat. WorkCrew never touches your computer, and a file you ask for comes back as a download."}
         onClick={() => onChange("chat")}
       >
         Chat
@@ -522,7 +529,7 @@ export function ChatView({
             </div>
           )}
         </div>
-        <ModeToggle mode={mode} onChange={onModeChange} />
+        <ModeToggle mode={mode} onChange={onModeChange} locked={Boolean(workingFolder)} />
         {onRecord && (
           <button
             className="tool-button"

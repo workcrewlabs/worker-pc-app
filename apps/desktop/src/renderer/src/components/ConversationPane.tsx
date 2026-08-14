@@ -9,7 +9,7 @@ import { ApprovalModal } from "./ApprovalModal";
 import { DownloadGateModal } from "./DownloadGateModal";
 import { UpgradeWallModal } from "./UpgradeWallModal";
 import { isWebBuild } from "../lib/platform";
-import { looksLikeAutomation, isQuestionLike, shouldRunOnComputer, type ComposerMode } from "../lib/routing";
+import { effectiveMode, looksLikeAutomation, isQuestionLike, shouldRunOnComputer, type ComposerMode } from "../lib/routing";
 
 // The status one pane reports up to the workspace so the sidebar can show a
 // progress bar (running), a pause glyph (a backgrounded computer task), or a
@@ -79,7 +79,7 @@ export function ConversationPane({
   // the composer. Each pane keeps its own setting, starting from whatever the user
   // last picked (Chat on a fresh install), so one chat can be answering questions
   // while another works on the computer.
-  const [mode, setModeState] = useState<ComposerMode>(() => loadComposerMode());
+  const [modeState, setModeState] = useState<ComposerMode>(() => loadComposerMode());
   // The last message typed on Chat that read like a task for the computer, offered
   // above the composer as a one-click "Do it on my computer".
   const [computerHint, setComputerHint] = useState("");
@@ -96,6 +96,10 @@ export function ConversationPane({
   // The folder the user added to work in (absolute path + display name), kept for
   // the whole conversation so follow-ups keep operating in it.
   const [workingFolder, setWorkingFolder] = useState<{ path: string; name: string } | null>(null);
+  // What this pane is actually doing. A folder attached to the conversation is a
+  // computer-use session by definition, so the switch follows the folder instead
+  // of being set once and left to drift out of step with it.
+  const mode = effectiveMode(modeState, Boolean(workingFolder));
   const seeded = useRef(false);
   // Reserved synchronously the instant a folder run begins, so a second send during
   // the async preamble (the folder-tree read) cannot slip past the lagging
