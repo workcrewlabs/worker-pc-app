@@ -92,10 +92,36 @@ export function chooseModel(requested: ModelTier, task: string): ClaudeTier {
  *     Sonnet normally, Opus for Ultra, which is the "Claude solves what glm can't"
  *     safety net.
  */
-export function routeAutomationTier(opts: { mode: ModelMode; escalated: boolean; ultra: boolean }): ConcreteModelTier {
+export function routeAutomationTier(opts: {
+  mode: ModelMode;
+  escalated: boolean;
+  ultra: boolean;
+  /** Whether this step's request carries a screenshot for the model to look at. */
+  hasImage?: boolean;
+}): ConcreteModelTier {
   if (opts.escalated) return opts.ultra ? "opus" : "sonnet";
-  if (opts.mode === "economy" && economyEngineAvailable()) return "glm";
+  if (opts.mode === "economy" && economyEngineAvailable() && !mustSee(opts.hasImage)) return "glm";
   return "haiku";
+}
+
+/**
+ * Whether a request carrying an image has to leave the Economy engine.
+ *
+ * The Economy engine does not read images. It does not say so either: it accepts
+ * the image block, returns 200, and answers as though it had looked, which comes
+ * back to the user as a confident description of a screenshot nobody ever saw.
+ * Verified directly against the engine, which replied "I cannot see any image"
+ * to a screenshot it was sent. So a request with a picture in it goes to an
+ * engine that can see, and only stays put when there is no such engine
+ * configured at all.
+ */
+function mustSee(hasImage: boolean | undefined): boolean {
+  return Boolean(hasImage) && Boolean(config.anthropicApiKey);
+}
+
+/** Whether this engine actually looks at images it is sent. */
+export function engineSeesImages(tier: ConcreteModelTier): boolean {
+  return provider(tier) !== "zai";
 }
 
 /**
@@ -107,9 +133,18 @@ export function routeAutomationTier(opts: { mode: ModelMode; escalated: boolean;
  * applies when a Claude key is configured; otherwise the turn stays on the cheap
  * engine rather than failing. Privacy mode uses the normal Claude routing.
  */
-export function routeChatTier(opts: { mode: ModelMode; requested: ModelTier; task: string }): ConcreteModelTier {
+export function routeChatTier(opts: {
+  mode: ModelMode;
+  requested: ModelTier;
+  task: string;
+  /** Whether the user attached a picture to this turn. */
+  hasImage?: boolean;
+}): ConcreteModelTier {
   if (opts.mode === "economy" && economyEngineAvailable()) {
     if (opts.requested === "opus" && Boolean(config.anthropicApiKey)) return "opus";
+    // A pasted screenshot is the whole question. Answering it on an engine that
+    // cannot see is not a cheaper answer, it is a made up one.
+    if (mustSee(opts.hasImage)) return chooseModel(opts.requested, opts.task);
     return "glm";
   }
   return chooseModel(opts.requested, opts.task);
