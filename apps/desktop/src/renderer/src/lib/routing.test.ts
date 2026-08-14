@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isQuestionLike, looksLikeAutomation, shouldRunOnComputer } from "./routing";
+import { effectiveMode, isQuestionLike, looksLikeAutomation, shouldRunOnComputer } from "./routing";
 
 // Routing decides whether a typed message is answered in chat or run on the user's
 // computer. The composer toggle makes that choice explicit, so the cases here pin
@@ -57,5 +57,33 @@ describe("looksLikeAutomation", () => {
 
   it("does not flag a request for a file to download", () => {
     expect(looksLikeAutomation("make me an excel sheet of my expenses")).toBe(false);
+  });
+});
+
+// A folder was attached and the switch still read Chat, so an instruction to
+// change the project came back as a description of it, followed by advice to
+// attach the folder that was already attached. The two states cannot be allowed
+// to disagree: the folder decides.
+describe("effectiveMode", () => {
+  it("treats a conversation with a folder as computer use, whatever the switch says", () => {
+    expect(effectiveMode("chat", true)).toBe("computer");
+    expect(effectiveMode("computer", true)).toBe("computer");
+  });
+
+  it("leaves a conversation with no folder exactly as the user set it", () => {
+    expect(effectiveMode("chat", false)).toBe("chat");
+    expect(effectiveMode("computer", false)).toBe("computer");
+  });
+
+  it("makes an instruction typed against a folder actually run", () => {
+    // The failing case, end to end: switch on Chat, folder attached, a real
+    // instruction. It has to route to the engine, not to a chat answer.
+    const mode = effectiveMode("chat", true);
+    expect(shouldRunOnComputer(mode, "add a feedback box to the home page")).toBe(true);
+  });
+
+  it("still answers a plain question in chat, folder or not", () => {
+    const mode = effectiveMode("chat", true);
+    expect(shouldRunOnComputer(mode, "what is in this folder?")).toBe(false);
   });
 });
