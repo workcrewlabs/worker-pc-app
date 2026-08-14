@@ -818,5 +818,55 @@ class WindowOnlyCapture(unittest.TestCase):
         self.assertIsNone(agent._connected_window_rect(ZeroRectWindow()))
 
 
+class MergeWindowListingsTests(unittest.TestCase):
+    """A window running as administrator is invisible to a WorkCrew that is not,
+    so it never appeared in the listing and the app told the user their ERP was
+    not open while they were looking straight at it. Windows itself still
+    reports the window, so the two listings are merged and the difference is
+    reported as what it is."""
+
+    def test_a_window_only_windows_can_see_is_reported_as_blocked(self):
+        merged = agent.merge_window_listings(
+            [{"title": "Notepad", "handle": 11, "controllable": True}],
+            [(11, "Notepad"), (22, "Libra ERP")],
+        )
+        self.assertEqual(len(merged), 2)
+        blocked = merged[1]
+        self.assertEqual(blocked["title"], "Libra ERP")
+        self.assertFalse(blocked["controllable"])
+        self.assertIn("administrator", blocked["note"])
+
+    def test_it_says_the_window_is_open_so_the_model_does_not_call_it_missing(self):
+        # The whole point: the reply must contradict "it is not open", because
+        # that is the wrong answer the user was getting.
+        self.assertIn("it is open", agent.BLOCKED_WINDOW_NOTE)
+        self.assertIn("Run as administrator", agent.BLOCKED_WINDOW_NOTE)
+
+    def test_a_window_already_listed_is_not_listed_twice(self):
+        merged = agent.merge_window_listings(
+            [{"title": "Libra ERP", "handle": 22, "controllable": True}],
+            [(22, "Libra ERP")],
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertTrue(merged[0]["controllable"])
+
+    def test_windows_with_no_handle_do_not_swallow_a_blocked_one(self):
+        # A UIA entry can carry handle 0. That must not be treated as "already
+        # known" and hide a genuinely blocked window.
+        merged = agent.merge_window_listings(
+            [{"title": "Some overlay", "handle": 0, "controllable": True}],
+            [(0, "Some overlay"), (33, "Libra ERP")],
+        )
+        titles = [entry["title"] for entry in merged]
+        self.assertIn("Libra ERP", titles)
+
+    def test_nothing_extra_when_everything_is_reachable(self):
+        merged = agent.merge_window_listings([{"title": "A", "handle": 1, "controllable": True}], [])
+        self.assertEqual(merged, [{"title": "A", "handle": 1, "controllable": True}])
+
+    def test_the_shell_is_not_offered_as_an_app(self):
+        self.assertIn("program manager", agent._SHELL_WINDOW_TITLES)
+
+
 if __name__ == "__main__":
     unittest.main()
