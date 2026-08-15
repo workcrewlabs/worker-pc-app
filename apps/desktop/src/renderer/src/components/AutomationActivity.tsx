@@ -24,14 +24,17 @@ export function FolderActivity({ runner }: { runner: AutomationRunner }) {
 
   if (!running && steps.length === 0 && !summary && !error) return null;
 
-  // Past-tense, muted line per action. Folder work is commands, so almost every
-  // line reads "Ran a command"; the command itself sits in the hover title.
+  // One muted line per action, naming what it acted on. Every line used to read
+  // "Ran a command" with the command hidden in a tooltip, which told the user
+  // nothing about whether the work was going well or going in circles.
   const lineFor = (label: string, stepStatus: string): string => {
-    const base = label === "Run a command" ? "Ran a command" : label === "Write a file" ? "Wrote a file" : label;
-    if (stepStatus === "error") return `${base} (failed)`;
-    if (stepStatus === "declined") return `${base} (skipped)`;
-    return base;
+    if (stepStatus === "error") return `${label} (failed)`;
+    if (stepStatus === "declined") return `${label} (skipped)`;
+    return label;
   };
+
+  // The step in flight, shown live with the spinner instead of a bare "Working".
+  const inFlight = steps.find((step) => step.status === "running");
 
   return (
     <div className="folder-activity" aria-live="polite">
@@ -43,9 +46,9 @@ export function FolderActivity({ runner }: { runner: AutomationRunner }) {
           </p>
         ))}
       {running && (
-        <p className="folder-working">
+        <p className="folder-working" title={inFlight?.detail || undefined}>
           <span className="chip-spinner" aria-hidden="true" />
-          Working...{elapsed >= 3 ? ` ${elapsed}s` : ""}
+          {inFlight?.doing ?? inFlight?.label ?? "Working"}...{elapsed >= 3 ? ` ${elapsed}s` : ""}
         </p>
       )}
       {!running && summary && (

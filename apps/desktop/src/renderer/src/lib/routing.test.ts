@@ -87,3 +87,42 @@ describe("effectiveMode", () => {
     expect(shouldRunOnComputer(mode, "what is in this folder?")).toBe(false);
   });
 });
+
+// In a folder, a polite request is an instruction. The owner asked three times
+// for a change to his own app, phrased normally, and each time was told to flip
+// a switch, because "can you" and "i want you to" were being read as questions.
+describe("routing a message typed against a working folder", () => {
+  const run = (text: string): boolean => shouldRunOnComputer("computer", text, true);
+
+  it("acts on a polite request for a change", () => {
+    expect(run("can you add a feedback box to the home page")).toBe(true);
+    expect(run("could you fix the failing test")).toBe(true);
+    expect(run("please update the version number")).toBe(true);
+    expect(run("i want you to add a feedback box")).toBe(true);
+  });
+
+  it("acts on a plain instruction", () => {
+    expect(run("add a feedback box to the home page")).toBe(true);
+    expect(run("write a test for the routing logic")).toBe(true);
+    expect(run("run the tests and fix what fails")).toBe(true);
+  });
+
+  it("still answers a real question in chat", () => {
+    expect(run("what does ConversationPane do?")).toBe(false);
+    expect(run("how do I run the tests?")).toBe(false);
+    expect(run("why is the build failing")).toBe(false);
+    expect(run("explain the routing logic")).toBe(false);
+    expect(run("tell me what is in this folder")).toBe(false);
+  });
+
+  it("leaves screen automation outside a folder exactly as it was", () => {
+    // Without a folder, "can you" stays a question, which is right for a
+    // conversation that might otherwise start driving the mouse.
+    expect(shouldRunOnComputer("computer", "can you open my email", false)).toBe(false);
+    expect(shouldRunOnComputer("computer", "open my email", false)).toBe(true);
+  });
+
+  it("never acts while the pane is on Chat with no folder", () => {
+    expect(shouldRunOnComputer("chat", "add a feedback box", false)).toBe(false);
+  });
+});

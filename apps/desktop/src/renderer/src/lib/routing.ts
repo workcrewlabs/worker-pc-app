@@ -27,9 +27,26 @@ export function effectiveMode(mode: ComposerMode, hasWorkingFolder: boolean): Co
   return hasWorkingFolder ? "computer" : mode;
 }
 
-export function shouldRunOnComputer(mode: ComposerMode, text: string): boolean {
+export function shouldRunOnComputer(mode: ComposerMode, text: string, inFolder = false): boolean {
   if (mode !== "computer") return false;
-  return !isQuestionLike(text);
+  return inFolder ? !isFolderQuestion(text) : !isQuestionLike(text);
+}
+
+/**
+ * Whether a message typed against a working folder is really asking a question.
+ *
+ * Outside a folder, "can you open my email" is a question about capability. In a
+ * folder it is an instruction, the same way it would be to a developer: "can you
+ * add a feedback box", "please fix the build", "write a test for this" all mean
+ * do it, not discuss it. Treating those as questions left the user asking three
+ * times and being told each time to flip a switch.
+ *
+ * So only genuine information seeking stays in chat: an interrogative opener, or
+ * an explicit request to be told or shown something. Everything else acts.
+ */
+export function isFolderQuestion(text: string): boolean {
+  const t = normalized(text);
+  return /^(how|what|whats|what's|why|when|who|where|which|is |are |was |were |do |does |did |should i|can i|could i|explain|describe|summari|tell me (about|what|how|why|which)|show me (what|how|which)|remind me)\b/.test(t);
 }
 
 // Lowercase and strip leading quotes, brackets, and stray punctuation so a typed

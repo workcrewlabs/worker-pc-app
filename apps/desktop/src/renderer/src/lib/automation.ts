@@ -58,6 +58,75 @@ export function actionLabel(action: AutomationAction): string {
   }
 }
 
+/**
+ * What an action is doing, said plainly, in both tenses.
+ *
+ * The activity list used to read "Ran a command" over and over, with the command
+ * itself hidden in a tooltip nobody hovers. Watching that, you cannot tell
+ * whether the work is going well, going in circles, or about to touch something
+ * it should not. Every line now names the thing it acted on.
+ */
+export type ActivityLine = { doing: string; done: string };
+
+/** Keep a line short enough to read at a glance, cut on a word where possible. */
+function clampLine(value: string, limit = 64): string {
+  const text = value.trim();
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > limit * 0.6 ? cut.slice(0, space) : cut).trimEnd()}...`;
+}
+
+/** The last two segments of a path: enough to recognise, short enough to read. */
+function shortPath(value: string): string {
+  const cleaned = value.trim().replace(/^["']|["']$/g, "").replace(/\\/g, "/");
+  const parts = cleaned.split("/").filter(Boolean);
+  return clampLine(parts.length <= 2 ? cleaned : parts.slice(-2).join("/"), 48);
+}
+
+/** Describe one shell command the way a person would say it out loud. */
+function describeCommand(raw: string): ActivityLine {
+  const command = raw.trim();
+  const lower = command.toLowerCase();
+  const after = (word: string): string => command.slice(word.length).trim();
+
+  if (lower.startsWith("type ")) {
+    const file = shortPath(after("type"));
+    return { doing: `Reading ${file}`, done: `Read ${file}` };
+  }
+  if (lower === "dir" || lower.startsWith("dir ")) {
+    return { doing: "Listing the folder", done: "Listed the folder" };
+  }
+  if (lower.startsWith("findstr ")) {
+    return { doing: "Searching the files", done: "Searched the files" };
+  }
+  const short = clampLine(command);
+  return { doing: `Running ${short}`, done: `Ran ${short}` };
+}
+
+/**
+ * The activity line for an action. `done` picks the past tense, so the step that
+ * is still in flight reads "Reading WORKCREW.md" and the finished one above it
+ * reads "Read WORKCREW.md".
+ */
+export function activityLine(action: AutomationAction, done: boolean): string {
+  const line = ((): ActivityLine => {
+    if (action.kind === "shell") return describeCommand(action.command);
+    if (action.kind === "write_file") {
+      const file = shortPath(action.path);
+      return { doing: `Writing ${file}`, done: `Wrote ${file}` };
+    }
+    if (action.kind === "finish") return { doing: "Finishing up", done: "Finished" };
+    // Browser and desktop steps already have readable labels; the target they
+    // act on is the part worth adding.
+    const label = actionLabel(action);
+    const target = actionDetail(action);
+    const text = target ? `${label}: ${clampLine(target, 40)}` : label;
+    return { doing: text, done: text };
+  })();
+  return done ? line.done : line.doing;
+}
+
 // A short detail string for an action, used as a subtitle in the activity list.
 export function actionDetail(action: AutomationAction): string | undefined {
   if (action.kind === "shell") return action.command;

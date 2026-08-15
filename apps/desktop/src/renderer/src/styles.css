@@ -442,11 +442,6 @@ select option:checked { background-color: var(--panel-2); }
 .mode-toggle button { padding: 5px 11px; border: 1px solid transparent; border-radius: 7px; cursor: pointer; color: var(--muted); background: transparent; font-size: var(--fs-small); font-weight: 600; white-space: nowrap; transition: color .15s, background .15s, border-color .15s; }
 .mode-toggle button:hover { color: var(--text); }
 .mode-toggle button.is-active { color: var(--text); border-color: var(--line); background: var(--panel-2); }
-/* While a folder is attached the session IS computer use, so the switch shows
-   that and the other side is not offered. Removing the folder is what unlocks it,
-   which is why the disabled half stays legible rather than greyed to nothing. */
-.mode-toggle button:disabled { cursor: default; opacity: .45; }
-.mode-toggle button:disabled:hover { color: var(--muted); }
 :root[data-theme="light"] .mode-toggle { background: var(--card-2); }
 /* The offer shown above the composer when a message typed on Chat reads like a
    task for the computer. It is a one-line nudge, never a blocking dialog. */

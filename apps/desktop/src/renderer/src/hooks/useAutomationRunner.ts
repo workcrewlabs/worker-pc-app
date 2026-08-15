@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { AutomationAction, ModelTier, RunKind } from "@workcrew/contracts";
-import { actionDetail, actionLabel } from "../lib/automation";
+import { actionDetail, actionLabel, activityLine } from "../lib/automation";
 import { redactResult, requiresApproval } from "../security";
 import { addHistory } from "../lib/storage";
 import { track } from "../lib/analytics";
@@ -28,7 +28,15 @@ const WINDOWS_NON_INPUT_COMMANDS = new Set([
 ]);
 
 export type StepStatus = "running" | "ok" | "error" | "declined";
-export type RunStep = { id: string; label: string; detail?: string; status: StepStatus };
+export type RunStep = {
+  id: string;
+  /** What this step did, past tense, shown once it has finished. */
+  label: string;
+  /** The same thing in progress, shown while it is the step in flight. */
+  doing?: string;
+  detail?: string;
+  status: StepStatus;
+};
 export type RunStatus = "idle" | "running" | "complete" | "failed" | "stopped";
 
 function stepId(): string {
@@ -253,7 +261,7 @@ export function useAutomationRunner(): AutomationRunner {
       if (stoppedRef.current) return "stopped";
       const action = step.action;
       const id = stepId();
-      setSteps((current) => [...current, { id, label: actionLabel(action), detail: actionDetail(action), status: "running" }]);
+      setSteps((current) => [...current, { id, label: activityLine(action, true), doing: activityLine(action, false), detail: actionDetail(action), status: "running" }]);
 
       // Re-derive approval from the action itself rather than trusting the stored
       // flag (a tampered recipe could lie); shell is gated by the main process.
@@ -377,7 +385,7 @@ export function useAutomationRunner(): AutomationRunner {
         const recordEntry = { action, snapshot: lastSnapshot, ok: true };
         recorded.push(recordEntry);
         const id = stepId();
-        setSteps((current) => [...current, { id, label: actionLabel(action), detail: actionDetail(action), status: "running" }]);
+        setSteps((current) => [...current, { id, label: activityLine(action, true), doing: activityLine(action, false), detail: actionDetail(action), status: "running" }]);
 
         // Shell commands are approved by the main process itself (a native prompt
         // that cannot be bypassed), so they are not prompted again here. Other

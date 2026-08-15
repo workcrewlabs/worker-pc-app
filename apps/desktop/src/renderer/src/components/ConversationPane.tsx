@@ -371,7 +371,9 @@ export function ConversationPane({
       ? `\n\nThe user attached these files; work with them at their real locations on the computer: ${paths.map((p) => `"${p}"`).join(", ")}`
       : "";
     if (workingFolder && !runner.running) {
-      if (!shouldRunOnComputer(mode, text)) {
+      // In a folder, a polite request ("can you add...") is an instruction, not
+      // a question, so only real questions are answered in chat.
+      if (!shouldRunOnComputer(mode, text, true)) {
         const folder = workingFolder;
         runner.clear();
         setAutomationTask("");

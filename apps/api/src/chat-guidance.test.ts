@@ -21,6 +21,14 @@ describe("what chat tells a user who asks for work on a project", () => {
     expect(SYSTEM_PROMPT).toContain("turns on Computer use by itself");
   });
 
+  it("offers no switch at all once a folder is attached", () => {
+    // With a folder there IS no switch in the composer, so mentioning one sends
+    // the user hunting for a control that is not on screen. This was the reply
+    // the owner got three times while trying to change his own app.
+    expect(SYSTEM_PROMPT).toContain("There is no switch to set in a folder session");
+    expect(SYSTEM_PROMPT).toContain("does NOT drive the mouse");
+  });
+
   it("still routes plain on-screen tasks to the switch", () => {
     // The older path has to survive: opening a website is not folder work.
     expect(SYSTEM_PROMPT).toContain("set the switch under the message box to Computer use");
