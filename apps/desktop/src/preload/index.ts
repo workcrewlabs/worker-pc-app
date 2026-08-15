@@ -63,8 +63,11 @@ const workcrew = {
     write: (text: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("clipboard:write", text)
   },
   support: {
-    // Open the user's mail client to the support address.
-    contact: (): Promise<{ opened: boolean }> => ipcRenderer.invoke("support:contact"),
+    // Open the user's mail client to the support address. An optional subject and
+    // body let the home-page feedback box pre-fill the message for the user to
+    // review and send.
+    contact: (payload?: { subject?: string; body?: string }): Promise<{ opened: boolean }> =>
+      ipcRenderer.invoke("support:contact", payload),
     // Open the WorkCrew website, where billing and cancellation are managed.
     billing: (): Promise<{ opened: boolean }> => ipcRenderer.invoke("support:billing")
   },
