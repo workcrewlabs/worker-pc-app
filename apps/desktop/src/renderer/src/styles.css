@@ -710,6 +710,13 @@ select option:checked { background-color: var(--panel-2); }
    text. Deliberately unboxed so it reads as part of the conversation. */
 .folder-activity { width: min(720px, calc(100% - 64px)); margin: 0 auto; display: flex; flex-direction: column; gap: 7px; padding: 2px 0 10px; }
 .folder-step { margin: 0; color: var(--muted); font-size: 13px; letter-spacing: .1px; }
+/* The collapsed summary row: one muted sentence with a chevron, clickable to
+   reveal the per-step lines. Looks like text, not a button, on purpose. */
+.folder-group { display: inline-flex; align-items: center; gap: 7px; padding: 2px 0; border: 0; background: transparent; color: var(--muted); font-size: 13px; letter-spacing: .1px; cursor: pointer; text-align: left; font-family: inherit; }
+.folder-group:hover { color: var(--text-soft); }
+.folder-group-chevron { flex: none; transition: transform .12s ease; }
+.folder-group-open .folder-group-chevron { transform: rotate(90deg); }
+.folder-steps { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 4px 18px; }
 .folder-working { display: inline-flex; align-items: center; gap: 9px; margin: 2px 0 0; color: var(--muted); font-size: 13px; }
 .folder-activity .turn-assistant { margin-top: 6px; }
 .message-list { width: min(720px, calc(100% - 64px)); margin: 0 auto; padding: 28px 0 16px; display: flex; flex-direction: column; gap: 22px; }

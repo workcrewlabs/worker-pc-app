@@ -54,6 +54,8 @@ export type AutomationRunner = {
   summary: string;
   error: string;
   running: boolean;
+  /** Output tokens this run has produced so far, for the live working line. */
+  tokens: number;
   label: string;
   // screenshot is the newest capture of the screen, and point the spot about to
   // be clicked, so a screen-level approval can show WHERE rather than a number.
@@ -84,6 +86,7 @@ export function useAutomationRunner(): AutomationRunner {
   const [summary, setSummary] = useState("");
   const [error, setError] = useState("");
   const [label, setLabel] = useState("");
+  const [tokens, setTokens] = useState(0);
   const [pending, setPending] = useState<{ action: AutomationAction; label: string; screenshot?: ScreenCapture; point?: { x: number; y: number } } | null>(null);
   // A paused run is one whose conversation is no longer on screen. The loop parks
   // between steps until resumed, so the mouse is never driven for a background chat.
@@ -353,6 +356,7 @@ export function useAutomationRunner(): AutomationRunner {
     let finishSummary = "Task complete.";
 
     try {
+      setTokens(0);
       const kind: RunKind = workingFolder ? "folder" : "screen";
       const { runId } = await window.workcrew.api.createRun(trimmed, model, kind);
       let result: { toolUseId: string; ok: boolean; output: string; imageBase64?: string } | undefined;
@@ -366,6 +370,7 @@ export function useAutomationRunner(): AutomationRunner {
           break;
         }
         const response = await window.workcrew.api.nextRun(runId, result);
+        if (typeof response.tokens === "number") setTokens(response.tokens);
         if (response.status === "complete") {
           finishSummary = response.message ?? "Task complete.";
           setSummary(finishSummary);
@@ -466,5 +471,5 @@ export function useAutomationRunner(): AutomationRunner {
     }
   }
 
-  return { steps, status, summary, error, label, pending, run, decide, stop, clear, setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
+  return { steps, status, summary, error, tokens, label, pending, run, decide, stop, clear, setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
 }

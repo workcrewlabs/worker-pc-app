@@ -127,6 +127,34 @@ export function activityLine(action: AutomationAction, done: boolean): string {
   return done ? line.done : line.doing;
 }
 
+/**
+ * One line for a whole stretch of finished work, the way a coding assistant
+ * compresses it: "Ran 12 commands, read 5 files, wrote 3 files, 1 failed".
+ * The per-step lines still exist behind a click; this is the collapsed view,
+ * so a long run reads as a sentence instead of a scroll.
+ */
+export function summarizeActivity(steps: { label: string; status: string }[]): string {
+  let commands = 0;
+  let reads = 0;
+  let writes = 0;
+  let failed = 0;
+  for (const step of steps) {
+    if (step.label === "Finished" || step.label === "Finishing up") continue;
+    if (step.status === "error") failed += 1;
+    if (step.label.startsWith("Read ")) reads += 1;
+    else if (step.label.startsWith("Wrote ")) writes += 1;
+    else commands += 1;
+  }
+  const parts: string[] = [];
+  if (commands) parts.push(`ran ${commands} command${commands === 1 ? "" : "s"}`);
+  if (reads) parts.push(`read ${reads} file${reads === 1 ? "" : "s"}`);
+  if (writes) parts.push(`wrote ${writes} file${writes === 1 ? "" : "s"}`);
+  if (failed) parts.push(`${failed} failed`);
+  if (parts.length === 0) return "";
+  const text = parts.join(", ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 // A short detail string for an action, used as a subtitle in the activity list.
 export function actionDetail(action: AutomationAction): string | undefined {
   if (action.kind === "shell") return action.command;

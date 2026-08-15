@@ -363,6 +363,9 @@ export type RunStepResponse = {
     usedMicrodollars: number;
     budgetMicrodollars: number;
   };
+  /** Output tokens this run has produced so far, for the live working line.
+   * An activity signal, not billing: budget accounting stays in usage. */
+  tokens?: number;
 };
 
 // ---------------------------------------------------------------------------

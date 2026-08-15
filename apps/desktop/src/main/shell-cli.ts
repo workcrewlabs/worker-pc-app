@@ -65,6 +65,20 @@ function clamp(text: string): string {
   return text.length > MAX_OUTPUT_CHARS ? `${text.slice(0, MAX_OUTPUT_CHARS)}\n...[truncated]` : text;
 }
 
+/**
+ * Whether a write looks like a fragment about to destroy a file.
+ *
+ * write_file replaces the whole file, and a model under pressure will sometimes
+ * send just the piece it changed: a 15 line handler arrived as the entire
+ * content of a 1000 line main process file, and the app stopped compiling.
+ * A real rewrite almost never shrinks a substantial file to under a fifth of
+ * its size, so that shape is refused and the model is told to send the whole
+ * file. Small files are exempt: rewriting a 20 line config down to 5 is normal.
+ */
+export function looksLikeTruncatedWrite(previousBytes: number, nextBytes: number): boolean {
+  return previousBytes >= 4_000 && nextBytes < previousBytes / 5;
+}
+
 // Kill the whole process tree. child.kill() only terminates the shell itself, so
 // any tool it launched (git, ffmpeg, npm) would be orphaned and keep running.
 function killTree(pid: number | undefined): void {

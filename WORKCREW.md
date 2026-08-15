@@ -17,8 +17,11 @@ Three parts in one repository:
 1. Read the code you are about to change before changing it. Use `type` to read a
    file, `dir` to list, `findstr` to search. Commands run in Windows cmd.exe, so
    unix commands (cat, ls, grep) fail.
-2. Make every file edit with `write_file`, sending the whole new file. Never edit
-   a file with echo, redirection, or Set-Content.
+2. Make every file edit with `write_file`, sending the WHOLE new file, never
+   just the part you changed: a fragment sent as the file destroys the rest of
+   it, and a fragment over a large file is refused. Never edit a file any other
+   way: no echo, no redirection, no Set-Content, and no python or node one
+   liners that rewrite a file.
 3. Match the style already in the file. Comments explain why something is done,
    not what the line says. Keep them at the density already there.
 4. Put a test next to the code (`*.test.ts`) for anything with a rule in it. The

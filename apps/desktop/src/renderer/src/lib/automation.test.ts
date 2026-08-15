@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionDetail, actionLabel, activityLine } from "./automation";
+import { actionDetail, actionLabel, activityLine, summarizeActivity } from "./automation";
 
 describe("action labels", () => {
   it("labels a shell command and shows the command as the detail", () => {
@@ -50,5 +50,38 @@ describe("activityLine", () => {
 
   it("never leaves a line empty", () => {
     expect(activityLine({ kind: "finish", summary: "done" } as const, true)).toBe("Finished");
+  });
+});
+
+// The activity list, collapsed. Twenty named lines are honest but nobody scrolls
+// them while the work is going; the summary compresses the same information into
+// one sentence and the click reveals the detail.
+describe("summarizeActivity", () => {
+  const step = (label: string, status = "ok") => ({ label, status });
+
+  it("compresses a run into one sentence", () => {
+    const text = summarizeActivity([
+      step("Read WORKCREW.md"), step("Read src/App.tsx"),
+      step("Ran npm run typecheck"), step("Searched the files"),
+      step("Wrote src/FeedbackBox.tsx")
+    ]);
+    expect(text).toBe("Ran 2 commands, read 2 files, wrote 1 file");
+  });
+
+  it("says when something failed, so collapsing hides nothing that matters", () => {
+    const text = summarizeActivity([step("Ran npm test", "error"), step("Read a.ts")]);
+    expect(text).toBe("Ran 1 command, read 1 file, 1 failed");
+  });
+
+  it("reads naturally when the run only read", () => {
+    expect(summarizeActivity([step("Read a.ts"), step("Read b.ts")])).toBe("Read 2 files");
+  });
+
+  it("does not count finishing as work", () => {
+    expect(summarizeActivity([step("Finished")])).toBe("");
+  });
+
+  it("is empty for an empty run", () => {
+    expect(summarizeActivity([])).toBe("");
   });
 });

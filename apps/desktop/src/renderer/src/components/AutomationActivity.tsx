@@ -1,19 +1,28 @@
 import { useEffect, useState } from "react";
 import type { AutomationRunner } from "../hooks/useAutomationRunner";
+import { summarizeActivity } from "../lib/automation";
 import { Markdown } from "../lib/markdown";
 
-// Folder-mode work rendered the quiet cowork way: a muted past-tense line per
-// command, a small spinner with elapsed seconds while working, and the final
-// answer as a normal chat message. Nothing boxed, no Stop button here (the
-// composer's Send button becomes Stop), so answering a question about a folder
-// feels like chat, not like the computer being taken over. The boxed panel
-// below stays for headed automations (browser and app control).
-export function FolderActivity({ runner }: { runner: AutomationRunner }) {
-  const { steps, summary, status, error, running } = runner;
+// A compact token count for the working line: 620, 1.4K, 12K.
+function compactTokens(count: number): string {
+  if (count >= 10_000) return `${Math.round(count / 1_000)}K`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K`;
+  return String(count);
+}
 
-  // Elapsed seconds since the run started, shown next to the spinner like
-  // "Working... 7s" so a long command visibly makes progress.
+// Folder-mode work rendered the way a coding assistant shows its own: one
+// collapsed line summarising everything done so far ("Ran 12 commands, read 5
+// files, wrote 3 files"), expandable to the named per-step lines, and a live
+// working line with elapsed time, tokens, and what is happening right now.
+// A long run reads as a sentence instead of a scroll.
+export function FolderActivity({ runner }: { runner: AutomationRunner }) {
+  const { steps, summary, status, error, running, tokens } = runner;
+
+  // Elapsed seconds since the run started, part of the live working line.
   const [elapsed, setElapsed] = useState(0);
+  // Whether the per-step detail is open. Collapsed by default; the summary line
+  // carries the counts, including failures, so nothing is hidden that matters.
+  const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (!running) return;
     setElapsed(0);
@@ -24,31 +33,48 @@ export function FolderActivity({ runner }: { runner: AutomationRunner }) {
 
   if (!running && steps.length === 0 && !summary && !error) return null;
 
-  // One muted line per action, naming what it acted on. Every line used to read
-  // "Ran a command" with the command hidden in a tooltip, which told the user
-  // nothing about whether the work was going well or going in circles.
   const lineFor = (label: string, stepStatus: string): string => {
     if (stepStatus === "error") return `${label} (failed)`;
     if (stepStatus === "declined") return `${label} (skipped)`;
     return label;
   };
 
-  // The step in flight, shown live with the spinner instead of a bare "Working".
+  const finished = steps.filter((step) => step.status !== "running");
+  const grouped = summarizeActivity(finished);
+  // The step in flight; between steps the model is deciding what to do next.
   const inFlight = steps.find((step) => step.status === "running");
+  const doing = inFlight?.doing ?? inFlight?.label ?? "Thinking";
 
   return (
     <div className="folder-activity" aria-live="polite">
-      {steps
-        .filter((step) => step.status !== "running")
-        .map((step) => (
-          <p key={step.id} className="folder-step" title={step.detail || undefined}>
-            {lineFor(step.label, step.status)}
-          </p>
-        ))}
+      {grouped && (
+        <button
+          type="button"
+          className={`folder-group${expanded ? " folder-group-open" : ""}`}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          <svg className="folder-group-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polyline points="9 6 15 12 9 18" />
+          </svg>
+          {grouped}
+        </button>
+      )}
+      {expanded && finished.length > 0 && (
+        <div className="folder-steps">
+          {finished.map((step) => (
+            <p key={step.id} className="folder-step" title={step.detail || undefined}>
+              {lineFor(step.label, step.status)}
+            </p>
+          ))}
+        </div>
+      )}
       {running && (
         <p className="folder-working" title={inFlight?.detail || undefined}>
           <span className="chip-spinner" aria-hidden="true" />
-          {inFlight?.doing ?? inFlight?.label ?? "Working"}...{elapsed >= 3 ? ` ${elapsed}s` : ""}
+          {elapsed >= 1 ? `${elapsed}s · ` : ""}
+          {tokens > 0 ? `${compactTokens(tokens)} tokens · ` : ""}
+          {doing}...
         </p>
       )}
       {!running && summary && (

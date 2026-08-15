@@ -1333,7 +1333,9 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
       action: result.action,
       toolUseId: result.toolUseId,
       message: result.action.kind === "finish" ? result.action.summary : undefined,
-      usage: usagePayload
+      usage: usagePayload,
+      // The live counter next to the spinner, like a coding assistant's own.
+      tokens: run.tokensOutput
     };
   } catch (error) {
     const code = (error as { code?: string }).code;
