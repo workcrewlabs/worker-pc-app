@@ -383,7 +383,16 @@ export function useAutomationRunner(): AutomationRunner {
           break;
         }
         const say = result && interjections.current.length > 0 ? interjections.current.splice(0).join("\n") : undefined;
-        const response = await window.workcrew.api.nextRun(runId, result, say);
+        let response;
+        try {
+          response = await window.workcrew.api.nextRun(runId, result, say);
+        } catch (stepError) {
+          // A backend from before mid-run messages rejects the say field
+          // outright. Losing one steer is recoverable; losing the run is not,
+          // so deliver the step bare rather than dying on the extra field.
+          if (!say) throw stepError;
+          response = await window.workcrew.api.nextRun(runId, result);
+        }
         if (typeof response.tokens === "number") setTokens(response.tokens);
         if (response.status === "complete") {
           finishSummary = response.message ?? "Task complete.";
