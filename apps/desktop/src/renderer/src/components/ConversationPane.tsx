@@ -366,6 +366,15 @@ export function ConversationPane({
   // answered from the folder's listing, everything else runs the engine inside it);
   // on Chat the folder is only context for the answer, and nothing runs.
   function send(text: string, attachments: AttachmentRef[], files: LocalFile[] = []): void {
+    // A message typed while a run is working is a steer, not a new task: it shows
+    // in the transcript like any message and rides to the model with the next
+    // step, so "stop", "skip the tests", or "wrong file" lands mid-flight
+    // instead of being swallowed or spawning a second run.
+    if (runner.running) {
+      chat.appendUserTurn(text);
+      runner.say(text);
+      return;
+    }
     const paths = files.map((f) => f.path);
     const fileList = paths.length > 0
       ? `\n\nThe user attached these files; work with them at their real locations on the computer: ${paths.map((p) => `"${p}"`).join(", ")}`

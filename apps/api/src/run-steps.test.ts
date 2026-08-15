@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { createRunSchema } from "@workcrew/contracts";
-import { MAX_RUN_STEPS } from "./server.js";
+import { createRunSchema, nextRunStepSchema } from "@workcrew/contracts";
+import { MAX_RUN_STEPS, midTaskNote } from "./server.js";
 import { client, createRun, getRun, initializeDatabase } from "./db.js";
 
 // A run used to be cut off after 24 planning steps whatever it was doing. That is
@@ -76,5 +76,30 @@ describe("a stored run", () => {
     // is what stops a run from changing its own limit halfway through.
     expect((await store("folder"))?.kind).toBe("folder");
     expect((await store("screen"))?.kind).toBe("screen");
+  });
+});
+
+// A user watching a run had no way to speak to it: messages typed mid-flight
+// were swallowed or answered by the wrong thing entirely. They now ride to the
+// model with the next tool result.
+describe("speaking to a run while it works", () => {
+  it("accepts a mid-run message alongside a tool result", () => {
+    const parsed = nextRunStepSchema.parse({
+      result: { toolUseId: "t1", ok: true, output: "done" },
+      say: "  skip the tests, just open the dev app  "
+    });
+    expect(parsed.say).toBe("skip the tests, just open the dev app");
+  });
+
+  it("bounds it like any other input", () => {
+    expect(() => nextRunStepSchema.parse({ say: "x".repeat(5_000) })).toThrow();
+    expect(() => nextRunStepSchema.parse({ say: "" })).toThrow();
+  });
+
+  it("delivers it as the user's own voice, with stopping honoured", () => {
+    const note = midTaskNote("stop, that is the wrong file");
+    expect(note).toContain('"stop, that is the wrong file"');
+    expect(note).toContain("If they asked you to stop, stop");
+    expect(note).toContain("Never ignore it");
   });
 });

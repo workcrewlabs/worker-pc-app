@@ -447,7 +447,10 @@ export function ChatView({
     const trimmed = text.trim();
     // Block while a chat is streaming, a pasted image is still uploading, or an
     // automation is running, so a message is never dropped against a busy engine.
-    if ((!trimmed && readyRefs.length === 0 && readyFiles.length === 0) || streaming || uploading || runner.running) return;
+    // While a run is working, typed text is a mid-run steer and always allowed;
+    // only attachments need the run to be over. A streaming chat still blocks.
+    if ((!trimmed && readyRefs.length === 0 && readyFiles.length === 0) || streaming || uploading) return;
+    if (runner.running && !trimmed) return;
     onSend(trimmed, readyRefs, readyFiles);
     setDraft("");
     setAttachments([]);
@@ -461,7 +464,7 @@ export function ChatView({
     }
   }
 
-  const canSend = (draft.trim().length > 0 || readyRefs.length > 0 || readyFiles.length > 0) && !uploading && !runner.running;
+  const canSend = (draft.trim().length > 0 || readyRefs.length > 0 || readyFiles.length > 0) && !uploading && (!runner.running || draft.trim().length > 0);
 
   const composer = (
     <div
@@ -492,11 +495,15 @@ export function ChatView({
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         placeholder={
-          workingFolder
-            // Folder work is files and commands, never the mouse, so it must not
-            // be described as taking over the computer.
-            ? `Ask for a change in ${workingFolder.name}, or ask a question about it...`
-            : mode === "computer" ? "Tell WorkCrew what to do on your computer..." : "Ask WorkCrew anything..."
+          runner.running && !streaming
+            // Mid-run the composer steers the work: Enter delivers the message
+            // to the model with its next step.
+            ? "Tell WorkCrew something while it works, Enter sends it..."
+            : workingFolder
+              // Folder work is files and commands, never the mouse, so it must not
+              // be described as taking over the computer.
+              ? `Ask for a change in ${workingFolder.name}, or ask a question about it...`
+              : mode === "computer" ? "Tell WorkCrew what to do on your computer..." : "Ask WorkCrew anything..."
         }
         rows={hasConversation ? 1 : 3}
       />

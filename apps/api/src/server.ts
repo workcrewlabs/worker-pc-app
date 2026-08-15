@@ -134,6 +134,20 @@ const APP_VERSION = "0.1.7";
 export const MAX_RUN_STEPS: Record<RunKind, number> = { screen: 24, folder: 120 };
 
 /**
+ * How a message the user typed mid-run is presented to the model. Marked plainly
+ * as the user's voice and wrapped with what to do about it, because the one
+ * unforgivable response to an interruption is to carry on as if it never
+ * happened. Exported for the test that pins that promise.
+ */
+export function midTaskNote(say: string): string {
+  return `The user just said, while you were working: "${say}"\n` +
+    "Act on this immediately, before anything else. If it changes the task, change course now. " +
+    "If they asked you to stop, stop: call finish and summarise where things stand. " +
+    "If it is a question, answer it in your finish summary or adjust your work to cover it. " +
+    "Never ignore it and never carry on with a plan it contradicts.";
+}
+
+/**
  * Trim screenshot history to the newest few, exactly as the reference
  * computer-use loop does (its harness filters tool results down to the N most
  * recent images).
@@ -1081,15 +1095,18 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
       });
     }
     stripOlderScreenshots(run.messages);
-    run.messages.push({
-      role: "user",
-      content: [{
-        type: "tool_result",
-        tool_use_id: body.result.toolUseId,
-        is_error: !body.result.ok,
-        content: resultContent
-      }]
-    });
+    const stepBlocks: unknown[] = [{
+      type: "tool_result",
+      tool_use_id: body.result.toolUseId,
+      is_error: !body.result.ok,
+      content: resultContent
+    }];
+    // A message the user typed while the run was working rides in with the tool
+    // result, so the model hears it at the earliest legal moment (a tool_use has
+    // to be answered by its tool_result first). This is what lets a running task
+    // be steered or told to stop without killing it.
+    if (body.say) stepBlocks.push({ type: "text", text: midTaskNote(body.say) });
+    run.messages.push({ role: "user", content: stepBlocks });
     run.pendingToolUseId = null;
   } else if (body.result) {
     throw Object.assign(new Error("This run is not waiting for a tool result"), { statusCode: 409, code: "UNEXPECTED_TOOL_RESULT" });

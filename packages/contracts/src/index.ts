@@ -322,7 +322,13 @@ export const runToolResultSchema = z.object({
 }).strict();
 
 export const nextRunStepSchema = z.object({
-  result: runToolResultSchema.optional()
+  result: runToolResultSchema.optional(),
+  // What the user typed while the run was in flight. Delivered to the model with
+  // the next tool result, so a working task can be steered or corrected without
+  // being stopped: "skip the tests", "wrong file, it is in apps/api", "stop".
+  // Bounded like a task; sent only alongside a result, because a message with no
+  // result has no position in the tool conversation to attach to.
+  say: z.string().trim().min(1).max(4_000).optional()
 }).strict();
 
 export type SubscriptionState = {

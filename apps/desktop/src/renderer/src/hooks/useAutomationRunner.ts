@@ -63,6 +63,9 @@ export type AutomationRunner = {
   // workingFolder, when set, is the absolute path of the user's chosen folder; any
   // shell command in this run executes inside it instead of the hidden workspace.
   run: (task: string, model: ModelTier, label?: string, workingFolder?: string) => Promise<void>;
+  /** Hand a message the user typed mid-run to the model with the next step.
+   * Returns false when no run is in flight to hear it. */
+  say: (text: string) => boolean;
   decide: (approved: boolean) => void;
   stop: () => void;
   clear: () => void;
@@ -106,6 +109,15 @@ export function useAutomationRunner(): AutomationRunner {
   // the authoritative guard against that.
   const runningRef = useRef(false);
   const approvalResolve = useRef<((approved: boolean) => void) | null>(null);
+  // Messages typed while a run is working, waiting to ride out with the next
+  // step. Drained in one batch so two quick corrections arrive together.
+  const interjections = useRef<string[]>([]);
+  function say(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed || !runningRef.current) return false;
+    interjections.current.push(trimmed);
+    return true;
+  }
   // When on, write actions run without prompting ("Always allow").
   const autoApproveRef = useRef(false);
   function setAutoApprove(value: boolean): void {
@@ -357,6 +369,7 @@ export function useAutomationRunner(): AutomationRunner {
 
     try {
       setTokens(0);
+      interjections.current = [];
       const kind: RunKind = workingFolder ? "folder" : "screen";
       const { runId } = await window.workcrew.api.createRun(trimmed, model, kind);
       let result: { toolUseId: string; ok: boolean; output: string; imageBase64?: string } | undefined;
@@ -369,7 +382,8 @@ export function useAutomationRunner(): AutomationRunner {
           setStatus("stopped");
           break;
         }
-        const response = await window.workcrew.api.nextRun(runId, result);
+        const say = result && interjections.current.length > 0 ? interjections.current.splice(0).join("\n") : undefined;
+        const response = await window.workcrew.api.nextRun(runId, result, say);
         if (typeof response.tokens === "number") setTokens(response.tokens);
         if (response.status === "complete") {
           finishSummary = response.message ?? "Task complete.";
@@ -471,5 +485,5 @@ export function useAutomationRunner(): AutomationRunner {
     }
   }
 
-  return { steps, status, summary, error, tokens, label, pending, run, decide, stop, clear, setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
+  return { steps, status, summary, error, tokens, label, pending, run, say, decide, stop, clear, setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
 }

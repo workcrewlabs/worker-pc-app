@@ -126,7 +126,7 @@ const workcrew = {
     portal: () => ipcRenderer.invoke("api:portal"),
     createRun: (task: string, model: ModelTier, kind: RunKind = "screen"): Promise<{ runId: string }> =>
       ipcRenderer.invoke("api:create-run", { task, model, kind }),
-    nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string; imageBase64?: string }): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result })
+    nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string; imageBase64?: string }, say?: string): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result, say })
   },
   chat: {
     // Start a streamed chat turn. A request id is generated here so the caller
