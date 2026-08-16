@@ -102,14 +102,49 @@ export function adaptiveDailyLimit(
   return Math.min(allowance, monthlyRemaining);
 }
 
+/**
+ * How long a reservation can be alive before it is treated as abandoned.
+ *
+ * A reservation is a worst-case hold taken before ONE model step, released or
+ * settled the moment that step ends. If the run dies first (a client timeout, a
+ * killed app, a dropped connection) nothing releases it, and the hold counted
+ * against the user for a full day: real money they never spent, blocking real
+ * work. A step cannot legitimately outlive this, so anything older stops
+ * counting toward the DAILY cap.
+ *
+ * Deliberately the daily cap only. That cap is a rate limit, and a phantom hold
+ * there costs the user a day of work for nothing. The monthly and free lifetime
+ * windows are the money guarantee, where counting a hold is the conservative
+ * direction, and where forgiving one would let an exhausted free trial come back.
+ */
+export const RESERVATION_TTL_MS = 15 * 60 * 1000;
+
+/** SQL fragment: is this reserved row still young enough to count? */
+function liveReservation(nowMs: number): string {
+  return `created_at_ms >= ${nowMs - RESERVATION_TTL_MS}`;
+}
+
+/**
+ * Release every reservation too old to be real. Cheap, idempotent, and called
+ * before the sums so the ledger heals itself rather than needing a cron job.
+ */
+export async function releaseAbandonedReservations(userId: string, nowMs = Date.now()): Promise<number> {
+  const result = await client.execute({
+    sql: `UPDATE usage_ledger SET status = 'released', settled_at_ms = ?
+          WHERE user_id = ? AND status = 'reserved' AND created_at_ms < ?`,
+    args: [nowMs, userId, nowMs - RESERVATION_TTL_MS]
+  });
+  return result.rowsAffected ?? 0;
+}
+
 // Real API usage (reservations plus settled model cost) since a point in time, for
 // the rolling daily cap. Credit rows (top-ups, referral grants) are excluded so
 // buying tokens can never lift a rate limit; this cap is absolute.
 const CREDIT_MODELS = "'token_topup', 'auto_reload', 'referral_credit'";
-export async function rollingUsage(userId: string, sinceMs: number): Promise<number> {
+export async function rollingUsage(userId: string, sinceMs: number, nowMs = Date.now()): Promise<number> {
   const result = await client.execute({
     sql: `SELECT COALESCE(SUM(CASE
-        WHEN status = 'reserved' THEN reserved_microdollars
+        WHEN status = 'reserved' AND ${liveReservation(nowMs)} THEN reserved_microdollars
         WHEN status = 'settled' AND model NOT IN (${CREDIT_MODELS}) THEN actual_microdollars
         ELSE 0 END), 0) AS used
       FROM usage_ledger
@@ -176,7 +211,7 @@ export async function budgetHeadroom(userId: string, subscription: SubscriptionR
   const limits = planLimits(subscription.plan);
   const [monthly, daily] = await Promise.all([
     getBudgetUsage(userId, window),
-    rollingUsage(userId, nowMs - DAY_MS)
+    rollingUsage(userId, nowMs - DAY_MS, nowMs)
   ]);
   const monthlyLeft = Math.max(0, limits.monthly - (monthly.used + monthly.reserved));
   // The day's allowance is derived from what the month has left, so an unused
@@ -240,8 +275,9 @@ export async function reserveBudget(input: {
   //     the cap. The caller keeps its own worst-case estimate for the
   //     USAGE_RESERVATION_BREACH check, so a turn whose true cost is under the
   //     worst case (the normal case) still settles cleanly at the clamped ceiling.
+  const live = liveReservation(nowMs);
   const rollingSum = `SUM(CASE
-        WHEN status = 'reserved' THEN reserved_microdollars
+        WHEN status = 'reserved' AND ${live} THEN reserved_microdollars
         WHEN status = 'settled' AND model NOT IN (${CREDIT_MODELS}) THEN actual_microdollars
         ELSE 0 END)`;
   const monthlySum = `SUM(CASE WHEN status = 'reserved' THEN reserved_microdollars WHEN status = 'settled' THEN actual_microdollars ELSE 0 END)`;

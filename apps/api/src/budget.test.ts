@@ -122,16 +122,22 @@ describe("budget ledger invariants", () => {
   it("accumulates toward the daily cap across the 24-hour window", async () => {
     const subscription = makeSubscription();
     const t = subscription.budgetAnchorMs;
-    // Pro daily cap is 400_000; three 130k reservations (390k) still leave headroom.
+    // Pro daily cap is 400_000; three 130k turns (390k) still leave headroom.
+    // Each is SETTLED, as a real turn is the moment its step ends: settled spend
+    // is what accumulates across the day. A hold left un-settled for hours is by
+    // definition abandoned, and no longer counts (see abandoned-reservations).
     for (const offset of [0, 6, 12]) {
-      await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + offset * HOUR });
+      const held = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + offset * HOUR });
+      await settleBudget(held.reservationId, 130_000);
     }
     // A fourth 130k is allowed (390k < 400k) but is CLAMPED to the remaining 10k,
     // so committed lands exactly on the cap and never over. The window is now full,
     // so a fifth is refused.
     const fourth = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + 15 * HOUR });
     expect(fourth.reservationId).toBeTruthy();
-    expect(await rollingUsage(subscription.userId, t + 15 * HOUR - 24 * HOUR)).toBe(400_000);
+    expect(fourth.reservedMicrodollars).toBe(10_000);
+    expect(await rollingUsage(subscription.userId, t + 15 * HOUR - 24 * HOUR, t + 15 * HOUR)).toBe(400_000);
+    await settleBudget(fourth.reservationId, 10_000);
     await expect(
       reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + 18 * HOUR })
     ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
