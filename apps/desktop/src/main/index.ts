@@ -527,7 +527,10 @@ function registerIpc(): void {
   ipcMain.handle("api:create-run", (_event, raw) => api.request("/v1/runs", { method: "POST", body: createRunSchema.parse(raw) }));
   ipcMain.handle("api:next-run", (_event, runId, raw) => {
     const safeRunId = z.string().uuid().parse(runId);
-    return api.request(`/v1/runs/${safeRunId}/next`, { method: "POST", body: nextRunStepSchema.parse(raw ?? {}) });
+    // Five minutes: one planning step on a large project can think for a long
+    // time, and aborting it fails the entire run with a timeout the user cannot
+    // act on. The backend has its own limits; this one only needs to be generous.
+    return api.request(`/v1/runs/${safeRunId}/next`, { method: "POST", body: nextRunStepSchema.parse(raw ?? {}), timeoutMs: 300_000 });
   });
 
   ipcMain.handle("dialog:open-files", async () => {

@@ -73,6 +73,35 @@ export function planLimits(plan: PlanId): { daily: number; monthly: number } {
   return { daily: item.dailyMicrodollars, monthly: item.monthlyApiBudgetMicrodollars };
 }
 
+
+/**
+ * How much a plan may spend today.
+ *
+ * The daily cap used to be a fixed one thirtieth of the month, so an Ultra
+ * customer could be told they were running low today while most of the month sat
+ * unused. That is a limit doing the opposite of its job: it exists to stop the
+ * whole month vanishing on day one, not to ration an untouched balance.
+ *
+ * So it is derived instead: what remains, spread over the days that remain, times
+ * a burst factor so a heavy day is possible when the month is healthy. It can
+ * never exceed what is actually left, and never falls below the plan's original
+ * daily figure, so nobody is worse off than before. The monthly cap stays the
+ * real limit; this one only shapes the pace.
+ */
+export const DAILY_BURST = 2;
+
+export function adaptiveDailyLimit(
+  planDaily: number,
+  monthlyRemaining: number,
+  msLeftInPeriod: number
+): number {
+  if (monthlyRemaining <= 0) return 0;
+  const daysLeft = Math.max(1, Math.ceil(msLeftInPeriod / DAY_MS));
+  const evenShare = monthlyRemaining / daysLeft;
+  const allowance = Math.max(planDaily, Math.floor(evenShare * DAILY_BURST));
+  return Math.min(allowance, monthlyRemaining);
+}
+
 // Real API usage (reservations plus settled model cost) since a point in time, for
 // the rolling daily cap. Credit rows (top-ups, referral grants) are excluded so
 // buying tokens can never lift a rate limit; this cap is absolute.
@@ -149,9 +178,13 @@ export async function budgetHeadroom(userId: string, subscription: SubscriptionR
     getBudgetUsage(userId, window),
     rollingUsage(userId, nowMs - DAY_MS)
   ]);
+  const monthlyLeft = Math.max(0, limits.monthly - (monthly.used + monthly.reserved));
+  // The day's allowance is derived from what the month has left, so an unused
+  // balance is usable rather than rationed into thirtieths.
+  const dailyLimit = adaptiveDailyLimit(limits.daily, monthlyLeft, window.endMs - nowMs);
   return {
-    monthly: Math.max(0, limits.monthly - (monthly.used + monthly.reserved)),
-    daily: Math.max(0, limits.daily - daily)
+    monthly: monthlyLeft,
+    daily: Math.max(0, dailyLimit - daily)
   };
 }
 
