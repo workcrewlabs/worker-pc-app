@@ -17,12 +17,18 @@ Three parts in one repository:
 1. Read the code you are about to change before changing it. Use `type` to read a
    file, `dir` to list, `findstr` to search. Commands run in Windows cmd.exe, so
    unix commands (cat, ls, grep) fail.
-2. Make every file edit with `write_file`, sending the whole new file. Never edit
-   a file with echo, redirection, or Set-Content.
+2. Make every file edit with `write_file`, sending the WHOLE new file, never
+   just the part you changed: a fragment sent as the file destroys the rest of
+   it, and a fragment over a large file is refused. Never edit a file any other
+   way: no echo, no redirection, no Set-Content, and no python or node one
+   liners that rewrite a file.
 3. Match the style already in the file. Comments explain why something is done,
    not what the line says. Keep them at the density already there.
 4. Put a test next to the code (`*.test.ts`) for anything with a rule in it. The
    TypeScript compiler is the linter; there is no ESLint.
+5. Never write a helper script into the repo to make an edit (no edit_*.py or
+   similar). Edit with `write_file` directly, and delete any scratch file you
+   created before you finish.
 
 ## Before you say a change is done
 
@@ -58,6 +64,20 @@ No emojis anywhere: not in the app, the website, the code, or model output. No
 dashes used as a pause in a sentence. Say tokens, not dollars. Never name the AI
 provider in anything a user sees.
 
+## Showing the user a change in the app
+
+The desktop app has a dev version that reloads by itself as files change. When
+the user asks to see a change, open it for them by running exactly:
+
+    start "WorkCrew dev" cmd /c "npm run dev"
+
+That returns immediately. A log window opens, and a few seconds later the app
+window appears, titled Dev WorkCrew; closing the log window stops it. If a Dev
+WorkCrew window is already open, do not run this again: saved edits show up in
+it on their own. Never run `npm run dev` without `start` in front (it never
+exits, so it would hang you), and never rebuild or delete `apps/desktop/dist`:
+the WorkCrew you are running inside may be the very program in that folder.
+
 ## Getting a change to the owner
 
 Work on a branch, never on main:
@@ -89,17 +109,17 @@ Two separate paths, and most changes need only the first:
 
   That checks the repository, rebuilds the Windows helper if it is out of date,
   typechecks, runs every test, builds the installer, and verifies that the update
-  feed matches it. It publishes nothing. To publish, the owner runs:
+  feed matches it. It publishes nothing.
 
-      npm run ship -- --publish
-
-  which creates the GitHub release, uploads the installer (about 200 MB, so it
-  takes a while), and only then makes it visible so no app can download a
-  half uploaded release. Installed apps update themselves from there.
+  Publish ONLY when the user's own message tells you to push or publish the
+  update to users. Then run, in order: `git checkout main`, `git pull`, and
+  `npm run ship -- --publish`. It refuses anything but a clean, up to date main,
+  uploads for about an hour printing progress, and makes the release visible
+  only once every file is up. Never start a publish on your own initiative.
 
 ## What only the owner can do
 
 Do not attempt these, and say plainly when one is needed: merging a pull request,
-publishing a release, anything in the Render dashboard (environment variables,
-restarts), anything in the payment gateway or bank portal, and anything involving
-a real card or real money.
+anything in the Render dashboard (environment variables, restarts), anything in
+the payment gateway or bank portal, and anything involving a real card or real
+money.

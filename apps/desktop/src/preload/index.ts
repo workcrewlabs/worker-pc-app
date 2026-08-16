@@ -63,8 +63,11 @@ const workcrew = {
     write: (text: string): Promise<{ ok: boolean }> => ipcRenderer.invoke("clipboard:write", text)
   },
   support: {
-    // Open the user's mail client to the support address.
-    contact: (): Promise<{ opened: boolean }> => ipcRenderer.invoke("support:contact"),
+    // Open the user's mail client to the support address. An optional subject and
+    // body let the home-page feedback box pre-fill the message for the user to
+    // review and send.
+    contact: (payload?: { subject?: string; body?: string }): Promise<{ opened: boolean }> =>
+      ipcRenderer.invoke("support:contact", payload),
     // Open the WorkCrew website, where billing and cancellation are managed.
     billing: (): Promise<{ opened: boolean }> => ipcRenderer.invoke("support:billing")
   },
@@ -123,7 +126,7 @@ const workcrew = {
     portal: () => ipcRenderer.invoke("api:portal"),
     createRun: (task: string, model: ModelTier, kind: RunKind = "screen"): Promise<{ runId: string }> =>
       ipcRenderer.invoke("api:create-run", { task, model, kind }),
-    nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string; imageBase64?: string }): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result })
+    nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string; imageBase64?: string }, say?: string): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result, say })
   },
   chat: {
     // Start a streamed chat turn. A request id is generated here so the caller

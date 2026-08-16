@@ -55,21 +55,14 @@ function MicIcon() {
 // single, explicit choice for how the next message is handled, so WorkCrew never
 // has to guess: on Chat it answers here and hands back any file as a download, and
 // only on Computer use does it open apps and work on screen.
-// locked is set while a folder is attached: that folder IS the computer-use
-// session, so the switch shows it and cannot be moved out of it. Removing the
-// folder (the x on its pill) is what goes back to plain chat, which keeps the
-// switch and the folder from ever telling the user two different things.
-function ModeToggle({ mode, onChange, locked }: { mode: ComposerMode; onChange: (mode: ComposerMode) => void; locked?: boolean }) {
+function ModeToggle({ mode, onChange }: { mode: ComposerMode; onChange: (mode: ComposerMode) => void }) {
   return (
-    <div className={`mode-toggle${locked ? " mode-toggle-locked" : ""}`} role="group" aria-label="How WorkCrew should handle your message">
+    <div className="mode-toggle" role="group" aria-label="How WorkCrew should handle your message">
       <button
         type="button"
         className={mode === "chat" ? "is-active" : ""}
         aria-pressed={mode === "chat"}
-        disabled={locked}
-        title={locked
-          ? "WorkCrew is working in the folder shown below. Remove the folder to go back to Chat."
-          : "Answer in the chat. WorkCrew never touches your computer, and a file you ask for comes back as a download."}
+        title="Answer in the chat. WorkCrew never touches your computer, and a file you ask for comes back as a download."
         onClick={() => onChange("chat")}
       >
         Chat
@@ -454,7 +447,10 @@ export function ChatView({
     const trimmed = text.trim();
     // Block while a chat is streaming, a pasted image is still uploading, or an
     // automation is running, so a message is never dropped against a busy engine.
-    if ((!trimmed && readyRefs.length === 0 && readyFiles.length === 0) || streaming || uploading || runner.running) return;
+    // While a run is working, typed text is a mid-run steer and always allowed;
+    // only attachments need the run to be over. A streaming chat still blocks.
+    if ((!trimmed && readyRefs.length === 0 && readyFiles.length === 0) || streaming || uploading) return;
+    if (runner.running && !trimmed) return;
     onSend(trimmed, readyRefs, readyFiles);
     setDraft("");
     setAttachments([]);
@@ -468,7 +464,7 @@ export function ChatView({
     }
   }
 
-  const canSend = (draft.trim().length > 0 || readyRefs.length > 0 || readyFiles.length > 0) && !uploading && !runner.running;
+  const canSend = (draft.trim().length > 0 || readyRefs.length > 0 || readyFiles.length > 0) && !uploading && (!runner.running || draft.trim().length > 0);
 
   const composer = (
     <div
@@ -498,7 +494,17 @@ export function ChatView({
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        placeholder={mode === "computer" ? "Tell WorkCrew what to do on your computer..." : "Ask WorkCrew anything..."}
+        placeholder={
+          runner.running && !streaming
+            // Mid-run the composer steers the work: Enter delivers the message
+            // to the model with its next step.
+            ? "Tell WorkCrew something while it works, Enter sends it..."
+            : workingFolder
+              // Folder work is files and commands, never the mouse, so it must not
+              // be described as taking over the computer.
+              ? `Ask for a change in ${workingFolder.name}, or ask a question about it...`
+              : mode === "computer" ? "Tell WorkCrew what to do on your computer..." : "Ask WorkCrew anything..."
+        }
         rows={hasConversation ? 1 : 3}
       />
       {attachError && <div className="attach-error-row">{attachError}</div>}
@@ -529,7 +535,13 @@ export function ChatView({
             </div>
           )}
         </div>
-        <ModeToggle mode={mode} onChange={onModeChange} locked={Boolean(workingFolder)} />
+        {/* The switch chooses between answering and driving the screen. With a
+            folder attached neither is what happens: WorkCrew reads, writes and
+            runs commands inside that folder and never touches the mouse. So the
+            switch is not shown at all rather than sitting there locked on a
+            label that describes the wrong thing. The folder pill below says
+            where the work is happening, and removing it brings the switch back. */}
+        {!workingFolder && <ModeToggle mode={mode} onChange={onModeChange} />}
         {onRecord && (
           <button
             className="tool-button"

@@ -307,8 +307,8 @@ export function createWebBridge(): WorkCrewBridge {
       },
       createRun: (task: string, model: ModelTier, kind: RunKind = "screen") =>
         apiRequest<{ runId: string }>("/v1/runs", { body: { task, model, kind } }),
-      nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string }) =>
-        apiRequest(`/v1/runs/${runId}/next`, { body: { result } })
+      nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string }, say?: string) =>
+        apiRequest(`/v1/runs/${runId}/next`, { body: { result, say } })
     },
     chat: {
       send: async (payload: { text: string } & Record<string, unknown>) => {

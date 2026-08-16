@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { COMMAND_LIMITS, confinePath, runShellCommand } from "./shell-cli";
+import { COMMAND_LIMITS, confinePath, looksLikeTruncatedWrite, runShellCommand } from "./shell-cli";
 
 // confinePath is the safety boundary for write_file: a path is allowed only if
 // it resolves to a location strictly inside the working folder. These cases pin
@@ -105,5 +105,27 @@ describe("how long a command is allowed to take", () => {
     expect(COMMAND_LIMITS.totalMs).toBeGreaterThanOrEqual(2 * 60 * 60 * 1000);
     expect(COMMAND_LIMITS.idleMs).toBeGreaterThanOrEqual(10 * 60 * 1000);
     expect(COMMAND_LIMITS.idleMs).toBeLessThan(COMMAND_LIMITS.totalMs);
+  });
+});
+
+// A model under pressure sends the piece it changed as the whole file. That
+// exact shape arrived once: a 15 line handler as the entire content of the
+// 1000 line main process file, which stopped the app compiling. The guard
+// refuses it and tells the model to send the complete file instead.
+describe("looksLikeTruncatedWrite", () => {
+  it("refuses a fragment sent over a substantial file", () => {
+    expect(looksLikeTruncatedWrite(40_000, 600)).toBe(true);
+    expect(looksLikeTruncatedWrite(5_000, 900)).toBe(true);
+  });
+
+  it("allows a real edit, which lands near the original size", () => {
+    expect(looksLikeTruncatedWrite(40_000, 41_500)).toBe(false);
+    expect(looksLikeTruncatedWrite(40_000, 35_000)).toBe(false);
+    expect(looksLikeTruncatedWrite(40_000, 9_000)).toBe(false);
+  });
+
+  it("leaves small files alone, where a big shrink is ordinary", () => {
+    expect(looksLikeTruncatedWrite(900, 40)).toBe(false);
+    expect(looksLikeTruncatedWrite(3_999, 100)).toBe(false);
   });
 });

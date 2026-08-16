@@ -100,6 +100,9 @@ export function ConversationPane({
   // computer-use session by definition, so the switch follows the folder instead
   // of being set once and left to drift out of step with it.
   const mode = effectiveMode(modeState, Boolean(workingFolder));
+  // The runner as it is NOW, for callbacks that fire after a run finishes.
+  const runnerRef = useRef(runner);
+  runnerRef.current = runner;
   const seeded = useRef(false);
   // Reserved synchronously the instant a folder run begins, so a second send during
   // the async preamble (the folder-tree read) cannot slip past the lagging
@@ -231,6 +234,16 @@ export function ConversationPane({
     if (folder) {
       void folderPreamble(folder, trimmed)
         .then((preamble) => runner.run(preamble + trimmed, model, label, folder.path))
+        .then(() => {
+          // Move the finished answer into the transcript. Held only in runner
+          // state it was a live view, so the next message wiped what WorkCrew
+          // had just told the user; as a turn it is history and it stays.
+          const answer = runnerRef.current.summary;
+          if (answer) {
+            chat.appendAssistantTurn(answer);
+            runner.clearSummary();
+          }
+        })
         .finally(() => { startingRef.current = false; });
     } else {
       void runner.run(trimmed, model, label);
@@ -366,14 +379,27 @@ export function ConversationPane({
   // answered from the folder's listing, everything else runs the engine inside it);
   // on Chat the folder is only context for the answer, and nothing runs.
   function send(text: string, attachments: AttachmentRef[], files: LocalFile[] = []): void {
+    // A message typed while a run is working is a steer, not a new task: it shows
+    // in the transcript like any message and rides to the model with the next
+    // step, so "stop", "skip the tests", or "wrong file" lands mid-flight
+    // instead of being swallowed or spawning a second run.
+    if (runner.running) {
+      chat.appendUserTurn(text);
+      runner.say(text);
+      return;
+    }
     const paths = files.map((f) => f.path);
     const fileList = paths.length > 0
       ? `\n\nThe user attached these files; work with them at their real locations on the computer: ${paths.map((p) => `"${p}"`).join(", ")}`
       : "";
     if (workingFolder && !runner.running) {
-      if (!shouldRunOnComputer(mode, text)) {
+      // In a folder, a polite request ("can you add...") is an instruction, not
+      // a question, so only real questions are answered in chat.
+      if (!shouldRunOnComputer(mode, text, true)) {
         const folder = workingFolder;
-        runner.clear();
+        // Deliberately NOT clearing the runner: the last run's summary and step
+        // list are history now, and a follow-up question must never erase what
+        // WorkCrew just told the user. A new run clears them when it starts.
         setAutomationTask("");
         setAutomationMode(false);
         void folderChatContext(folder).then((context) => chat.send({ text, model, attachments, files, context }));
@@ -397,7 +423,6 @@ export function ConversationPane({
       return;
     }
     if (!runner.running) {
-      runner.clear();
       setAutomationTask("");
       setAutomationMode(false);
     }

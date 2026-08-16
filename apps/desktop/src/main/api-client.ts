@@ -19,7 +19,7 @@ export class ApiClient {
 
   constructor(private readonly auth: AuthVault) {}
 
-  async request<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
+  async request<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number } = {}): Promise<T> {
     const token = await this.auth.getAccessToken();
     if (!token) throw new AuthExpiredError("Sign in is required");
 
@@ -56,7 +56,7 @@ export class ApiClient {
     return await response.json() as T;
   }
 
-  private send(path: string, options: { method?: string; body?: unknown }, token: string): Promise<Response> {
+  private send(path: string, options: { method?: string; body?: unknown; timeoutMs?: number }, token: string): Promise<Response> {
     return fetch(`${this.baseUrl}${path}`, {
       method: options.method ?? "GET",
       headers: {
@@ -64,7 +64,10 @@ export class ApiClient {
         ...(options.body === undefined ? {} : { "content-type": "application/json" })
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      signal: AbortSignal.timeout(75_000)
+      // A planning step on a large project genuinely thinks for a while, and
+      // aborting it kills the whole run with a timeout the user can do nothing
+      // about. Callers that plan pass a longer one; everything else keeps this.
+      signal: AbortSignal.timeout(options.timeoutMs ?? 75_000)
     });
   }
 }

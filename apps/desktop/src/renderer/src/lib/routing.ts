@@ -27,9 +27,48 @@ export function effectiveMode(mode: ComposerMode, hasWorkingFolder: boolean): Co
   return hasWorkingFolder ? "computer" : mode;
 }
 
-export function shouldRunOnComputer(mode: ComposerMode, text: string): boolean {
+export function shouldRunOnComputer(mode: ComposerMode, text: string, inFolder = false): boolean {
   if (mode !== "computer") return false;
-  return !isQuestionLike(text);
+  return inFolder ? !isFolderQuestion(text) : !isQuestionLike(text);
+}
+
+
+/** Verbs that, at the start of a clause, mean the user wants something done. */
+const WORK_VERB = /^(fix|change|update|add|remove|delete|rename|refactor|implement|build|create|write|install|commit|push|bump|revert|upgrade|make|move|run)\b/;
+
+/**
+ * Whether any clause in the message is an instruction.
+ *
+ * "What do you see in this screenshot and fix it please" opens like a question
+ * and ends in a request, and the request is the part that matters. Testing for a
+ * verb ANYWHERE was too loose: "why is the build failing" contains "build" as a
+ * noun. A verb that OPENS a clause is how an instruction is actually spoken.
+ */
+export function asksForWork(text: string): boolean {
+  return text
+    .split(/[.?!;]+|,| and | then | also | plus /)
+    .map((clause) => clause.trim())
+    .some((clause) => WORK_VERB.test(clause));
+}
+/**
+ * Whether a message typed against a working folder is really asking a question.
+ *
+ * Outside a folder, "can you open my email" is a question about capability. In a
+ * folder it is an instruction, the same way it would be to a developer: "can you
+ * add a feedback box", "please fix the build", "write a test for this" all mean
+ * do it, not discuss it. Treating those as questions left the user asking three
+ * times and being told each time to flip a switch.
+ *
+ * So only genuine information seeking stays in chat: an interrogative opener, or
+ * an explicit request to be told or shown something. Everything else acts.
+ */
+export function isFolderQuestion(text: string): boolean {
+  const t = normalized(text);
+  // "What do you see in this screenshot and fix it please" opens like a question
+  // and ends in an instruction. The instruction wins: a message that names work
+  // to do is work, whatever word it starts with.
+  if (asksForWork(t)) return false;
+  return /^(how|what|whats|what's|why|when|who|where|which|is |are |was |were |do |does |did |should i|can i|could i|explain|describe|summari|tell me (about|what|how|why|which)|show me (what|how|which)|remind me)\b/.test(t);
 }
 
 // Lowercase and strip leading quotes, brackets, and stray punctuation so a typed

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { actualCostMicrodollars, budgetLimitedOutputTokens, chooseModel, maximumReservationMicrodollars } from "./anthropic.js";
-import { budgetHeadroom, getBudgetUsage, getBudgetWindow, releaseBudget, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
+import { adaptiveDailyLimit, budgetHeadroom, budgetWindowFor, getBudgetUsage, getBudgetWindow, releaseBudget, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
 import { client, initializeDatabase, type SubscriptionRow } from "./db.js";
 
 describe("monthly allowance windows", () => {
@@ -209,11 +209,20 @@ describe("budget ledger invariants", () => {
     // (monthly) accurately.
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
-    // Pro caps: daily 400k, monthly 12M. Seed 300k of settled usage today.
+    // Pro caps: monthly 12M, plan daily 400k. Seed 300k of settled usage today.
     await seedSettled(subscription.userId, 300_000, nowMs, subscription.budgetAnchorMs);
     const headroom = await budgetHeadroom(subscription.userId, subscription, nowMs);
-    expect(headroom.daily).toBe(100_000); // 400k cap - 300k used today
     expect(headroom.monthly).toBe(11_700_000); // 12M cap - 300k used
+    // The daily allowance is no longer a fixed 400k: it is what the month has
+    // left (11.7M) spread over the days left, doubled so a heavy day is
+    // possible. On day one that is 780k, of which 300k is spent.
+    const period = budgetWindowFor(subscription, nowMs);
+    const allowance = adaptiveDailyLimit(400_000, 11_700_000, period.endMs - nowMs);
+    expect(headroom.daily).toBe(allowance - 300_000);
+    // The point of the change: far more than the old fixed 400k cap allowed.
+    expect(headroom.daily).toBeGreaterThan(100_000);
+    // And it is still genuinely a daily limit: smaller than the month.
+    expect(headroom.daily).toBeLessThan(headroom.monthly);
   });
 
   it("returns the clamped reserved amount so callers can size output to it", async () => {

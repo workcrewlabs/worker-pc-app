@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { AutomationAction, ModelTier, RunKind } from "@workcrew/contracts";
-import { actionDetail, actionLabel } from "../lib/automation";
+import { actionDetail, actionLabel, activityLine } from "../lib/automation";
 import { redactResult, requiresApproval } from "../security";
 import { addHistory } from "../lib/storage";
 import { track } from "../lib/analytics";
@@ -28,7 +28,15 @@ const WINDOWS_NON_INPUT_COMMANDS = new Set([
 ]);
 
 export type StepStatus = "running" | "ok" | "error" | "declined";
-export type RunStep = { id: string; label: string; detail?: string; status: StepStatus };
+export type RunStep = {
+  id: string;
+  /** What this step did, past tense, shown once it has finished. */
+  label: string;
+  /** The same thing in progress, shown while it is the step in flight. */
+  doing?: string;
+  detail?: string;
+  status: StepStatus;
+};
 export type RunStatus = "idle" | "running" | "complete" | "failed" | "stopped";
 
 function stepId(): string {
@@ -46,6 +54,8 @@ export type AutomationRunner = {
   summary: string;
   error: string;
   running: boolean;
+  /** Output tokens this run has produced so far, for the live working line. */
+  tokens: number;
   label: string;
   // screenshot is the newest capture of the screen, and point the spot about to
   // be clicked, so a screen-level approval can show WHERE rather than a number.
@@ -53,9 +63,14 @@ export type AutomationRunner = {
   // workingFolder, when set, is the absolute path of the user's chosen folder; any
   // shell command in this run executes inside it instead of the hidden workspace.
   run: (task: string, model: ModelTier, label?: string, workingFolder?: string) => Promise<void>;
+  /** Hand a message the user typed mid-run to the model with the next step.
+   * Returns false when no run is in flight to hear it. */
+  say: (text: string) => boolean;
   decide: (approved: boolean) => void;
   stop: () => void;
   clear: () => void;
+  /** Drop the summary once it has been moved into the transcript. */
+  clearSummary: () => void;
   setAutoApprove: (value: boolean) => void;
   setPermissions: (permissions: Record<string, boolean>) => void;
   // Live, synchronous "is a run in progress" check. Unlike `running` (derived
@@ -76,6 +91,7 @@ export function useAutomationRunner(): AutomationRunner {
   const [summary, setSummary] = useState("");
   const [error, setError] = useState("");
   const [label, setLabel] = useState("");
+  const [tokens, setTokens] = useState(0);
   const [pending, setPending] = useState<{ action: AutomationAction; label: string; screenshot?: ScreenCapture; point?: { x: number; y: number } } | null>(null);
   // A paused run is one whose conversation is no longer on screen. The loop parks
   // between steps until resumed, so the mouse is never driven for a background chat.
@@ -95,6 +111,15 @@ export function useAutomationRunner(): AutomationRunner {
   // the authoritative guard against that.
   const runningRef = useRef(false);
   const approvalResolve = useRef<((approved: boolean) => void) | null>(null);
+  // Messages typed while a run is working, waiting to ride out with the next
+  // step. Drained in one batch so two quick corrections arrive together.
+  const interjections = useRef<string[]>([]);
+  function say(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed || !runningRef.current) return false;
+    interjections.current.push(trimmed);
+    return true;
+  }
   // When on, write actions run without prompting ("Always allow").
   const autoApproveRef = useRef(false);
   function setAutoApprove(value: boolean): void {
@@ -253,7 +278,7 @@ export function useAutomationRunner(): AutomationRunner {
       if (stoppedRef.current) return "stopped";
       const action = step.action;
       const id = stepId();
-      setSteps((current) => [...current, { id, label: actionLabel(action), detail: actionDetail(action), status: "running" }]);
+      setSteps((current) => [...current, { id, label: activityLine(action, true), doing: activityLine(action, false), detail: actionDetail(action), status: "running" }]);
 
       // Re-derive approval from the action itself rather than trusting the stored
       // flag (a tampered recipe could lie); shell is gated by the main process.
@@ -345,6 +370,8 @@ export function useAutomationRunner(): AutomationRunner {
     let finishSummary = "Task complete.";
 
     try {
+      setTokens(0);
+      interjections.current = [];
       const kind: RunKind = workingFolder ? "folder" : "screen";
       const { runId } = await window.workcrew.api.createRun(trimmed, model, kind);
       let result: { toolUseId: string; ok: boolean; output: string; imageBase64?: string } | undefined;
@@ -357,7 +384,18 @@ export function useAutomationRunner(): AutomationRunner {
           setStatus("stopped");
           break;
         }
-        const response = await window.workcrew.api.nextRun(runId, result);
+        const say = result && interjections.current.length > 0 ? interjections.current.splice(0).join("\n") : undefined;
+        let response;
+        try {
+          response = await window.workcrew.api.nextRun(runId, result, say);
+        } catch (stepError) {
+          // A backend from before mid-run messages rejects the say field
+          // outright. Losing one steer is recoverable; losing the run is not,
+          // so deliver the step bare rather than dying on the extra field.
+          if (!say) throw stepError;
+          response = await window.workcrew.api.nextRun(runId, result);
+        }
+        if (typeof response.tokens === "number") setTokens(response.tokens);
         if (response.status === "complete") {
           finishSummary = response.message ?? "Task complete.";
           setSummary(finishSummary);
@@ -377,7 +415,7 @@ export function useAutomationRunner(): AutomationRunner {
         const recordEntry = { action, snapshot: lastSnapshot, ok: true };
         recorded.push(recordEntry);
         const id = stepId();
-        setSteps((current) => [...current, { id, label: actionLabel(action), detail: actionDetail(action), status: "running" }]);
+        setSteps((current) => [...current, { id, label: activityLine(action, true), doing: activityLine(action, false), detail: actionDetail(action), status: "running" }]);
 
         // Shell commands are approved by the main process itself (a native prompt
         // that cannot be bypassed), so they are not prompted again here. Other
@@ -458,5 +496,5 @@ export function useAutomationRunner(): AutomationRunner {
     }
   }
 
-  return { steps, status, summary, error, label, pending, run, decide, stop, clear, setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
+  return { steps, status, summary, error, tokens, label, pending, run, say, decide, stop, clear, clearSummary: () => setSummary(""), setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
 }

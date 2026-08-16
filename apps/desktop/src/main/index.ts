@@ -40,7 +40,7 @@ import { extractOfficeText } from "./office.js";
 import { extractPdfText, looksLikeText } from "./pdf-text.js";
 import { EXPORT_EXTENSIONS, generateExport, sanitizeExportName, type ExportExtension } from "./file-export.js";
 import { readProjectInstructions } from "./project-instructions.js";
-import { confinePath, resolveWorkingDir, runShellCommand } from "./shell-cli.js";
+import { confinePath, looksLikeTruncatedWrite, resolveWorkingDir, runShellCommand } from "./shell-cli.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -527,7 +527,10 @@ function registerIpc(): void {
   ipcMain.handle("api:create-run", (_event, raw) => api.request("/v1/runs", { method: "POST", body: createRunSchema.parse(raw) }));
   ipcMain.handle("api:next-run", (_event, runId, raw) => {
     const safeRunId = z.string().uuid().parse(runId);
-    return api.request(`/v1/runs/${safeRunId}/next`, { method: "POST", body: nextRunStepSchema.parse(raw ?? {}) });
+    // Five minutes: one planning step on a large project can think for a long
+    // time, and aborting it fails the entire run with a timeout the user cannot
+    // act on. The backend has its own limits; this one only needs to be generous.
+    return api.request(`/v1/runs/${safeRunId}/next`, { method: "POST", body: nextRunStepSchema.parse(raw ?? {}), timeoutMs: 300_000 });
   });
 
   ipcMain.handle("dialog:open-files", async () => {
@@ -720,9 +723,14 @@ function registerIpc(): void {
   // Opening an external URL goes through the OS browser, not the sandboxed
   // renderer, so it is handled here like the other external-link actions. Gmail
   // is used directly (rather than a mailto) so it works without a configured
-  // desktop mail client.
-  ipcMain.handle("support:contact", async () => {
-    const url = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(SUPPORT_EMAIL)}&su=${encodeURIComponent("WorkCrew support")}`;
+  // desktop mail client. An optional subject and body (used by the home-page
+  // feedback box) are bound here so the renderer never assembles a URL itself.
+  ipcMain.handle("support:contact", async (_event, payload?: { subject?: string; body?: string }) => {
+    const subject = z.string().trim().max(200).optional().default("WorkCrew support").parse(payload?.subject);
+    const body = z.string().trim().max(5000).optional().parse(payload?.body);
+    const params = new URLSearchParams({ view: "cm", fs: "1", to: SUPPORT_EMAIL, su: subject });
+    if (body) params.set("body", body);
+    const url = `https://mail.google.com/mail/?${params.toString()}`;
     await shell.openExternal(url);
     return { opened: true };
   });
@@ -783,13 +791,25 @@ function registerIpc(): void {
     }
     const fs = await import("node:fs/promises");
     const { dirname, relative } = await import("node:path");
+    // A fragment sent as the whole file would silently destroy it: a 15 line
+    // handler once arrived as the entire content of the 1000 line main process
+    // file. Refuse that shape and say exactly what to do instead.
+    const nextBytes = Buffer.byteLength(parsed.content, "utf8");
+    try {
+      const existing = await fs.stat(target);
+      if (existing.isFile() && looksLikeTruncatedWrite(existing.size, nextBytes)) {
+        return `Blocked: you sent ${nextBytes} bytes to replace ${relative(base, target) || parsed.path}, which is ${existing.size} bytes. write_file replaces the ENTIRE file, so this would destroy most of it. Read the file again and send its complete new content, with your change applied inside it.`;
+      }
+    } catch {
+      // A new file: nothing to protect.
+    }
     try {
       await fs.mkdir(dirname(target), { recursive: true });
       await fs.writeFile(target, parsed.content, "utf8");
     } catch (error) {
       return `Could not write the file: ${error instanceof Error ? error.message : String(error)}`;
     }
-    return `Wrote ${Buffer.byteLength(parsed.content, "utf8")} bytes to ${relative(base, target) || parsed.path}`;
+    return `Wrote ${nextBytes} bytes to ${relative(base, target) || parsed.path}`;
   });
 
   // Whether a dropped path is a file or a folder, so dragging a folder into the
