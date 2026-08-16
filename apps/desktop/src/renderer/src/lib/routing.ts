@@ -32,6 +32,24 @@ export function shouldRunOnComputer(mode: ComposerMode, text: string, inFolder =
   return inFolder ? !isFolderQuestion(text) : !isQuestionLike(text);
 }
 
+
+/** Verbs that, at the start of a clause, mean the user wants something done. */
+const WORK_VERB = /^(fix|change|update|add|remove|delete|rename|refactor|implement|build|create|write|install|commit|push|bump|revert|upgrade|make|move|run)\b/;
+
+/**
+ * Whether any clause in the message is an instruction.
+ *
+ * "What do you see in this screenshot and fix it please" opens like a question
+ * and ends in a request, and the request is the part that matters. Testing for a
+ * verb ANYWHERE was too loose: "why is the build failing" contains "build" as a
+ * noun. A verb that OPENS a clause is how an instruction is actually spoken.
+ */
+export function asksForWork(text: string): boolean {
+  return text
+    .split(/[.?!;]+|,| and | then | also | plus /)
+    .map((clause) => clause.trim())
+    .some((clause) => WORK_VERB.test(clause));
+}
 /**
  * Whether a message typed against a working folder is really asking a question.
  *
@@ -46,6 +64,10 @@ export function shouldRunOnComputer(mode: ComposerMode, text: string, inFolder =
  */
 export function isFolderQuestion(text: string): boolean {
   const t = normalized(text);
+  // "What do you see in this screenshot and fix it please" opens like a question
+  // and ends in an instruction. The instruction wins: a message that names work
+  // to do is work, whatever word it starts with.
+  if (asksForWork(t)) return false;
   return /^(how|what|whats|what's|why|when|who|where|which|is |are |was |were |do |does |did |should i|can i|could i|explain|describe|summari|tell me (about|what|how|why|which)|show me (what|how|which)|remind me)\b/.test(t);
 }
 

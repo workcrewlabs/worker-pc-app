@@ -69,6 +69,8 @@ export type AutomationRunner = {
   decide: (approved: boolean) => void;
   stop: () => void;
   clear: () => void;
+  /** Drop the summary once it has been moved into the transcript. */
+  clearSummary: () => void;
   setAutoApprove: (value: boolean) => void;
   setPermissions: (permissions: Record<string, boolean>) => void;
   // Live, synchronous "is a run in progress" check. Unlike `running` (derived
@@ -494,5 +496,5 @@ export function useAutomationRunner(): AutomationRunner {
     }
   }
 
-  return { steps, status, summary, error, tokens, label, pending, run, say, decide, stop, clear, setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
+  return { steps, status, summary, error, tokens, label, pending, run, say, decide, stop, clear, clearSummary: () => setSummary(""), setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
 }

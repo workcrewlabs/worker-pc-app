@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { actionDetail, actionLabel, activityLine, summarizeActivity } from "./automation";
+import { formatElapsed } from "../components/AutomationActivity";
 
 describe("action labels", () => {
   it("labels a shell command and shows the command as the detail", () => {
@@ -83,5 +84,26 @@ describe("summarizeActivity", () => {
 
   it("is empty for an empty run", () => {
     expect(summarizeActivity([])).toBe("");
+  });
+});
+
+// A run that had been going eight minutes read "480s", which is a number nobody
+// can feel. Past a minute it reads like a clock.
+describe("formatElapsed", () => {
+  it("counts seconds under a minute", () => {
+    expect(formatElapsed(0)).toBe("0s");
+    expect(formatElapsed(45)).toBe("45s");
+    expect(formatElapsed(59)).toBe("59s");
+  });
+
+  it("switches to minutes and seconds at a minute", () => {
+    expect(formatElapsed(60)).toBe("1m 0s");
+    expect(formatElapsed(150)).toBe("2m 30s");
+    expect(formatElapsed(480)).toBe("8m 0s");
+  });
+
+  it("switches to hours past an hour", () => {
+    expect(formatElapsed(3600)).toBe("1h 0m");
+    expect(formatElapsed(3840)).toBe("1h 4m");
   });
 });

@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
 import type { AutomationRunner } from "../hooks/useAutomationRunner";
 import { summarizeActivity } from "../lib/automation";
-import { Markdown } from "../lib/markdown";
+
+/** Elapsed time the way a clock reads it: 45s, 2m 30s, 1h 4m. 480s is not a
+ *  number anyone can feel. */
+export function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
 
 // A compact token count for the working line: 620, 1.4K, 12K.
 function compactTokens(count: number): string {
@@ -72,17 +80,10 @@ export function FolderActivity({ runner }: { runner: AutomationRunner }) {
       {running && (
         <p className="folder-working" title={inFlight?.detail || undefined}>
           <span className="chip-spinner" aria-hidden="true" />
-          {elapsed >= 1 ? `${elapsed}s · ` : ""}
+          {elapsed >= 1 ? `${formatElapsed(elapsed)} · ` : ""}
           {tokens > 0 ? `${compactTokens(tokens)} tokens · ` : ""}
           {doing}...
         </p>
-      )}
-      {!running && summary && (
-        <div className="turn turn-assistant">
-          <div className="assistant-body">
-            <Markdown text={summary} />
-          </div>
-        </div>
       )}
       {!running && error && status !== "stopped" && <p className="turn-error">{error}</p>}
     </div>

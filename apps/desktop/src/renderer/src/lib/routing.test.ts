@@ -126,3 +126,27 @@ describe("routing a message typed against a working folder", () => {
     expect(shouldRunOnComputer("chat", "add a feedback box", false)).toBe(false);
   });
 });
+
+// "What do you see in this screenshot and fix it please" was answered as a
+// question, so nothing got fixed and the reply asked for a switch that is not
+// on screen in a folder session. A message that names work to do is work.
+describe("a folder message that opens like a question but asks for work", () => {
+  const run = (text: string): boolean => shouldRunOnComputer("computer", text, true);
+
+  it("acts when the message asks for something to be fixed", () => {
+    expect(run("what do you see in this screenshot and fix it please")).toBe(true);
+    expect(run("why is the build failing? fix it")).toBe(true);
+  });
+
+  it("still answers a question that asks for nothing", () => {
+    expect(run("what does ConversationPane do?")).toBe(false);
+    expect(run("why is the build failing")).toBe(false);
+    expect(run("how do I run the tests?")).toBe(false);
+  });
+
+  it("is not fooled by a verb hiding inside another word", () => {
+    // "address" contains "add", "running" contains "run": word boundaries only.
+    expect(run("what is the address field for?")).toBe(false);
+    expect(run("what is currently running?")).toBe(false);
+  });
+});
