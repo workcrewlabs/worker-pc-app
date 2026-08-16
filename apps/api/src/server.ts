@@ -79,7 +79,7 @@ import {
 import { mpgsCheckoutPage, mpgsResultPage } from "./mpgs-page.js";
 import { landingPage } from "./landing.js";
 import { pricingPage, privacyPage, refundPolicyPage, termsPage } from "./legal.js";
-import { budgetHeadroom, budgetWindowFor, creditReferralOnPayment, exhaustionError, getBudgetUsage, getBudgetWindow, planBudget, planLimits, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
+import { budgetHeadroom, budgetWindowFor, creditReferralOnPayment, dailyLimitFor, exhaustionError, getBudgetUsage, getBudgetWindow, planBudget, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
 import { DAY_MS } from "@workcrew/contracts";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
@@ -336,13 +336,17 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
   }
   const nowMs = Date.now();
   const window = budgetWindowFor(subscription, nowMs);
-  const limits = planLimits(subscription.plan);
-  const [usage, dailyUsed] = await Promise.all([
+  const [usage, dailyUsed, dailyLimit] = await Promise.all([
     getBudgetUsage(userId, window),
     // Display the settled (real) daily spend only, not in-flight reservations, so
     // the shown number moves as cost lands and never flickers between "low" and
     // "limit reached" while a turn's worst-case reservation is held then settled.
-    rollingSettledUsage(userId, nowMs - DAY_MS)
+    rollingSettledUsage(userId, nowMs - DAY_MS),
+    // The day's allowance is derived from what the month has left, not a fixed
+    // thirtieth, and it is the SAME figure reserveBudget enforces. Showing the
+    // plan's flat daily number here was why an Ultra customer was warned he was
+    // running low with most of the month unspent.
+    dailyLimitFor(subscription, nowMs)
   ]);
   return {
     active: subscription.active && subscription.currentPeriodEndMs > Date.now(),
@@ -355,7 +359,7 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
     budgetMicrodollars: planBudget(subscription.plan),
     usedMicrodollars: usage.used,
     reservedMicrodollars: usage.reserved,
-    dailyLimitMicrodollars: limits.daily,
+    dailyLimitMicrodollars: dailyLimit,
     dailyUsedMicrodollars: dailyUsed,
     pendingPlan: subscription.pendingPlan,
     pendingInterval: subscription.pendingInterval,
