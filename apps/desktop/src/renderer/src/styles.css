@@ -548,22 +548,7 @@ select option:checked { background-color: var(--panel-2); }
 .activity-row.bad .activity-dot { background: var(--danger); }
 .activity-row strong { font-size: 12px; }
 .activity-row p { margin: 5px 0 0; color: #7f8996; white-space: pre-wrap; font: 10px/1.45 Consolas, monospace; }
-.workspace-footer { position: relative; z-index: 1; padding: 10px 14px 14px; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--text-dim); font-size: 10px; }
-
-/* Feedback box: a short note field on the home footer. Opens a mail draft the
-   user reviews before anything is sent, so the renderer never posts the text. */
-.feedback-box { width: 100%; max-width: 460px; display: flex; flex-direction: column; gap: 6px; }
-.feedback-label { font-size: var(--fs-eyebrow); font-weight: 650; color: var(--text-mid); text-align: left; }
-.feedback-form { display: flex; gap: 8px; align-items: stretch; }
-.feedback-input { flex: 1; min-width: 0; resize: none; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--field); color: var(--text); font: 12px/1.4 var(--font-sans); }
-.feedback-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-.feedback-input::placeholder { color: var(--text-dim); }
-.feedback-send { flex: none; padding: 0 16px; border: 0; border-radius: 9px; background: var(--accent); color: var(--accent-ink); font-size: var(--fs-ui); font-weight: 650; cursor: pointer; }
-.feedback-send:hover:not(:disabled) { background: var(--accent-soft); }
-.feedback-send:disabled { opacity: .45; cursor: default; }
-.feedback-note { margin: 0; font-size: var(--fs-eyebrow); }
-.feedback-note-ok { color: var(--chip-green-text); }
-.feedback-note-err { color: var(--danger); }
+.workspace footer { position: relative; z-index: 1; padding: 10px; text-align: center; color: var(--text-dim); font-size: 10px; }
 
 /* Sidebar: New chat button and Recents list -------------------------------- */
 .new-chat { display: flex; align-items: center; gap: 10px; width: 100%; margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; text-align: left; color: var(--text); background: var(--panel-2); font-size: var(--fs-ui); font-weight: 650; }

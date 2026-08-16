@@ -39,7 +39,6 @@ import { DownloadGateModal } from "./components/DownloadGateModal";
 import { ManualPaymentModal } from "./components/ManualPaymentModal";
 import { Brand, LogoMark } from "./components/Brand";
 import { isWebBuild } from "./lib/platform";
-import { FeedbackBox } from "./components/FeedbackBox";
 
 type AppInfo = { name: string; version: string; authMode: string; billingMode: string };
 type Phase = "loading" | "auth" | "paywall" | "workspace";
@@ -976,10 +975,7 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
             </div>
           ))}
         </div>
-        <footer className="workspace-footer">
-          <span>WorkCrew can make mistakes. Check important details.</span>
-          <FeedbackBox />
-        </footer>
+        <footer>WorkCrew can make mistakes. Check important details.</footer>
       </section>
 
       {view === "permissions" && (
