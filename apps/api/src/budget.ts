@@ -197,6 +197,41 @@ export async function getBudgetUsage(userId: string, window: BudgetWindow): Prom
   return { used: Number(row?.used ?? 0), reserved: Number(row?.reserved ?? 0) };
 }
 
+/**
+ * The day's allowance for this subscription right now.
+ *
+ * This is THE daily cap. The banner shows it, the reservation gate enforces it,
+ * and the exhaustion message quotes it. It lives in one function on purpose: the
+ * adaptive rule was first written into budgetHeadroom alone, which left the
+ * number a user was SHOWN (and the number that actually stopped them) as the old
+ * fixed thirtieth, so an Ultra customer was still warned he was running low with
+ * most of the month untouched. A cap the user sees and a cap the server applies
+ * must never be two different numbers again.
+ */
+export async function dayAllowance(
+  subscription: { userId: string; plan: PlanId; budgetAnchorMs: number },
+  nowMs = Date.now()
+): Promise<{ limit: number; monthlyLeft: number; dailyUsed: number }> {
+  const window = budgetWindowFor(subscription, nowMs);
+  const limits = planLimits(subscription.plan);
+  const [monthly, dailyUsed] = await Promise.all([
+    getBudgetUsage(subscription.userId, window),
+    rollingUsage(subscription.userId, nowMs - DAY_MS, nowMs)
+  ]);
+  const monthlyLeft = Math.max(0, limits.monthly - (monthly.used + monthly.reserved));
+  // The day's budget is derived from where the month stood BEFORE today's spend,
+  // which is monthlyLeft plus what today has already used. Deriving it from
+  // monthlyLeft alone would shrink the day by exactly what the day had spent,
+  // charging the same money to both windows and refusing a user who still has
+  // plenty of month left.
+  const limit = adaptiveDailyLimit(limits.daily, monthlyLeft + dailyUsed, window.endMs - nowMs);
+  return { limit, monthlyLeft, dailyUsed };
+}
+
+export async function dailyLimitFor(subscription: { userId: string; plan: PlanId; budgetAnchorMs: number }, nowMs = Date.now()): Promise<number> {
+  return (await dayAllowance(subscription, nowMs)).limit;
+}
+
 // The budget still available right now, in microdollars, for each window: daily
 // and monthly headroom, each measured exactly as the reserveBudget gate does
 // (committed = in-flight reservations plus settled real usage). Never negative.
@@ -207,19 +242,12 @@ export async function getBudgetUsage(userId: string, window: BudgetWindow): Prom
 // values are returned separately so the caller can say "frees up tomorrow" (daily)
 // versus "used all your tokens for this period" (monthly) accurately.
 export async function budgetHeadroom(userId: string, subscription: SubscriptionRow, nowMs = Date.now()): Promise<{ daily: number; monthly: number }> {
-  const window = budgetWindowFor(subscription, nowMs);
-  const limits = planLimits(subscription.plan);
-  const [monthly, daily] = await Promise.all([
-    getBudgetUsage(userId, window),
-    rollingUsage(userId, nowMs - DAY_MS, nowMs)
-  ]);
-  const monthlyLeft = Math.max(0, limits.monthly - (monthly.used + monthly.reserved));
-  // The day's allowance is derived from what the month has left, so an unused
-  // balance is usable rather than rationed into thirtieths.
-  const dailyLimit = adaptiveDailyLimit(limits.daily, monthlyLeft, window.endMs - nowMs);
+  // Both windows come from dayAllowance, the same call the banner and the
+  // reservation gate use, so all three agree by construction.
+  const { limit, monthlyLeft, dailyUsed } = await dayAllowance({ ...subscription, userId }, nowMs);
   return {
     monthly: monthlyLeft,
-    daily: Math.max(0, dailyLimit - daily)
+    daily: Math.max(0, limit - dailyUsed)
   };
 }
 
@@ -256,6 +284,12 @@ export async function reserveBudget(input: {
   const amount = input.amountMicrodollars;
   const dayStart = nowMs - DAY_MS;
   const id = randomUUID();
+  // The day's allowance, derived from what the month has left. Read before the
+  // insert rather than inside it: under concurrency it can be a hair stale, but
+  // it only shapes a rate limit, while the monthly bound below is evaluated
+  // inside the same atomic statement and still holds real money to the cap.
+  const day = await dayAllowance(input.subscription, nowMs);
+  const dailyLimit = day.limit;
 
   // One atomic conditional insert that is a HARD cap: real spend can never exceed
   // either window (the monthly window, which nets credits so a top-up adds
@@ -302,11 +336,11 @@ export async function reserveBudget(input: {
       // reserved = min(worstCase, monthlyRemaining, dailyRemaining)
       amount,
       limits.monthly, input.subscription.userId, window.startMs, window.endMs,
-      limits.daily, input.subscription.userId, dayStart,
+      dailyLimit, input.subscription.userId, dayStart,
       nowMs,
       // gate: both windows must still have headroom
       input.subscription.userId, window.startMs, window.endMs, limits.monthly,
-      input.subscription.userId, dayStart, limits.daily
+      input.subscription.userId, dayStart, dailyLimit
     ]
   };
 
@@ -331,8 +365,10 @@ export async function reserveBudget(input: {
   if (rowsAffected !== 1) {
     // The insert only fails when a window is already exhausted. Report which one
     // is binding so the user sees a clear, accurate message.
-    const dailyUsed = await rollingUsage(input.subscription.userId, dayStart);
-    throw exhaustionError(input.subscription.plan, dailyUsed >= limits.daily);
+    // "Frees up tomorrow" is only true when the day is what ran out. If the month
+    // is also gone, tomorrow brings nothing, so the month is reported instead.
+    const dailyUsed = await rollingUsage(input.subscription.userId, dayStart, nowMs);
+    throw exhaustionError(input.subscription.plan, day.monthlyLeft > 0 && dailyUsed >= dailyLimit);
   }
   // Read back the amount actually reserved. The SQL clamps it to the headroom that
   // was left at insert time (serialized by the advisory lock), so this is the real

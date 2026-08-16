@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { actualCostMicrodollars, budgetLimitedOutputTokens, chooseModel, maximumReservationMicrodollars } from "./anthropic.js";
-import { adaptiveDailyLimit, budgetHeadroom, budgetWindowFor, getBudgetUsage, getBudgetWindow, releaseBudget, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
+import { adaptiveDailyLimit, budgetHeadroom, budgetWindowFor, dailyLimitFor, getBudgetUsage, getBudgetWindow, releaseBudget, reserveBudget, rollingUsage, settleBudget } from "./budget.js";
 import { client, initializeDatabase, type SubscriptionRow } from "./db.js";
 
 describe("monthly allowance windows", () => {
@@ -88,12 +88,14 @@ describe("budget ledger invariants", () => {
     });
   }
 
+  // The daily cap is no longer the plan's flat thirtieth: it is derived from what
+  // the month has left, so these tests ask the server for the day's real number
+  // rather than hard-coding one. That number IS the cap the gate applies.
   it("never lets concurrent reservations exceed the daily cap", async () => {
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
-    // Pro's daily cap is 400_000. Each asks for a tenth, so at most 10 succeed.
-    const cap = 400_000;
-    const perReservation = cap / 10;
+    const cap = await dailyLimitFor(subscription, nowMs);
+    const perReservation = Math.floor(cap / 10);
     const attempts = 25;
 
     const results = await Promise.allSettled(
@@ -103,17 +105,19 @@ describe("budget ledger invariants", () => {
     );
 
     const accepted = results.filter((result) => result.status === "fulfilled").length;
-    expect(accepted).toBeLessThanOrEqual(10);
+    // Ten full slices, plus at most one clamped to whatever rounding left over.
+    expect(accepted).toBeLessThanOrEqual(11);
     const used = await rollingUsage(subscription.userId, nowMs - 24 * HOUR);
     expect(used).toBeLessThanOrEqual(cap);
-    expect(used).toBe(accepted * perReservation);
+    expect(used).toBeGreaterThanOrEqual(10 * perReservation);
   });
 
   it("blocks at the daily cap", async () => {
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
     // Use the whole daily cap, then a further reservation is rejected.
-    await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 400_000, nowMs });
+    const cap = await dailyLimitFor(subscription, nowMs);
+    await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: cap, nowMs });
     await expect(
       reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs })
     ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
@@ -122,24 +126,26 @@ describe("budget ledger invariants", () => {
   it("accumulates toward the daily cap across the 24-hour window", async () => {
     const subscription = makeSubscription();
     const t = subscription.budgetAnchorMs;
-    // Pro daily cap is 400_000; three 130k turns (390k) still leave headroom.
+    // Three turns of a quarter of the day's allowance each still leave headroom.
     // Each is SETTLED, as a real turn is the moment its step ends: settled spend
     // is what accumulates across the day. A hold left un-settled for hours is by
     // definition abandoned, and no longer counts (see abandoned-reservations).
+    const slice = Math.floor((await dailyLimitFor(subscription, t)) / 4);
     for (const offset of [0, 6, 12]) {
-      const held = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + offset * HOUR });
-      await settleBudget(held.reservationId, 130_000);
+      const held = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: slice, nowMs: t + offset * HOUR });
+      await settleBudget(held.reservationId, slice);
     }
-    // A fourth 130k is allowed (390k < 400k) but is CLAMPED to the remaining 10k,
-    // so committed lands exactly on the cap and never over. The window is now full,
-    // so a fifth is refused.
-    const fourth = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + 15 * HOUR });
-    expect(fourth.reservationId).toBeTruthy();
-    expect(fourth.reservedMicrodollars).toBe(10_000);
-    expect(await rollingUsage(subscription.userId, t + 15 * HOUR - 24 * HOUR, t + 15 * HOUR)).toBe(400_000);
-    await settleBudget(fourth.reservationId, 10_000);
+    // A fourth, larger turn is allowed (three quarters spent) but is CLAMPED to
+    // the remainder, so committed lands exactly on the cap and never over. The
+    // window is then full, so a fifth is refused.
+    const at = t + 15 * HOUR;
+    const cap = await dailyLimitFor(subscription, at);
+    const fourth = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: cap, nowMs: at });
+    expect(fourth.reservedMicrodollars).toBe(cap - 3 * slice);
+    expect(await rollingUsage(subscription.userId, at - 24 * HOUR, at)).toBe(cap);
+    await settleBudget(fourth.reservationId, fourth.reservedMicrodollars);
     await expect(
-      reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 130_000, nowMs: t + 18 * HOUR })
+      reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs: at })
     ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
   });
 
@@ -155,16 +161,19 @@ describe("budget ledger invariants", () => {
   });
 
   it("gives the bigger plan bigger caps", async () => {
-    // After 400k of usage a Pro user is at their daily cap and is blocked, while an
-    // Ultra user (1.95M daily cap) still has plenty of headroom for more.
+    // Spend a full Pro day. Pro is then blocked, while an Ultra user (a much
+    // larger month, so a much larger day) still has plenty of headroom.
     const pro = makeSubscription();
-    await reserveBudget({ subscription: pro, runId: randomUUID(), model: "haiku", amountMicrodollars: 400_000, nowMs: pro.budgetAnchorMs });
+    const ultra = { ...makeSubscription(), plan: "ultra" as const };
+    const proCap = await dailyLimitFor(pro, pro.budgetAnchorMs);
+    expect(await dailyLimitFor(ultra, ultra.budgetAnchorMs)).toBeGreaterThan(proCap);
+
+    await reserveBudget({ subscription: pro, runId: randomUUID(), model: "haiku", amountMicrodollars: proCap, nowMs: pro.budgetAnchorMs });
     await expect(
       reserveBudget({ subscription: pro, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs: pro.budgetAnchorMs })
     ).rejects.toMatchObject({ code: "RATE_LIMIT_DAY" });
 
-    const ultra = { ...makeSubscription(), plan: "ultra" as const };
-    await reserveBudget({ subscription: ultra, runId: randomUUID(), model: "haiku", amountMicrodollars: 400_000, nowMs: ultra.budgetAnchorMs });
+    await reserveBudget({ subscription: ultra, runId: randomUUID(), model: "haiku", amountMicrodollars: proCap, nowMs: ultra.budgetAnchorMs });
     const stillOk = await reserveBudget({ subscription: ultra, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs: ultra.budgetAnchorMs });
     expect(stillOk.reservationId).toBeTruthy();
   });
@@ -195,13 +204,14 @@ describe("budget ledger invariants", () => {
     // the cap. This is what stops the number ever ticking past the limit.
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
-    // Pro at 350k of the 400k cap: only 50k of headroom remains.
-    await seedSettled(subscription.userId, 350_000, nowMs, subscription.budgetAnchorMs);
-    const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "opus", amountMicrodollars: 300_000, nowMs });
+    // Seed the day to 50k short of its allowance.
+    const cap = await dailyLimitFor(subscription, nowMs);
+    await seedSettled(subscription.userId, cap - 50_000, nowMs, subscription.budgetAnchorMs);
+    const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "opus", amountMicrodollars: cap, nowMs });
     expect(reservation.reservationId).toBeTruthy();
     // The real cost lands far above the 50k of headroom; it must be clamped to 50k.
-    await settleBudget(reservation.reservationId, 300_000);
-    expect(await rollingUsage(subscription.userId, nowMs - 24 * HOUR)).toBe(400_000);
+    await settleBudget(reservation.reservationId, cap);
+    expect(await rollingUsage(subscription.userId, nowMs - 24 * HOUR)).toBe(cap);
     // The day is now exactly full, so the next request is refused.
     await expect(
       reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs })
@@ -219,11 +229,11 @@ describe("budget ledger invariants", () => {
     await seedSettled(subscription.userId, 300_000, nowMs, subscription.budgetAnchorMs);
     const headroom = await budgetHeadroom(subscription.userId, subscription, nowMs);
     expect(headroom.monthly).toBe(11_700_000); // 12M cap - 300k used
-    // The daily allowance is no longer a fixed 400k: it is what the month has
-    // left (11.7M) spread over the days left, doubled so a heavy day is
-    // possible. On day one that is 780k, of which 300k is spent.
+    // The daily allowance is no longer a fixed 400k: it is what the month had
+    // before today (the full 12M) spread over the days left, doubled so a heavy
+    // day is possible. Of that, 300k is spent.
     const period = budgetWindowFor(subscription, nowMs);
-    const allowance = adaptiveDailyLimit(400_000, 11_700_000, period.endMs - nowMs);
+    const allowance = adaptiveDailyLimit(400_000, 12_000_000, period.endMs - nowMs);
     expect(headroom.daily).toBe(allowance - 300_000);
     // The point of the change: far more than the old fixed 400k cap allowed.
     expect(headroom.daily).toBeGreaterThan(100_000);
@@ -236,8 +246,9 @@ describe("budget ledger invariants", () => {
     // returned reservedMicrodollars is what a turn may actually spend.
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
-    await seedSettled(subscription.userId, 350_000, nowMs, subscription.budgetAnchorMs); // 50k left
-    const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "opus", amountMicrodollars: 300_000, nowMs });
+    const cap = await dailyLimitFor(subscription, nowMs);
+    await seedSettled(subscription.userId, cap - 50_000, nowMs, subscription.budgetAnchorMs); // 50k left
+    const reservation = await reserveBudget({ subscription, runId: randomUUID(), model: "opus", amountMicrodollars: cap, nowMs });
     expect(reservation.reservedMicrodollars).toBe(50_000);
   });
 
