@@ -71,6 +71,10 @@ export type RunRow = {
   tokensCacheRead: number;
   tokensCacheWrite: number;
   tokensOutput: number;
+  /** The conversation this run is recorded in, so a task the user gave the
+   *  computer appears in Recents alongside their chats instead of vanishing the
+   *  moment it finishes. Null for runs created before this existed. */
+  conversationId?: string | null;
 };
 
 const client = createDatabaseClient();
@@ -153,6 +157,7 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
       tokens_cache_read BIGINT NOT NULL DEFAULT 0,
       tokens_cache_write BIGINT NOT NULL DEFAULT 0,
       tokens_output BIGINT NOT NULL DEFAULT 0,
+      conversation_id TEXT,
       created_at_ms BIGINT NOT NULL,
       updated_at_ms BIGINT NOT NULL
     )`,
@@ -322,6 +327,8 @@ export async function initializeDatabase(db: DatabaseClient = client): Promise<v
   await addColumnIfMissing(db, "runs", "last_action_signature", "TEXT");
   await addColumnIfMissing(db, "runs", "repeat_count", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "runs", "escalated", "INTEGER NOT NULL DEFAULT 0");
+  // A run is recorded in a conversation so the work shows up in Recents.
+  await addColumnIfMissing(db, "runs", "conversation_id", "TEXT");
   await addColumnIfMissing(db, "runs", "tokens_input", "BIGINT NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "runs", "tokens_cache_read", "BIGINT NOT NULL DEFAULT 0");
   await addColumnIfMissing(db, "runs", "tokens_cache_write", "BIGINT NOT NULL DEFAULT 0");
@@ -656,9 +663,9 @@ export async function createRun(run: RunRow): Promise<void> {
         id, user_id, model, kind, status, messages_json, pending_tool_use_id,
         step_count, last_action_signature, repeat_count, escalated,
         tokens_input, tokens_cache_read, tokens_cache_write, tokens_output,
-        created_at_ms, updated_at_ms
+        conversation_id, created_at_ms, updated_at_ms
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       run.id,
       run.userId,
@@ -675,6 +682,7 @@ export async function createRun(run: RunRow): Promise<void> {
       run.tokensCacheRead,
       run.tokensCacheWrite,
       run.tokensOutput,
+      run.conversationId ?? null,
       Date.now(),
       Date.now()
     ]
@@ -705,7 +713,8 @@ export async function getRun(runId: string, userId: string): Promise<RunRow | nu
     tokensInput: asNumber(row.tokens_input),
     tokensCacheRead: asNumber(row.tokens_cache_read),
     tokensCacheWrite: asNumber(row.tokens_cache_write),
-    tokensOutput: asNumber(row.tokens_output)
+    tokensOutput: asNumber(row.tokens_output),
+    conversationId: row.conversation_id ? String(row.conversation_id) : null
   };
 }
 
