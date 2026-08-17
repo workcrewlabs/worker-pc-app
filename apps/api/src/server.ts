@@ -48,6 +48,7 @@ import {
   estimatedInputMicrodollars,
   maximumReservationMicrodollars,
   modelRequestPayload,
+  runTitle,
   summarizeRecording,
   withAnsweredToolUseOnly,
   type ModelResult
@@ -86,8 +87,10 @@ import { streamChat } from "./chat.js";
 import { config } from "./config.js";
 import { captureAnonymous, captureEvent, safeErrorCategory } from "./analytics.js";
 import {
+  addMessage,
   client,
   countReferrals,
+  createConversation,
   createRun,
   deleteAccount,
   deleteConversation,
@@ -109,6 +112,7 @@ import {
   setModelMode,
   setUserName,
   updateRun,
+  type RunRow,
   type SubscriptionRow
 } from "./db.js";
 
@@ -1044,13 +1048,59 @@ app.patch("/v1/preferences", routeLimit(30), async (request) => {
   return { modelMode: body.modelMode };
 });
 
+/**
+ * Write a finished run's answer into its conversation.
+ *
+ * Best effort on purpose: the work is already done and paid for, so a failure
+ * to file the transcript must never turn a successful run into an error the
+ * user sees.
+ */
+async function recordRunAnswer(run: RunRow, summary: string): Promise<void> {
+  const text = summary.trim();
+  if (!run.conversationId || !text) return;
+  try {
+    await addMessage({
+      id: randomUUID(),
+      conversationId: run.conversationId,
+      role: "assistant",
+      content: [{ type: "text", text }]
+    });
+  } catch {
+    // The run stands on its own; the transcript is a convenience.
+  }
+}
+
 app.post("/v1/runs", routeLimit(30), async (request) => {
   const userId = await authenticate(request);
   requireActive(await getSubscription(userId));
   const body = createRunSchema.parse(request.body);
   const id = randomUUID();
+  // Record the task as a conversation so work done on the computer appears in
+  // Recents next to the user's chats. Runs used to live in their own table with
+  // no conversation at all, so a task the user watched WorkCrew carry out was
+  // gone from the sidebar the moment it finished, with no way back to it.
+  // A failure here must never stop the work starting, so it is best effort.
+  let conversationId: string | null = null;
+  try {
+    const conversation = await createConversation({
+      id: randomUUID(),
+      userId,
+      title: runTitle(body.task),
+      model: body.model
+    });
+    conversationId = conversation.id;
+    await addMessage({
+      id: randomUUID(),
+      conversationId,
+      role: "user",
+      content: [{ type: "text", text: runTitle(body.task) }]
+    });
+  } catch (error) {
+    request.log.warn({ code: "RUN_CONVERSATION_FAILED" }, "could not record the run in a conversation");
+  }
   await createRun({
     id,
+    conversationId,
     userId,
     model: body.model,
     kind: body.kind,
@@ -1349,6 +1399,9 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
           output: run.tokensOutput
         }
       }, "automation run complete: total token usage");
+      // Close the conversation with what the run reported, so reopening it from
+      // Recents shows the task and its answer rather than a bare title.
+      await recordRunAnswer(run, result.action.kind === "finish" ? result.action.summary : "");
     }
     await updateRun(run);
     return {

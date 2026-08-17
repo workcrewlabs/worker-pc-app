@@ -280,6 +280,24 @@ export function actionSignature(action: AutomationAction): string {
 }
 
 /**
+ * A Recents title for a task the user gave the computer.
+ *
+ * A run's task text is not what the user typed: folder work carries a long
+ * instruction preamble in front of it, so titling a conversation with the raw
+ * task would fill the sidebar with identical walls of engine instructions. The
+ * user's own words follow a known marker, so take what comes after it, then its
+ * first line, clamped to something a sidebar can show.
+ */
+export const TASK_MARKER = "The user's request:\n";
+export function runTitle(task: string): string {
+  const marker = task.lastIndexOf(TASK_MARKER);
+  const own = marker >= 0 ? task.slice(marker + TASK_MARKER.length) : task;
+  const firstLine = own.split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? "";
+  const clamped = firstLine.length > 60 ? `${firstLine.slice(0, 60).trimEnd()}...` : firstLine;
+  return clamped || "Computer task";
+}
+
+/**
  * The assistant turn as it must be RECORDED: its text, plus at most the one
  * tool call that will actually be answered.
  *
