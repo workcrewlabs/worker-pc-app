@@ -13,6 +13,7 @@ import io
 import sys
 import types
 import unittest
+from unittest import mock
 
 
 def _install_fake_pywinauto() -> None:
@@ -866,6 +867,81 @@ class MergeWindowListingsTests(unittest.TestCase):
 
     def test_the_shell_is_not_offered_as_an_app(self):
         self.assertIn("program manager", agent._SHELL_WINDOW_TITLES)
+
+
+class MinimizedWindowTests(unittest.TestCase):
+    """The client's ERP was open the whole time, minimized to the taskbar.
+    Windows parks a minimized window at about -32000 with a tiny rectangle, so
+    the filter that removes tooltips and stray host windows removed it too. It
+    was absent from both listings, which made it look closed, and every piece of
+    advice that followed was about a permissions problem nobody had."""
+
+    def test_a_minimized_window_is_open_not_blocked(self):
+        with mock.patch.object(agent, "is_minimized", return_value=True):
+            merged = agent.merge_window_listings([], [(42, "Libra ERP")])
+        entry = merged[0]
+        self.assertTrue(entry["minimized"])
+        self.assertTrue(entry["controllable"])
+        self.assertIn("NOT closed", entry["note"])
+
+    def test_it_does_not_blame_administrator_for_a_minimized_window(self):
+        # The wrong turn that cost the client an afternoon: minimized reported
+        # as an elevation problem, so running as administrator changed nothing.
+        with mock.patch.object(agent, "is_minimized", return_value=True):
+            merged = agent.merge_window_listings([], [(42, "Libra ERP")])
+        self.assertNotIn("administrator", merged[0]["note"])
+
+    def test_a_window_that_is_genuinely_unreachable_still_says_so(self):
+        with mock.patch.object(agent, "is_minimized", return_value=False):
+            merged = agent.merge_window_listings([], [(42, "Libra ERP")])
+        self.assertFalse(merged[0]["controllable"])
+        self.assertIn("administrator", merged[0]["note"])
+
+    def test_the_note_tells_the_model_to_just_connect(self):
+        # Asking the user to restore it themselves is asking them to do the one
+        # thing the tool is for.
+        self.assertIn("WorkCrew puts it back on screen first", agent.MINIMIZED_WINDOW_NOTE)
+        self.assertIn("never ask them to restore it themselves", agent.MINIMIZED_WINDOW_NOTE)
+
+
+class MissingWindowAdviceTests(unittest.TestCase):
+    """A client ran WorkCrew as administrator, exactly as told, and got the same
+    message telling him to run it as administrator. The window was absent from
+    Windows' own listing too, which rules that cause out entirely: the advice was
+    not diagnosis, it was a fixed string."""
+
+    def test_it_does_not_repeat_advice_the_user_has_already_followed(self):
+        with mock.patch.object(agent, "is_elevated", return_value=True):
+            advice = agent.missing_window_advice("Libra", [(1, "WorkCrew")])
+        self.assertIn("already running as administrator", advice)
+        self.assertIn("do NOT tell the user", advice)
+
+    def test_it_still_offers_elevation_when_that_is_genuinely_untried(self):
+        with mock.patch.object(agent, "is_elevated", return_value=False):
+            advice = agent.missing_window_advice("Libra", [(1, "WorkCrew")])
+        self.assertIn("Run as administrator", advice)
+
+    def test_it_names_the_remote_screen_the_program_is_probably_on(self):
+        # The exact case: AnyDesk open, the ERP running on the far machine. No
+        # amount of elevation can reach it, so saying so is the whole answer.
+        with mock.patch.object(agent, "is_elevated", return_value=True):
+            advice = agent.missing_window_advice("Libra", [(1, "client pc - AnyDesk"), (2, "WorkCrew")])
+        self.assertIn("AnyDesk", advice)
+        self.assertIn("another computer", advice)
+        self.assertIn("never be connected to by name", advice)
+
+    def test_it_says_the_window_is_nowhere_rather_than_blaming_the_tree(self):
+        # Absent from Windows' own listing means the accessibility boundary is
+        # not the cause, and the message must not imply that it is.
+        with mock.patch.object(agent, "is_elevated", return_value=True):
+            advice = agent.missing_window_advice("Libra", [])
+        self.assertIn("Windows itself does not list one either", advice)
+        self.assertIn("minimized", advice)
+
+    def test_remote_tools_are_recognised_by_the_names_people_actually_use(self):
+        titles = [(1, "Server - TeamViewer"), (2, "Remote Desktop Connection"), (3, "RustDesk"), (4, "Notepad")]
+        self.assertEqual(len(agent.remote_desktop_windows(titles)), 3)
+        self.assertEqual(agent.remote_desktop_windows([(1, "Notepad")]), [])
 
 
 if __name__ == "__main__":

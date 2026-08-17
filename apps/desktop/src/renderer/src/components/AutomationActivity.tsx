@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AutomationRunner } from "../hooks/useAutomationRunner";
+import type { TurnActivity } from "../lib/chat";
 import { summarizeActivity } from "../lib/automation";
 
 /** Elapsed time the way a clock reads it: 45s, 2m 30s, 1h 4m. 480s is not a
@@ -18,6 +19,62 @@ function compactTokens(count: number): string {
   return String(count);
 }
 
+/**
+ * Work done, as one collapsed line ("Ran 12 commands, read 5 files") that opens
+ * to the named steps.
+ *
+ * Shared by the run in flight and by a finished run once it has been moved into
+ * the transcript, so the same work reads the same in both places and does not
+ * change shape the moment it stops being live.
+ */
+export function ActivityBlock({ steps }: { steps: TurnActivity[] }) {
+  // Collapsed by default; the summary line carries the counts, including
+  // failures, so nothing that matters is hidden behind the chevron.
+  const [expanded, setExpanded] = useState(false);
+  const grouped = summarizeActivity(steps);
+  if (!grouped) return null;
+
+  const lineFor = (label: string, stepStatus: string): string => {
+    if (stepStatus === "error") return `${label} (failed)`;
+    if (stepStatus === "declined") return `${label} (skipped)`;
+    return label;
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`folder-group${expanded ? " folder-group-open" : ""}`}
+        aria-expanded={expanded}
+        onClick={() => setExpanded((open) => !open)}
+      >
+        <svg className="folder-group-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <polyline points="9 6 15 12 9 18" />
+        </svg>
+        {grouped}
+      </button>
+      {expanded && steps.length > 0 && (
+        <div className="folder-steps">
+          {steps.map((step) => (
+            <p key={step.id} className="folder-step" title={step.detail || undefined}>
+              {lineFor(step.label, step.status)}
+            </p>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** The work of a finished run, sitting in the transcript where it happened. */
+export function TurnActivityBlock({ steps }: { steps: TurnActivity[] }) {
+  return (
+    <div className="folder-activity folder-activity-past">
+      <ActivityBlock steps={steps} />
+    </div>
+  );
+}
+
 // Folder-mode work rendered the way a coding assistant shows its own: one
 // collapsed line summarising everything done so far ("Ran 12 commands, read 5
 // files, wrote 3 files"), expandable to the named per-step lines, and a live
@@ -28,9 +85,6 @@ export function FolderActivity({ runner }: { runner: AutomationRunner }) {
 
   // Elapsed seconds since the run started, part of the live working line.
   const [elapsed, setElapsed] = useState(0);
-  // Whether the per-step detail is open. Collapsed by default; the summary line
-  // carries the counts, including failures, so nothing is hidden that matters.
-  const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (!running) return;
     setElapsed(0);
@@ -41,42 +95,14 @@ export function FolderActivity({ runner }: { runner: AutomationRunner }) {
 
   if (!running && steps.length === 0 && !summary && !error) return null;
 
-  const lineFor = (label: string, stepStatus: string): string => {
-    if (stepStatus === "error") return `${label} (failed)`;
-    if (stepStatus === "declined") return `${label} (skipped)`;
-    return label;
-  };
-
   const finished = steps.filter((step) => step.status !== "running");
-  const grouped = summarizeActivity(finished);
   // The step in flight; between steps the model is deciding what to do next.
   const inFlight = steps.find((step) => step.status === "running");
   const doing = inFlight?.doing ?? inFlight?.label ?? "Thinking";
 
   return (
     <div className="folder-activity" aria-live="polite">
-      {grouped && (
-        <button
-          type="button"
-          className={`folder-group${expanded ? " folder-group-open" : ""}`}
-          aria-expanded={expanded}
-          onClick={() => setExpanded((open) => !open)}
-        >
-          <svg className="folder-group-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <polyline points="9 6 15 12 9 18" />
-          </svg>
-          {grouped}
-        </button>
-      )}
-      {expanded && finished.length > 0 && (
-        <div className="folder-steps">
-          {finished.map((step) => (
-            <p key={step.id} className="folder-step" title={step.detail || undefined}>
-              {lineFor(step.label, step.status)}
-            </p>
-          ))}
-        </div>
-      )}
+      <ActivityBlock steps={finished} />
       {running && (
         <p className="folder-working" title={inFlight?.detail || undefined}>
           <span className="chip-spinner" aria-hidden="true" />

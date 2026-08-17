@@ -92,6 +92,24 @@ function killTree(pid: number | undefined): void {
   } catch { /* already gone */ }
 }
 
+/**
+ * Every command running right now, so Stop can actually stop them.
+ *
+ * A folder run spends nearly all its time inside a command (a test suite, an
+ * install, a search). Stopping only checked between steps, so pressing Stop
+ * during a three minute command did nothing at all until that command chose to
+ * finish, which reads exactly like being ignored.
+ */
+const liveCommands = new Set<() => void>();
+
+/** Stop every command in flight. Returns how many were stopped. */
+export function cancelRunningCommands(): number {
+  const running = [...liveCommands];
+  liveCommands.clear();
+  for (const cancel of running) cancel();
+  return running.length;
+}
+
 export async function runShellCommand(
   command: string,
   folder?: string | null,
@@ -129,6 +147,7 @@ export async function runShellCommand(
       if (settled) return;
       settled = true;
       stopTimers();
+      liveCommands.delete(cancel);
       child.stdout?.removeAllListeners("data");
       child.stderr?.removeAllListeners("data");
       resolve(text);
@@ -137,6 +156,10 @@ export async function runShellCommand(
       killTree(child.pid);
       settle(`${clamp(out).trim()}\n[${note}]`);
     };
+    // Pressing Stop kills the command and everything it started, and reports
+    // what it had produced so far rather than pretending it finished.
+    const cancel = (): void => giveUp("You stopped this command.");
+    liveCommands.add(cancel);
     const resetIdle = (): void => {
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(

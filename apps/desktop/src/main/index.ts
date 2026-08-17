@@ -40,7 +40,7 @@ import { extractOfficeText } from "./office.js";
 import { extractPdfText, looksLikeText } from "./pdf-text.js";
 import { EXPORT_EXTENSIONS, generateExport, sanitizeExportName, type ExportExtension } from "./file-export.js";
 import { readProjectInstructions } from "./project-instructions.js";
-import { confinePath, looksLikeTruncatedWrite, resolveWorkingDir, runShellCommand } from "./shell-cli.js";
+import { cancelRunningCommands, confinePath, looksLikeTruncatedWrite, resolveWorkingDir, runShellCommand } from "./shell-cli.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -903,8 +903,12 @@ function registerIpc(): void {
     // The overlay is lowered by the renderer's run-exit path (or the safety timer)
     // after the in-flight action settles, so it stays up until the mouse actually
     // stops moving rather than disappearing the instant Stop is pressed.
+    // A folder run spends nearly all its time inside a command, so Stop has to
+    // reach those too, or pressing it during a long test run does nothing until
+    // the run chooses to end.
+    const commands = cancelRunningCommands();
     await Promise.allSettled([browserCli.stop(), windowsAgent.stop()]);
-    return { stopped: true };
+    return { stopped: true, commands };
   });
   // The renderer turns the "do not touch the mouse" overlay on before a Windows
   // automation acts and off when the run ends.
