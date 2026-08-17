@@ -64,11 +64,30 @@ function resolveAppTarget(name: string): string | null {
   return APP_TARGETS[key] ?? key.replace(/\.exe$/i, "");
 }
 
+/**
+ * Whether this failure means the helper has forgotten which window it was
+ * working in.
+ *
+ * The connected window lives in the helper's memory, so it dies with the
+ * process. The helper is killed on any transport failure and relaunched by the
+ * next call, and that fresh process has never connected to anything: every step
+ * after it failed with one of these two messages while the app sat plainly on
+ * screen, connected a moment earlier. A client watched WorkCrew connect to his
+ * ERP and then insist he had not connected, over and over.
+ */
+export function looksLikeLostSession(message: string): boolean {
+  return /connect to (a|the app's) window first/i.test(message);
+}
+
 export class WindowsAgent {
   private process: ChildProcess | null = null;
   private endpoint: string | null = null;
   private token: string | null = null;
   private healthChecked = false;
+  // The window this agent is working in, remembered across helper restarts so a
+  // lost session can be rebuilt without the user noticing. Deliberately NOT
+  // cleared by reset(): surviving the restart is the entire point.
+  private connectedWindow: string | null = null;
   // How the last capture maps onto the real screen: how much the picture was
   // shrunk (real pixels per picture pixel) and where the photographed window
   // sits (its top left corner in screen coordinates). The model works purely in
@@ -349,18 +368,48 @@ export class WindowsAgent {
     if (action.command === "launch") {
       return { output: await this.launchApp(action.application ?? "") };
     }
-    const output = await this.postAction(this.toScreenCoordinates(action));
+    const output = await this.runWithSession(this.toScreenCoordinates(action));
+    // Remember what we are working in, so a helper that dies later can be put
+    // back exactly where it was.
+    if (action.command === "connect" && action.windowTitle) this.connectedWindow = action.windowTitle;
     if (action.command === "screenshot") return this.readScreenshot(output);
     if (!WindowsAgent.AUTO_SCREENSHOT_AFTER.has(action.command)) return { output };
     // The action already succeeded; a capture failure only costs the picture,
     // never the step.
     try {
       await new Promise((settle) => setTimeout(settle, WindowsAgent.SETTLE_MS));
-      const shot = await this.readScreenshot(await this.postAction({ kind: "windows", command: "screenshot" }));
+      const shot = await this.readScreenshot(await this.runWithSession({ kind: "windows", command: "screenshot" }));
       if (shot.imageBase64) return { ...shot, output: `${output} ${shot.output}` };
       return { output };
     } catch {
       return { output };
+    }
+  }
+
+  /**
+   * Run an action, rebuilding the helper's session if it has been lost.
+   *
+   * The helper is killed whenever a request fails in transport, which happens
+   * for real reasons (a slow window, a crashed capture) and takes the connected
+   * window down with it. Every following step then failed with "Connect to a
+   * window first" about an app the user could see, and connecting again only
+   * restarted the same loop, because the automatic screenshot that follows a
+   * connect could kill the helper all over again.
+   *
+   * So a lost session is repaired here rather than reported: reconnect to the
+   * window we already know we are in, and run the action once more. Retried once
+   * only, so a window that genuinely will not connect fails honestly instead of
+   * spinning.
+   */
+  private async runWithSession(action: Record<string, unknown>): Promise<string> {
+    try {
+      return await this.postAction(action);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const recoverable = looksLikeLostSession(message) && this.connectedWindow && action.command !== "connect";
+      if (!recoverable) throw error;
+      await this.postAction({ kind: "windows", command: "connect", windowTitle: this.connectedWindow });
+      return this.postAction(action);
     }
   }
 
