@@ -279,6 +279,30 @@ export function actionSignature(action: AutomationAction): string {
   return `${action.kind}:${JSON.stringify(entries)}`;
 }
 
+/**
+ * The assistant turn as it must be RECORDED: its text, plus at most the one
+ * tool call that will actually be answered.
+ *
+ * A planner may ask for several tools in a single turn, and the Economy engine
+ * does it readily. Only the first is executed, so only the first ever gets a
+ * tool_result, and every extra tool_use sits in the history with nothing
+ * answering it. The provider validates that pairing on the NEXT request and
+ * refuses the whole conversation: "tool_use ids were found without tool_result
+ * blocks immediately after". The run then dies on a raw API error, mid-task,
+ * having already done real work and with no way to continue.
+ *
+ * Dropping the calls we are not going to answer keeps the history valid by
+ * construction. Nothing is lost: they were never executed, and the planner asks
+ * again on the next step if it still wants them.
+ */
+export function withAnsweredToolUseOnly(content: AnthropicContent[], answeredId?: string): AnthropicContent[] {
+  const kept = content.filter((block) => block.type !== "tool_use" || (answeredId !== undefined && block.id === answeredId));
+  // Never record an empty turn: some providers reject a message with no content
+  // at all, which would trade one broken history for another.
+  if (kept.length > 0) return kept;
+  return [{ type: "text", text: "(no runnable action in this step)" }];
+}
+
 function parseAction(content: AnthropicContent[]): { action: AutomationAction; toolUseId?: string; invalid?: { toolUseId: string; message: string } } {
   const tool = content.find((item): item is Extract<AnthropicContent, { type: "tool_use" }> => item.type === "tool_use");
   if (tool) {

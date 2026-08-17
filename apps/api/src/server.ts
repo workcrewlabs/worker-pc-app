@@ -49,6 +49,7 @@ import {
   maximumReservationMicrodollars,
   modelRequestPayload,
   summarizeRecording,
+  withAnsweredToolUseOnly,
   type ModelResult
 } from "./anthropic.js";
 import { economyEngineAvailable, provider, routeAutomationTier, type ConcreteModelTier } from "./model-registry.js";
@@ -1298,7 +1299,9 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
     }
 
     // Append the action we will actually return so the transcript stays valid.
-    run.messages.push({ role: "assistant", content: result.content });
+    // Only the tool call being answered is recorded: an unanswered one poisons
+    // the history and the provider rejects the whole run on the next step.
+    run.messages.push({ role: "assistant", content: withAnsweredToolUseOnly(result.content, result.toolUseId) });
     request.log.info({
       runId: run.id,
       step: run.stepCount,
