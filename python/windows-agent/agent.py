@@ -375,12 +375,19 @@ def _visible_windows_win32() -> list[tuple[int, str]]:
                 cloaked = ctypes.c_int(0)
             if cloaked.value:
                 return True
-            # Anything this small is a tooltip or a stray host window, not an app.
-            rect = ctypes.wintypes.RECT()
-            if not user32.GetWindowRect(ctypes.wintypes.HWND(int(hwnd)), ctypes.byref(rect)):
-                return True
-            if rect.right - rect.left < 200 or rect.bottom - rect.top < 120:
-                return True
+            # A minimized window is not junk, it is an app the user has parked on
+            # the taskbar. Windows gives it a tiny rectangle way off screen
+            # (around -32000), so the size test below threw it out and WorkCrew
+            # told people their ERP was not open while its button sat on the
+            # taskbar in front of them. Minimized windows skip the size test and
+            # are restored when something needs to act on them.
+            if not user32.IsIconic(ctypes.wintypes.HWND(int(hwnd))):
+                # Anything this small is a tooltip or a stray host window, not an app.
+                rect = ctypes.wintypes.RECT()
+                if not user32.GetWindowRect(ctypes.wintypes.HWND(int(hwnd)), ctypes.byref(rect)):
+                    return True
+                if rect.right - rect.left < 200 or rect.bottom - rect.top < 120:
+                    return True
             found.append((int(hwnd), title[:500]))
         except Exception:
             # One bad window must never stop the walk.
@@ -390,6 +397,98 @@ def _visible_windows_win32() -> list[tuple[int, str]]:
     callback = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)(collect)
     user32.EnumWindows(callback, 0)
     return found
+
+
+def is_minimized(hwnd: int) -> bool:
+    """Whether this window is parked on the taskbar.
+
+    Windows parks a minimized window at roughly -32000 with a tiny rectangle,
+    which used to look exactly like the tooltips and stray host windows the
+    listing filters out. So a minimized app was dropped before anyone saw it,
+    and WorkCrew reported an ERP as not open with its taskbar button in plain
+    sight."""
+    try:
+        return bool(ctypes.windll.user32.IsIconic(ctypes.wintypes.HWND(int(hwnd))))  # type: ignore[attr-defined]
+    except Exception:
+        return False
+
+
+def restore_window(hwnd: int) -> bool:
+    """Put a minimized window back on screen. A person would click its taskbar
+    button before working in it; this is that click. SW_RESTORE is 9."""
+    try:
+        ctypes.windll.user32.ShowWindow(ctypes.wintypes.HWND(int(hwnd)), 9)  # type: ignore[attr-defined]
+        time.sleep(0.4)
+        return True
+    except Exception:
+        return False
+
+
+def is_elevated() -> bool:
+    """Whether WorkCrew itself is running as administrator.
+
+    Every "I cannot see that window" message used to end with "start WorkCrew
+    with Run as administrator". For a user who had already done exactly that, it
+    is advice to repeat what they just did, and it sends them round the same
+    loop while the real cause goes unnamed. Knowing which side of the line we are
+    on is what makes the rest of the diagnosis honest.
+    """
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
+    except Exception:
+        return False
+
+
+# Programs that show ANOTHER computer's screen inside a window on this one.
+REMOTE_DESKTOP_MARKERS = ("anydesk", "teamviewer", "remote desktop", "rustdesk", "vnc", "splashtop", "logmein")
+
+
+def remote_desktop_windows(listing: list[tuple[int, str]]) -> list[str]:
+    """Titles of any remote-control windows currently open."""
+    return [title for _, title in listing if any(mark in title.lower() for mark in REMOTE_DESKTOP_MARKERS)]
+
+
+def missing_window_advice(requested: str, listing: list[tuple[int, str]]) -> str:
+    """What to tell the user when a window cannot be found anywhere.
+
+    Windows itself does not see it either, so it is not the administrator
+    boundary: that boundary hides a window from the accessibility tree while
+    leaving it in the plain window list. The remaining causes are named in the
+    order they actually occur, and the administrator advice is offered only when
+    WorkCrew is not already running that way.
+    """
+    remote = remote_desktop_windows(listing)
+    lines = [
+        f'No open window matches "{requested}", and Windows itself does not list one either, '
+        "so it is not on this computer's screen right now."
+    ]
+    if remote:
+        lines.append(
+            f'"{remote[0]}" is open, which shows another computer. A program running over there is a picture '
+            "inside that window, not a window on this PC, so it can never be connected to by name. To work in it, "
+            "connect to the remote-control window itself and click inside it from a screenshot; better still, run "
+            "WorkCrew on the computer the program is actually running on."
+        )
+    lines.append(
+        "Otherwise the program is most likely minimized (restore it from the taskbar), showing only a tray icon "
+        "near the clock, or running under a different Windows user than this one."
+    )
+    if not is_elevated():
+        lines.append(
+            "If it is running as administrator, close WorkCrew and start it with Run as administrator, then try again."
+        )
+    else:
+        lines.append(
+            "WorkCrew is already running as administrator, so do NOT tell the user to run it as administrator again."
+        )
+    return " ".join(lines)
+
+
+MINIMIZED_WINDOW_NOTE = (
+    "This app is open but minimized to the taskbar. It is NOT closed. Connect to it by this title and "
+    "WorkCrew puts it back on screen first, then works in it normally. Never tell the user it is not open "
+    "and never ask them to restore it themselves."
+)
 
 
 BLOCKED_WINDOW_NOTE = (
@@ -410,6 +509,21 @@ def merge_window_listings(
     merged: list[dict[str, Any]] = list(controllable)
     for handle, title in on_screen:
         if handle in known:
+            continue
+        # Two very different reasons a window is missing from the first listing,
+        # and only one of them is the administrator boundary. A minimized app is
+        # perfectly controllable the moment it is put back on screen, so saying
+        # "Windows is blocking this" about it sends the user chasing a
+        # permissions problem they do not have.
+        if is_minimized(handle):
+            merged.append({
+                "title": title,
+                "type": "Window",
+                "handle": handle,
+                "controllable": True,
+                "minimized": True,
+                "note": MINIMIZED_WINDOW_NOTE,
+            })
             continue
         merged.append({
             "title": title,
@@ -446,7 +560,20 @@ def list_windows() -> str:
             # A single inaccessible window must never abort the whole listing.
             continue
     try:
-        windows = merge_window_listings(windows, _visible_windows_win32())
+        listing = _visible_windows_win32()
+        windows = merge_window_listings(windows, listing)
+        # A remote-control window is showing another computer. Anything running
+        # over there is a picture inside this window, so the planner must not go
+        # looking for it by name and must not blame the administrator boundary.
+        for title in remote_desktop_windows(listing):
+            for entry in windows:
+                if entry.get("title") == title:
+                    entry["showsAnotherComputer"] = True
+                    entry["note"] = (
+                        "This window shows a DIFFERENT computer. Programs running on that computer are only a "
+                        "picture inside this window: they will never appear in this list and cannot be connected "
+                        "to by name. Work in them by connecting to this window and clicking from a screenshot."
+                    )
     except Exception:
         # The second opinion is a diagnosis aid, never a reason to fail the
         # listing that already worked.
@@ -481,7 +608,7 @@ def score_window_title(requested: str, actual: str) -> int:
     return 0
 
 
-def resolve_window(requested: str) -> Any:
+def resolve_window(requested: str, _restored: bool = False) -> Any:
     """Find the best open window for a requested title. Exact matching is a trap
     here: titles drift (spacing, status suffixes) between list-windows and the
     connect that follows, so the lookup is normalized and fuzzy, preferring the
@@ -510,9 +637,19 @@ def resolve_window(requested: str) -> Any:
         # "no such window" about an app the user is looking straight at is the
         # single most confusing thing this tool can do.
         try:
-            blocked = [title for _, title in _visible_windows_win32() if score_window_title(requested, title)]
+            listing = _visible_windows_win32()
         except Exception:
-            blocked = []
+            listing = []
+        matches = [(handle, title) for handle, title in listing if score_window_title(requested, title)]
+        # Minimized first: it is the common case and the fixable one. Put the
+        # window back on screen and look again, exactly as a person would click
+        # its taskbar button before working in it. Only once, so a window that
+        # refuses to restore cannot spin here.
+        if not _restored:
+            for handle, _title in matches:
+                if is_minimized(handle) and restore_window(handle):
+                    return resolve_window(requested, _restored=True)
+        blocked = [title for _, title in matches]
         if blocked:
             raise ValueError(
                 f'"{blocked[0]}" is open on screen, but Windows will not let WorkCrew see inside it or click it. '
@@ -520,9 +657,11 @@ def resolve_window(requested: str) -> Any:
                 "WorkCrew and start it with Run as administrator (or to reopen that program normally), then try "
                 "again. Do not tell the user the window is missing or closed: it is open."
             )
-        raise ValueError(
-            f'No open window matches "{requested}". Use list-windows to see the open windows and connect with one of those titles.'
-        )
+        # Absent from BOTH listings. The administrator boundary hides a window
+        # from the accessibility tree but not from Windows' own list, so it is
+        # not that, and repeating the administrator advice here is what sent a
+        # user round the same loop after they had already done it.
+        raise ValueError(missing_window_advice(requested, listing))
     return best
 
 
@@ -860,6 +999,14 @@ def _ensure_foreground(window: Any) -> None:
     screen clicks land in the app they were aimed at."""
     if window is None:
         return
+    # A window minimized between connecting and acting has no rectangle to
+    # photograph or click, and set_focus alone does not always bring it back.
+    try:
+        handle = int(getattr(window, "handle", 0) or 0)
+        if handle and is_minimized(handle):
+            restore_window(handle)
+    except Exception:
+        pass
     try:
         window.set_focus()
         time.sleep(0.2)

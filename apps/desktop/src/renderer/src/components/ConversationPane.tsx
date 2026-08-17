@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { AttachmentRef, ModelTier, PlanId } from "@workcrew/contracts";
-import type { ChatTurn, LocalFile } from "../lib/chat";
+import { conversationDigest, type ChatTurn, type LocalFile } from "../lib/chat";
 import { loadComposerMode, saveComposerMode, setConversationFolder, type PermissionState, type WorkingFolder } from "../lib/storage";
 import { useChatStream } from "../hooks/useChatStream";
 import { useAutomationRunner } from "../hooks/useAutomationRunner";
@@ -108,6 +108,10 @@ export function ConversationPane({
   // the async preamble (the folder-tree read) cannot slip past the lagging
   // runner.running state and be silently dropped.
   const startingRef = useRef(false);
+  // The run in flight, including the work that files it into the transcript. A
+  // message that interrupts a run waits on this so the new answer never lands
+  // before the stopped run has finished tidying up after itself.
+  const runChain = useRef<Promise<void> | null>(null);
   // Web build: which desktop-only feature was just attempted (shows the
   // download-the-app modal), and whether the token-limit upgrade wall is up.
   const [downloadGate, setDownloadGate] = useState<string | null>(null);
@@ -176,15 +180,24 @@ export function ConversationPane({
       `an action that just failed. If the user asks a question about the folder or its files, run the fewest ` +
       `read-only commands needed (or none, if the listing below already answers it), then immediately call ` +
       `finish with the complete answer.`;
-    // Keep the whole message (head + rules + listing + "\n\nThe user's request:\n"
-    // + task) comfortably under the 20k task cap; give the listing whatever room
-    // is left once the project's own rules have had theirs.
-    const budget = 19_000 - head.length - rules.length - task.length - 60;
+    // What has been said so far. A run is created fresh every time, so without
+    // this the model has no idea what "them", "it", or "do that now" refers to
+    // and says it has no earlier context, in a conversation the user is looking
+    // at. The newest turns are the ones that matter, so they get the space.
+    const digest = conversationDigest(chat.turns);
+    const history = digest
+      ? `\n\nThe conversation so far, oldest first. The request below is the newest message, and it may refer ` +
+        `back to any of this:\n${digest}`
+      : "";
+    // Keep the whole message (head + rules + history + listing + "\n\nThe user's
+    // request:\n" + task) comfortably under the 20k task cap; give the listing
+    // whatever room is left once the rest has had theirs.
+    const budget = 19_000 - head.length - rules.length - history.length - task.length - 60;
     if (tree && budget > 200) {
       const clamped = tree.length > budget ? `${tree.slice(0, budget)}\n...(more files not shown)` : tree;
-      return `${head}${rules}\n\nIt currently contains:\n${clamped}\n\nThe user's request:\n`;
+      return `${head}${rules}\n\nIt currently contains:\n${clamped}${history}\n\nThe user's request:\n`;
     }
-    return `${head}${rules}\n\nThe user's request:\n`;
+    return `${head}${rules}${history}\n\nThe user's request:\n`;
   }
 
   // The folder's own instructions, formatted for the model, or "" when the project
@@ -232,19 +245,40 @@ export function ConversationPane({
     setAutomationTask(trimmed);
     setAutomationMode(true);
     if (folder) {
-      void folderPreamble(folder, trimmed)
+      runChain.current = folderPreamble(folder, trimmed)
         .then((preamble) => runner.run(preamble + trimmed, model, label, folder.path))
-        .then(() => {
-          // Move the finished answer into the transcript. Held only in runner
-          // state it was a live view, so the next message wiped what WorkCrew
-          // had just told the user; as a turn it is history and it stays.
-          const answer = runnerRef.current.summary;
-          if (answer) {
-            chat.appendAssistantTurn(answer);
-            runner.clearSummary();
-          }
+        .then((done) => {
+          // Move the whole finished run into the transcript: the answer, the
+          // work that produced it, and any failure. Held only in runner state
+          // they were a live view pinned under the newest message, so the next
+          // message wiped the answer and stranded the activity below it, far
+          // from the request it belonged to. As a turn all three are history:
+          // they sit where they happened and they stay there.
+          //
+          // Read from what run() reports, not from the runner's React state,
+          // which at this instant is still a render behind and would file a
+          // finished run away with no words.
+          const activity = done.steps.filter((step) => step.status !== "running");
+          const failure = done.status === "stopped" ? "" : done.error;
+          chat.appendAssistantTurn(done.summary, activity, failure);
+          runner.clear();
         })
-        .finally(() => { startingRef.current = false; });
+        .catch((caught: unknown) => {
+          // Something failed before the run could report for itself (reading the
+          // folder, most likely). Say so, and let the chain resolve either way:
+          // a message waiting behind this one must still get its answer.
+          chat.appendAssistantTurn("", [], caught instanceof Error ? caught.message : "That could not be started.");
+          runner.clear();
+        })
+        .finally(() => {
+          startingRef.current = false;
+          // Anything typed while the run was finishing had no step left to ride
+          // out on, so it was shown in the chat and then quietly dropped: asking
+          // twice as a task ended got no reply at all. Answer it now, exactly as
+          // if it had just been typed.
+          const unheard = runner.takeUnsaid();
+          if (unheard.length > 0) answerUnheard(unheard.join("\n"), folder);
+        });
     } else {
       void runner.run(trimmed, model, label);
       startingRef.current = false;
@@ -370,6 +404,45 @@ export function ConversationPane({
     return `${head}${clamped || "(the folder listing could not be read)"}${tail}${rules}`;
   }
 
+  /**
+   * Deal with a message the finished run never heard.
+   *
+   * It is already in the transcript, shown the moment it was typed, so it is
+   * routed exactly like a fresh message but never displayed twice: a question is
+   * answered in chat, anything else becomes the next task in the folder.
+   */
+  function answerUnheard(text: string, folder: WorkingFolder): void {
+    if (!shouldRunOnComputer(mode, text, true)) {
+      void folderChatContext(folder).then((context) => chat.send({ text, model, context }));
+      return;
+    }
+    runAutomation(text, "Task");
+  }
+
+  /**
+   * Answer the message that interrupted a run, once that run has unwound.
+   *
+   * The same routing as a fresh message, minus showing it again: it went into
+   * the transcript the instant it was sent, so the user sees it land immediately
+   * even though the answer waits for the old run to let go.
+   */
+  function answerAfterStop(text: string, attachments: AttachmentRef[], files: LocalFile[]): void {
+    const folder = workingFolder;
+    if (folder) {
+      if (!shouldRunOnComputer(mode, text, true)) {
+        void folderChatContext(folder).then((context) => chat.send({ text, model, attachments, files, context }));
+        return;
+      }
+      runAutomation(text, "Task");
+      return;
+    }
+    if (shouldRunOnComputer(mode, text)) {
+      runAutomation(text, "Task");
+      return;
+    }
+    void chat.send({ text, model, attachments, files });
+  }
+
   // Route a typed message. The composer toggle decides, so nothing is ever guessed
   // into seizing the computer: on Chat every message is answered here (a request
   // for a spreadsheet comes back as a file to download), and only on Computer use
@@ -379,13 +452,19 @@ export function ConversationPane({
   // answered from the folder's listing, everything else runs the engine inside it);
   // on Chat the folder is only context for the answer, and nothing runs.
   function send(text: string, attachments: AttachmentRef[], files: LocalFile[] = []): void {
-    // A message typed while a run is working is a steer, not a new task: it shows
-    // in the transcript like any message and rides to the model with the next
-    // step, so "stop", "skip the tests", or "wrong file" lands mid-flight
-    // instead of being swallowed or spawning a second run.
-    if (runner.running) {
+    // A message sent while a run is working INTERRUPTS it, the way a coding
+    // assistant does: the run stops where it is, whatever it had done is kept in
+    // the transcript, and this message is then answered on its own. Riding along
+    // as a steer instead meant a question like "how long till you are done" sat
+    // unread while the run carried on for minutes, which is what it looks like
+    // to be ignored. Stopping is not instant (the command in flight is killed,
+    // but the loop still has to unwind), so the message is answered on the far
+    // side of the run rather than racing it.
+    if (runner.running || startingRef.current) {
       chat.appendUserTurn(text);
-      runner.say(text);
+      runner.stop();
+      const inFlight = runChain.current ?? Promise.resolve();
+      runChain.current = inFlight.then(() => { answerAfterStop(text, attachments, files); });
       return;
     }
     const paths = files.map((f) => f.path);

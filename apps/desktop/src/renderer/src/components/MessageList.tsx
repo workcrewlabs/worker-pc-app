@@ -1,5 +1,6 @@
 import type { ChatTurn } from "../lib/chat";
 import { Markdown } from "../lib/markdown";
+import { TurnActivityBlock } from "./AutomationActivity";
 
 // Renders the conversation transcript. User turns sit in a tinted bubble on the
 // right of the column; assistant turns render as plain serif body text with no
@@ -19,10 +20,14 @@ function AssistantTurn({ turn }: { turn: ChatTurn }) {
   return (
     <div className="turn turn-assistant">
       {turn.thinking && turn.thinking.trim().length > 0 && <ThinkingBlock text={turn.thinking} />}
-      <div className="assistant-body">
-        <Markdown text={turn.text} />
-        {turn.streaming && <span className="stream-cursor" aria-hidden="true" />}
-      </div>
+      {/* The work comes before the words, as it happened. */}
+      {turn.activity && turn.activity.length > 0 && <TurnActivityBlock steps={turn.activity} />}
+      {(turn.text.length > 0 || turn.streaming) && (
+        <div className="assistant-body">
+          <Markdown text={turn.text} />
+          {turn.streaming && <span className="stream-cursor" aria-hidden="true" />}
+        </div>
+      )}
       {turn.error && <p className="turn-error">{turn.error}</p>}
     </div>
   );

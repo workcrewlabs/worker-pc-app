@@ -4,10 +4,12 @@ import {
   DEFAULT_CHAT_EFFORT,
   kindForFilename,
   localId,
+  turnFromRun,
   type ChatDeltaEnvelope,
   type ChatEffort,
   type ChatTurn,
-  type LocalFile
+  type LocalFile,
+  type TurnActivity
 } from "../lib/chat";
 
 // Parameters for sending one chat turn.
@@ -40,8 +42,9 @@ export type UseChatStream = {
   // backend. Used when the message is handed to the folder work engine instead,
   // so the conversation still reads user ask then quiet work then answer.
   appendUserTurn: (text: string) => void;
-  /** Keep a finished run's answer in the transcript, where it stays. */
-  appendAssistantTurn: (text: string) => void;
+  /** Keep a finished run in the transcript, where it stays: its answer, the
+   *  work it did, and any failure. */
+  appendAssistantTurn: (text: string, activity?: TurnActivity[], error?: string) => void;
 };
 
 // Drives a streamed chat conversation. It appends a user turn and an empty
@@ -180,10 +183,12 @@ export function useChatStream(): UseChatStream {
     setTurns((current) => [...current, { id: localId(), role: "user", text: trimmed }]);
   }, []);
 
-  const appendAssistantTurn = useCallback((text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    setTurns((current) => [...current, { id: localId(), role: "assistant", text: trimmed }]);
+  // Move a finished run into the transcript: what it said, the work it did, and
+  // any failure. A run that produced no words still belongs in the history, so
+  // the activity or an error alone is enough to make a turn.
+  const appendAssistantTurn = useCallback((text: string, activity?: TurnActivity[], error?: string) => {
+    const turn = turnFromRun(text, activity, error);
+    if (turn) setTurns((current) => [...current, turn]);
   }, []);
 
   // Replace the transcript, for starting a new chat or loading a saved one.

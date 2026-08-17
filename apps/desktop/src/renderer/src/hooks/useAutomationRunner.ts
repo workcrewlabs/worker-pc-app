@@ -39,6 +39,17 @@ export type RunStep = {
 };
 export type RunStatus = "idle" | "running" | "complete" | "failed" | "stopped";
 
+/**
+ * How a run ended, returned by run() itself.
+ *
+ * The caller moves a finished run into the transcript the instant run()
+ * resolves, which is before React has re-rendered with the final summary. Read
+ * from state at that moment it was still the PREVIOUS value (usually empty), so
+ * a completed run could be filed away with no words at all. Reporting the
+ * outcome directly removes the race rather than hoping to win it.
+ */
+export type RunOutcome = { status: RunStatus; summary: string; error: string; steps: RunStep[] };
+
 function stepId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -62,10 +73,12 @@ export type AutomationRunner = {
   pending: { action: AutomationAction; label: string; screenshot?: ScreenCapture; point?: { x: number; y: number } } | null;
   // workingFolder, when set, is the absolute path of the user's chosen folder; any
   // shell command in this run executes inside it instead of the hidden workspace.
-  run: (task: string, model: ModelTier, label?: string, workingFolder?: string) => Promise<void>;
+  run: (task: string, model: ModelTier, label?: string, workingFolder?: string) => Promise<RunOutcome>;
   /** Hand a message the user typed mid-run to the model with the next step.
    * Returns false when no run is in flight to hear it. */
   say: (text: string) => boolean;
+  /** Drain the mid-run messages that the run ended before it could hear. */
+  takeUnsaid: () => string[];
   decide: (approved: boolean) => void;
   stop: () => void;
   clear: () => void;
@@ -87,6 +100,14 @@ export type AutomationRunner = {
 
 export function useAutomationRunner(): AutomationRunner {
   const [steps, setSteps] = useState<RunStep[]>([]);
+  // A mirror of the step list that is current the moment it changes. React state
+  // lags a render behind, and the caller reads the finished work as soon as the
+  // run resolves, which is sooner than that.
+  const stepsRef = useRef<RunStep[]>([]);
+  function writeSteps(next: (current: RunStep[]) => RunStep[]): void {
+    stepsRef.current = next(stepsRef.current);
+    setSteps(stepsRef.current);
+  }
   const [status, setStatus] = useState<RunStatus>("idle");
   const [summary, setSummary] = useState("");
   const [error, setError] = useState("");
@@ -119,6 +140,19 @@ export function useAutomationRunner(): AutomationRunner {
     if (!trimmed || !runningRef.current) return false;
     interjections.current.push(trimmed);
     return true;
+  }
+  /**
+   * Messages that were typed during the run but never reached the model, handed
+   * back so the caller can answer them.
+   *
+   * A steer only rides out with the NEXT step, so anything typed while the run
+   * was finishing had no step left to ride. Those messages used to sit in the
+   * queue until the next run cleared it, which is why asking twice for something
+   * as a run ended got no reply at all: both messages were shown in the chat and
+   * neither was ever heard.
+   */
+  function takeUnsaid(): string[] {
+    return interjections.current.splice(0);
   }
   // When on, write actions run without prompting ("Always allow").
   const autoApproveRef = useRef(false);
@@ -239,9 +273,14 @@ export function useAutomationRunner(): AutomationRunner {
 
   // Reset the inline run activity (steps, status, summary) so it does not linger
   // into a new chat or the next message. A no-op while a run is in progress.
+  //
+  // Guarded on the live ref alone. The `status` state lags a render behind, so
+  // also testing it made a clear() issued the instant a run resolved a silent
+  // no-op, which left the finished work pinned to the bottom of the chat after
+  // it had already been moved into the transcript.
   function clear(): void {
-    if (runningRef.current || status === "running") return;
-    setSteps([]);
+    if (runningRef.current) return;
+    writeSteps(() => []);
     setSummary("");
     setError("");
     setLabel("");
@@ -278,14 +317,14 @@ export function useAutomationRunner(): AutomationRunner {
       if (stoppedRef.current) return "stopped";
       const action = step.action;
       const id = stepId();
-      setSteps((current) => [...current, { id, label: activityLine(action, true), doing: activityLine(action, false), detail: actionDetail(action), status: "running" }]);
+      writeSteps((current) => [...current, { id, label: activityLine(action, true), doing: activityLine(action, false), detail: actionDetail(action), status: "running" }]);
 
       // Re-derive approval from the action itself rather than trusting the stored
       // flag (a tampered recipe could lie); shell is gated by the main process.
       if (shouldPrompt(action)) {
         const approved = await requestApproval(action);
         if (!approved) {
-          setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "declined" } : item)));
+          writeSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "declined" } : item)));
           return "stopped";
         }
       }
@@ -299,20 +338,29 @@ export function useAutomationRunner(): AutomationRunner {
           await new Promise((settle) => setTimeout(settle, 150));
         }
         await window.workcrew.automation.execute(action, workingFolderRef.current);
-        setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
+        writeSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
       } catch {
-        setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "error" } : item)));
+        writeSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "error" } : item)));
         return "failed";
       }
     }
     return "complete";
   }
 
-  async function run(task: string, model: ModelTier, runLabel = "", workingFolder?: string): Promise<void> {
+  async function run(task: string, model: ModelTier, runLabel = "", workingFolder?: string): Promise<RunOutcome> {
+    // Tracked alongside every setState below, so the outcome is known here and
+    // not read back out of React.
+    const outcome: RunOutcome = { status: "idle", summary: "", error: "", steps: [] };
+    const settle = (status: RunStatus, text = outcome.summary): RunOutcome => {
+      outcome.status = status;
+      outcome.summary = text;
+      outcome.steps = stepsRef.current;
+      return outcome;
+    };
     const trimmed = task.trim();
     // Synchronous guard: if a run is already in flight, do nothing. This is set
     // before any await so a second caller in the same tick cannot slip past it.
-    if (trimmed.length < 3 || runningRef.current) return;
+    if (trimmed.length < 3 || runningRef.current) return outcome;
     runningRef.current = true;
     workingFolderRef.current = workingFolder;
     // Event name only; never the task text or any on-screen content.
@@ -326,7 +374,7 @@ export function useAutomationRunner(): AutomationRunner {
     pausedRef.current = false;
     setPaused(false);
     mouseActiveRef.current = false;
-    setSteps([]);
+    writeSteps(() => []);
     setSummary("");
     setError("");
     setLabel(runLabel);
@@ -338,24 +386,28 @@ export function useAutomationRunner(): AutomationRunner {
     // recipe on success.
     const recipe = isReplayEnabled() ? getRecipe(normalizeTaskKey(trimmed)) : null;
     if (recipe) {
-      const outcome = await replayRecipe(recipe);
+      // Named apart from the run's own outcome, which it must not shadow.
+      const replayed = await replayRecipe(recipe);
       hideOverlay();
-      if (outcome === "complete") {
+      if (replayed === "complete") {
         setSummary(recipe.summary || "Task complete.");
         setStatus("complete");
+        settle("complete", recipe.summary || "Task complete.");
         saveRecipe({ ...recipe, runCount: recipe.runCount + 1, updatedAtMs: Date.now() });
         addHistory({ task: trimmed, timestamp: Date.now(), outcome: "complete", activityCount: recipe.steps.length });
         track("automation_completed", { via: "replay" });
-        return;
+        return outcome;
       }
-      if (outcome === "stopped") {
+      if (replayed === "stopped") {
         setStatus("stopped");
+        settle("stopped", "Stopped.");
+        setSummary("Stopped.");
         addHistory({ task: trimmed, timestamp: Date.now(), outcome: "stopped", activityCount: 0 });
-        return;
+        return outcome;
       }
-      // outcome === "failed": clear the partial replay activity and let the model
+      // replayed === "failed": clear the partial replay activity and let the model
       // drive the task from a clean slate.
-      setSteps([]);
+      writeSteps(() => []);
     }
 
     // Recording buffers. A clean completed model run is saved as a recipe so the
@@ -375,13 +427,22 @@ export function useAutomationRunner(): AutomationRunner {
       const kind: RunKind = workingFolder ? "folder" : "screen";
       const { runId } = await window.workcrew.api.createRun(trimmed, model, kind);
       let result: { toolUseId: string; ok: boolean; output: string; imageBase64?: string } | undefined;
+      // Whether the loop reached a real ending. Running out of steps is not one,
+      // and used to fall out of the loop in silence.
+      let ended = false;
 
       for (let step = 0; step < MAX_STEPS[kind]; step += 1) {
         // Park here if the conversation left the screen; resume picks up the same
         // run (the backend run id is still valid, so no work is lost).
         await waitIfPaused();
         if (stoppedRef.current) {
+          // Say so. A stopped run used to end with no words at all, so the chat
+          // showed the work it had done and then nothing, which reads exactly
+          // like being ignored.
+          setSummary("Stopped.");
           setStatus("stopped");
+          settle("stopped", "Stopped.");
+          ended = true;
           break;
         }
         const say = result && interjections.current.length > 0 ? interjections.current.splice(0).join("\n") : undefined;
@@ -393,6 +454,9 @@ export function useAutomationRunner(): AutomationRunner {
           // outright. Losing one steer is recoverable; losing the run is not,
           // so deliver the step bare rather than dying on the extra field.
           if (!say) throw stepError;
+          // The steer was drained to send it, so put it back rather than losing
+          // what the user typed: it rides the next step instead.
+          interjections.current.unshift(say);
           response = await window.workcrew.api.nextRun(runId, result);
         }
         if (typeof response.tokens === "number") setTokens(response.tokens);
@@ -400,14 +464,27 @@ export function useAutomationRunner(): AutomationRunner {
           finishSummary = response.message ?? "Task complete.";
           setSummary(finishSummary);
           setStatus("complete");
+          settle("complete", finishSummary);
+          ended = true;
           break;
         }
         if (response.status === "failed") {
           setSummary(response.message ?? "This task stopped.");
           setStatus("failed");
+          settle("failed", response.message ?? "This task stopped.");
+          ended = true;
           break;
         }
-        if (!response.action || !response.toolUseId) break;
+        if (!response.action || !response.toolUseId) {
+          // A step that is neither an action nor an ending. Bailing out quietly
+          // left the run with no summary and a status still reading "running",
+          // so the chat sat there with a spinner that never resolved.
+          setSummary("I could not work out the next step, so I stopped here.");
+          setStatus("failed");
+          settle("failed", "I could not work out the next step, so I stopped here.");
+          ended = true;
+          break;
+        }
 
         const action = response.action;
         // Tracked per action so a failed or declined step is excluded from the
@@ -415,7 +492,7 @@ export function useAutomationRunner(): AutomationRunner {
         const recordEntry = { action, snapshot: lastSnapshot, ok: true };
         recorded.push(recordEntry);
         const id = stepId();
-        setSteps((current) => [...current, { id, label: activityLine(action, true), doing: activityLine(action, false), detail: actionDetail(action), status: "running" }]);
+        writeSteps((current) => [...current, { id, label: activityLine(action, true), doing: activityLine(action, false), detail: actionDetail(action), status: "running" }]);
 
         // Shell commands are approved by the main process itself (a native prompt
         // that cannot be bypassed), so they are not prompted again here. Other
@@ -425,7 +502,7 @@ export function useAutomationRunner(): AutomationRunner {
           const approved = await requestApproval(action, lastScreenshot);
           if (!approved) {
             recordEntry.ok = false;
-            setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "declined" } : item)));
+            writeSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "declined" } : item)));
             result = { toolUseId: response.toolUseId, ok: false, output: "You declined this action." };
             continue;
           }
@@ -435,7 +512,7 @@ export function useAutomationRunner(): AutomationRunner {
           showOverlayFor(action);
           const executed = await window.workcrew.automation.execute(action, workingFolderRef.current);
           const output = executed.output;
-          setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
+          writeSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "ok" } : item)));
           // A screenshot travels back as the picture itself, so the planner can
           // see an app that publishes no named controls. Everything else is text.
           result = {
@@ -459,14 +536,25 @@ export function useAutomationRunner(): AutomationRunner {
           else if (action.kind === "browser") lastSnapshot = output;
         } catch (caught) {
           recordEntry.ok = false;
-          setSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "error" } : item)));
+          writeSteps((current) => current.map((item) => (item.id === id ? { ...item, status: "error" } : item)));
           const message = caught instanceof Error ? caught.message : "That step could not be completed.";
           result = { toolUseId: response.toolUseId, ok: false, output: redactResult(message) };
         }
       }
+      if (!ended) {
+        settle("failed", `I stopped after ${MAX_STEPS[kind]} steps without finishing. Ask me to carry on and I will pick it up.`);
+        // The safety ceiling, reached. It ends the run like any other ending, out
+        // loud: falling out of the loop in silence left the work on screen with
+        // no word about why it had stopped, and a status still reading "running".
+        setSummary(`I stopped after ${MAX_STEPS[kind]} steps without finishing. Ask me to carry on and I will pick it up.`);
+        setStatus("failed");
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The task could not be started.");
+      const message = caught instanceof Error ? caught.message : "The task could not be started.";
+      setError(message);
       setStatus("failed");
+      settle("failed");
+      outcome.error = message;
     } finally {
       hideOverlay();
       setStatus((current) => {
@@ -494,7 +582,9 @@ export function useAutomationRunner(): AutomationRunner {
       pausedRef.current = false;
       setPaused(false);
     }
+    outcome.steps = stepsRef.current;
+    return outcome;
   }
 
-  return { steps, status, summary, error, tokens, label, pending, run, say, decide, stop, clear, clearSummary: () => setSummary(""), setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
+  return { steps, status, summary, error, tokens, label, pending, run, say, takeUnsaid, decide, stop, clear, clearSummary: () => setSummary(""), setAutoApprove, setPermissions, isBusy: () => runningRef.current, running: status === "running", paused, pause, resume };
 }

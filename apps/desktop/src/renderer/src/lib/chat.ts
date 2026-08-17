@@ -23,6 +23,12 @@ export function kindForFilename(name: string): AttachmentKind {
   return "text";
 }
 
+// One finished piece of work from a run (a command, a file read, a file
+// written), kept on the turn it belongs to. Structurally the same as the
+// runner's RunStep, deliberately declared here so the transcript owns its own
+// shape and does not depend on the live runner.
+export type TurnActivity = { id: string; label: string; status: string; detail?: string };
+
 export type ChatTurn = {
   // A local id, stable for the lifetime of the turn in the transcript.
   id: string;
@@ -32,11 +38,68 @@ export type ChatTurn = {
   attachments?: TurnAttachment[];
   // Streamed thinking summary, shown above the answer while present.
   thinking?: string;
+  // The work this turn did, moved here when the run finished. Left in runner
+  // state it was a live view pinned under the newest message, so it drifted
+  // away from the request that caused it; on the turn it stays where it
+  // happened, however many messages follow.
+  activity?: TurnActivity[];
   // True while the assistant turn is actively receiving deltas.
   streaming?: boolean;
   // Set when this turn could not complete.
   error?: string;
 };
+
+/**
+ * The transcript entry a finished run leaves behind, or null when it left
+ * nothing at all.
+ *
+ * A run is not just its words. The work it did belongs to the request that
+ * caused it, so a run that answered nothing (interrupted, or one that only
+ * edited files) still becomes a turn and still holds its place in the
+ * conversation. Only a run with no answer, no work, and no failure is dropped.
+ */
+export function turnFromRun(text: string, activity?: TurnActivity[], error?: string): ChatTurn | null {
+  const trimmed = text.trim();
+  const work = activity && activity.length > 0 ? activity : undefined;
+  if (!trimmed && !work && !error) return null;
+  return {
+    id: localId(),
+    role: "assistant",
+    text: trimmed,
+    ...(work ? { activity: work } : {}),
+    ...(error ? { error } : {})
+  };
+}
+
+/**
+ * The conversation so far, compacted for a run to read.
+ *
+ * A run used to be handed the task text and nothing else, so a follow-up that
+ * leans on what came before ("give me them", "do it now", "the second one") had
+ * no referent at all, and WorkCrew answered that it had no earlier context in
+ * the middle of a conversation the user could see on screen. Chat never had this
+ * problem: its history lives on the server under the conversation id, while a
+ * run starts from nothing every time.
+ *
+ * Newest turns win the space. Each is clipped so one long answer cannot crowd
+ * out the exchange around it, and the whole block is bounded because it shares
+ * the run's request budget with the folder listing.
+ */
+export function conversationDigest(turns: ChatTurn[], budget = 3_500, perTurn = 700): string {
+  const lines: string[] = [];
+  let used = 0;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    const text = turn?.text.trim();
+    if (!turn || !text) continue;
+    const clipped = text.length > perTurn ? `${text.slice(0, perTurn)}...` : text;
+    const line = `${turn.role === "user" ? "User" : "WorkCrew"}: ${clipped}`;
+    if (used + line.length > budget) break;
+    lines.unshift(line);
+    used += line.length + 1;
+  }
+  return lines.join("\n");
+}
 
 // A short local id for transcript turns. Distinct from the server message id.
 export function localId(): string {

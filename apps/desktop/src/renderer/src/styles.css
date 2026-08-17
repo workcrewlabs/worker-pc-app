@@ -719,6 +719,10 @@ select option:checked { background-color: var(--panel-2); }
 .folder-steps { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 4px 18px; }
 .folder-working { display: inline-flex; align-items: center; gap: 9px; margin: 2px 0 0; color: var(--muted); font-size: 13px; }
 .folder-activity .turn-assistant { margin-top: 6px; }
+/* The same block once the run has finished and it has been moved into the
+   transcript. It already sits inside the message column, so it drops the column
+   width of its own and just leads the answer it produced. */
+.folder-activity-past { width: 100%; margin: 0 0 8px; padding: 0; }
 .message-list { width: min(720px, calc(100% - 64px)); margin: 0 auto; padding: 28px 0 16px; display: flex; flex-direction: column; gap: 22px; }
 .turn { display: flex; flex-direction: column; }
 .turn-user { align-items: flex-end; }

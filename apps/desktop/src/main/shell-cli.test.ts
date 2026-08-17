@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { COMMAND_LIMITS, confinePath, looksLikeTruncatedWrite, runShellCommand } from "./shell-cli";
+import { COMMAND_LIMITS, cancelRunningCommands, confinePath, looksLikeTruncatedWrite, runShellCommand } from "./shell-cli";
 
 // confinePath is the safety boundary for write_file: a path is allowed only if
 // it resolves to a location strictly inside the working folder. These cases pin
@@ -99,6 +99,29 @@ describe("how long a command is allowed to take", () => {
       runShellCommand(chatty, folder, { idleMs: 30_000, totalMs: 2_000 }));
     expect(output).toContain("ran for");
     expect(output).toContain("stopped");
+  }, 40_000);
+
+  // Stop used to be checked only between steps, so pressing it while a long
+  // command ran did nothing until that command finished on its own. A user who
+  // interrupts expects the work to stop now, not in three minutes.
+  it("stops a command in flight the moment the user asks", async () => {
+    const started = Date.now();
+    const output = await withFolder(async (folder) => {
+      const running = runShellCommand(silent, folder, { idleMs: 60_000, totalMs: 60_000 });
+      // Long enough for the child to be spawned and registered.
+      await new Promise((settle) => setTimeout(settle, 500));
+      expect(cancelRunningCommands()).toBe(1);
+      return running;
+    });
+    expect(output).toContain("You stopped this command");
+    // It gave up in about a second, not the twelve the command wanted.
+    expect(Date.now() - started).toBeLessThan(6_000);
+  }, 40_000);
+
+  it("has nothing to stop once a command has finished", async () => {
+    await withFolder((folder) => runShellCommand("echo done", folder, { idleMs: 10_000, totalMs: 10_000 }));
+    // A settled command deregisters itself, so Stop never kills a stranger.
+    expect(cancelRunningCommands()).toBe(0);
   }, 40_000);
 
   it("gives an hours-long allowance by default, so a real build is never cut short", () => {
