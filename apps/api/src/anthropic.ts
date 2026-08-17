@@ -424,6 +424,59 @@ export function withoutUnseeableImages(messages: unknown[], tier: ConcreteModelT
   return replaced ? cleaned : messages;
 }
 
+/** How long one planning request may take before it is treated as failed. The
+ *  Economy engine gets slow on a long history, and a step that has run this
+ *  long is not coming back; better to retry or fall back than to hang a run. */
+export const MODEL_REQUEST_TIMEOUT_MS = 90_000;
+
+type ModelPayload = {
+  content?: AnthropicContent[];
+  usage?: AnthropicUsage;
+  error?: { message?: string };
+};
+
+/**
+ * Turn a thrown transport failure into the provider error the run loop knows.
+ * The failing step is described plainly for the log, never with the body.
+ */
+export function transportFailure(error: unknown): Error & { statusCode: number; code: string } {
+  const name = error instanceof Error ? error.name : "";
+  const reason = name === "TimeoutError" || name === "AbortError"
+    ? "The model did not answer in time"
+    : "The model could not be reached";
+  return Object.assign(new Error(reason), { statusCode: 502, code: "MODEL_REQUEST_FAILED" });
+}
+
+/**
+ * One provider request, with a single retry on transport failure.
+ *
+ * Only a failure to get an answer at all is retried: a reset connection, a
+ * timeout, or an unparseable body. An HTTP error response is a real answer and
+ * is returned as is, so the caller's own handling (and billing) sees it.
+ */
+async function fetchModel(
+  endpoint: { url: string; headers: Record<string, string> },
+  body: unknown
+): Promise<{ response: Response; payload: ModelPayload; requestId?: string }> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(endpoint.url, {
+        method: "POST",
+        headers: endpoint.headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(MODEL_REQUEST_TIMEOUT_MS)
+      });
+      const requestId = response.headers.get("request-id") ?? undefined;
+      const payload = await response.json() as ModelPayload;
+      return { response, payload, requestId };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw transportFailure(lastError);
+}
+
 export async function callModel(input: {
   tier: ConcreteModelTier;
   messages: unknown[];
@@ -451,18 +504,17 @@ export async function callModel(input: {
     ...(supportsEffort ? { output_config: { effort: AUTOMATION_EFFORT } } : {}),
     messages: withRollingCacheBreakpoint(withoutUnseeableImages(input.messages, input.tier))
   };
-  const response = await fetch(endpoint.url, {
-    method: "POST",
-    headers: endpoint.headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000)
-  });
-  const requestId = response.headers.get("request-id") ?? undefined;
-  const payload = await response.json() as {
-    content?: AnthropicContent[];
-    usage?: AnthropicUsage;
-    error?: { message?: string };
-  };
+  // A provider that is slow, unreachable, or answering with a gateway's HTML
+  // page throws here rather than returning an HTTP error, and a raw throw was
+  // never MODEL_REQUEST_FAILED. That mattered three times over: the Economy to
+  // Claude fallback only fires on that code, so it never did; the run loop's
+  // catch-all then marked the run permanently failed; and the user got a bare
+  // 500. Seventeen steps into a folder task, when the history is long and the
+  // Economy engine is slowest, one slow answer killed the whole run with no way
+  // back. So every transport failure is now the same MODEL_REQUEST_FAILED as a
+  // provider error, which lets the fallback do its job, and it is retried once
+  // first, since a reset connection or a single slow answer is usually just that.
+  const { response, payload, requestId } = await fetchModel(endpoint, body);
   if (!response.ok || !payload.content || !payload.usage) {
     throw Object.assign(new Error(payload.error?.message ?? `The model request failed with ${response.status}`), {
       statusCode: response.status >= 500 ? 502 : 400,
