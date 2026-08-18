@@ -1116,7 +1116,10 @@ app.post("/v1/runs", routeLimit(30), async (request) => {
     tokensCacheWrite: 0,
     tokensOutput: 0
   });
-  return { runId: id, status: "ready" };
+  // The conversation this run is recorded in, so the app can file its
+  // transcript under the same id and reopening from Recents finds the run
+  // itself rather than a bare line of text.
+  return { runId: id, conversationId, status: "ready" };
 });
 
 app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), async (request): Promise<RunStepResponse> => {

@@ -48,7 +48,16 @@ export type RunStatus = "idle" | "running" | "complete" | "failed" | "stopped";
  * a completed run could be filed away with no words at all. Reporting the
  * outcome directly removes the race rather than hoping to win it.
  */
-export type RunOutcome = { status: RunStatus; summary: string; error: string; steps: RunStep[] };
+export type RunOutcome = {
+  status: RunStatus;
+  summary: string;
+  error: string;
+  steps: RunStep[];
+  /** The conversation the backend recorded this run in. The transcript is filed
+   *  under it, so reopening from Recents finds the run card rather than a bare
+   *  line of text. Absent on an older backend. */
+  conversationId?: string;
+};
 
 function stepId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -425,7 +434,9 @@ export function useAutomationRunner(): AutomationRunner {
       setTokens(0);
       interjections.current = [];
       const kind: RunKind = workingFolder ? "folder" : "screen";
-      const { runId } = await window.workcrew.api.createRun(trimmed, model, kind);
+      const created = await window.workcrew.api.createRun(trimmed, model, kind);
+      const runId = created.runId;
+      if (created.conversationId) outcome.conversationId = created.conversationId;
       let result: { toolUseId: string; ok: boolean; output: string; imageBase64?: string } | undefined;
       // Whether the loop reached a real ending. Running out of steps is not one,
       // and used to fall out of the loop in silence.

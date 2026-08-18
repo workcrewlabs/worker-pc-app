@@ -49,6 +49,9 @@ export type UseChatStream = {
   appendAssistantTurn: (text: string, activity?: TurnActivity[], error?: string) => void;
   /** Keep a finished computer task in the transcript as its own card. */
   appendRunTurn: (run: TurnRun) => void;
+  /** Take on the conversation the backend made for a task, so this chat and
+   *  that record are the same thing from here on. */
+  adoptConversation: (id: string) => void;
 };
 
 // Drives a streamed chat conversation. It appends a user turn and an empty
@@ -202,6 +205,15 @@ export function useChatStream(): UseChatStream {
     if (turn) setTurns((current) => [...current, turn]);
   }, []);
 
+  // Adopt a conversation this chat did not create. A computer task is recorded
+  // by the backend under its own conversation, and without this the app never
+  // learned that id: the transcript was filed under a name Recents would never
+  // look for, so reopening the task showed only what the server had, which is a
+  // line of text with no run card. Never overrides an id this chat already has.
+  const adoptConversation = useCallback((id: string) => {
+    setConversationId((current) => current ?? id);
+  }, []);
+
   // Replace the transcript, for starting a new chat or loading a saved one.
   const reset = useCallback((nextTurns: ChatTurn[] = [], nextConversationId?: string) => {
     const requestId = activeRequestId.current;
@@ -213,5 +225,5 @@ export function useChatStream(): UseChatStream {
     setStreaming(false);
   }, []);
 
-  return { turns, streaming, conversationId, usedTokens, send, stop, reset, appendUserTurn, appendAssistantTurn, appendRunTurn };
+  return { turns, streaming, conversationId, usedTokens, send, stop, reset, appendUserTurn, appendAssistantTurn, appendRunTurn, adoptConversation };
 }

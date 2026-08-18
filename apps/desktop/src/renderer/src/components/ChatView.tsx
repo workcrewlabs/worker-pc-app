@@ -14,8 +14,9 @@ type PickedFile = LocalFile;
 // and nothing is read or uploaded until the message is sent (a local task works on
 // the original file and never uploads it). Only a pasted screenshot, which has no
 // path, uploads its bytes when pasted and shows a brief spinner.
-// preview is a small picture of the attachment, when it is an image: a data URL
-// for a file on disk, or an object URL for bytes pasted straight in.
+// preview is a small picture of the attachment, when it is an image, always as
+// a data URL: the page allows img-src 'self' and data: only, so a blob: URL is
+// refused and shows as a broken image.
 type Attachment = { id: string; filename: string; status: "uploading" | "ready" | "error"; ref?: AttachmentRef; path?: string; size?: number; preview?: string };
 
 function PlusIcon() {
@@ -361,6 +362,36 @@ export function ChatView({
     });
   }
 
+// A small preview of pasted image bytes, as a data URL.
+//
+// Deliberately NOT an object URL. The renderer allows img-src 'self' and data:
+// only, so a blob: URL was refused by the page itself and every pasted
+// screenshot showed a broken-image icon. Drawing it small also keeps a photo
+// from sitting in the DOM at full size.
+async function imageThumbnail(file: File, size = 96): Promise<string | null> {
+  if (!file.type.startsWith("image/")) return null;
+  try {
+    // createImageBitmap decodes the bytes directly. Going through a blob: URL
+    // and an Image element does not work here: the page allows img-src 'self'
+    // and data: only, so the browser refuses to load it and every pasted
+    // screenshot showed a broken-image icon.
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(size / bitmap.width, size / bitmap.height, 1);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    // A data URL, which the page does allow, and small enough to sit in the
+    // DOM without carrying a full screenshot around.
+    return canvas.toDataURL("image/jpeg", 0.7);
+  } catch {
+    return null;
+  }
+}
+
   // Add an image (or other) blob that has no file path, for example a screenshot
   // pasted from the clipboard. The bytes are read here and uploaded directly, so
   // it does not depend on reading the OS clipboard a second time.
@@ -368,9 +399,12 @@ export function ChatView({
     const id = localId();
     setAttachError("");
     const filename = file.name || "Pasted image";
-    // The bytes are right here, so the preview needs no round trip at all.
-    const preview = URL.createObjectURL(file);
-    setAttachments((current) => [...current, { id, filename, status: "uploading", preview }]);
+    setAttachments((current) => [...current, { id, filename, status: "uploading" }]);
+    // The bytes are already here, so the preview only waits on drawing it small.
+    void imageThumbnail(file).then((preview) => {
+      if (!preview) return;
+      setAttachments((list) => list.map((item) => (item.id === id ? { ...item, preview } : item)));
+    }).catch(() => { /* a missing preview is not worth surfacing */ });
     file.arrayBuffer()
       .then((bytes) => window.workcrew.attachments.uploadBytes(filename, file.type || "image/png", bytes))
       .then((ref) => {

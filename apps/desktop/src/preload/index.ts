@@ -124,7 +124,9 @@ const workcrew = {
     // a downgrade applies immediately and resolves to the refreshed entitlement.
     changePlan: (plan: PlanId, interval: BillingInterval): Promise<SubscriptionState | { opened: boolean }> => ipcRenderer.invoke("api:change-plan", { plan, interval }),
     portal: () => ipcRenderer.invoke("api:portal"),
-    createRun: (task: string, model: ModelTier, kind: RunKind = "screen"): Promise<{ runId: string }> =>
+    // conversationId is absent on a backend older than this field; the caller
+    // falls back to its own key, so nothing breaks either way.
+    createRun: (task: string, model: ModelTier, kind: RunKind = "screen"): Promise<{ runId: string; conversationId?: string | null }> =>
       ipcRenderer.invoke("api:create-run", { task, model, kind }),
     nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string; imageBase64?: string }, say?: string): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result, say })
   },
