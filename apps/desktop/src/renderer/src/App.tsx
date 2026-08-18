@@ -447,7 +447,13 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   // Open conversation panes. Each stays mounted so its chat keeps streaming in the
   // background; only the active pane is on screen. A brand-new chat starts as one
   // blank pane.
-  const firstKey = useRef(localId());
+  // The pane the app opens with keeps a fixed identity, so the transcript it
+  // saved is the one it finds on the next launch. A random key per launch (what
+  // this was) meant a conversation that had never reached the chat backend, a
+  // computer task for instance, was saved under a name nothing would ever look
+  // for again, and the messages were simply gone after a restart. Every other
+  // pane still gets a fresh key, so New chat opens empty.
+  const firstKey = useRef("home");
   const [panes, setPanes] = useState<{ key: string; conversationId?: string; initialTurns?: ChatTurn[]; initialAutomation?: { task: string; label: string }; initialWorkingFolder?: WorkingFolder | null }[]>(
     () => [{ key: firstKey.current }]
   );

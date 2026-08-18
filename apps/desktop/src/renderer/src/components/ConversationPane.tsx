@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AttachmentRef, ModelTier, PlanId } from "@workcrew/contracts";
 import { conversationDigest, type ChatTurn, type LocalFile } from "../lib/chat";
-import { loadComposerMode, saveComposerMode, setConversationFolder, type PermissionState, type WorkingFolder } from "../lib/storage";
+import { loadComposerMode, loadTranscript, saveComposerMode, saveTranscript, setConversationFolder, type PermissionState, type WorkingFolder } from "../lib/storage";
 import { useChatStream } from "../hooks/useChatStream";
 import { useAutomationRunner } from "../hooks/useAutomationRunner";
 import { ChatView } from "./ChatView";
@@ -303,8 +303,13 @@ export function ConversationPane({
   useEffect(() => {
     if (seeded.current) return;
     seeded.current = true;
-    if ((initialTurns && initialTurns.length > 0) || initialConversationId) {
-      chat.reset(initialTurns ?? [], initialConversationId);
+    // What was actually on screen last time wins. The server only stores chat
+    // turns, so its copy is missing every run card and every answer a task wrote
+    // straight into the transcript; restoring from it would silently drop them.
+    const remembered = loadTranscript<ChatTurn>(transcriptId(initialConversationId, paneKey));
+    const seedTurns = remembered.length > 0 ? remembered : initialTurns ?? [];
+    if (seedTurns.length > 0 || initialConversationId) {
+      chat.reset(seedTurns, initialConversationId);
     }
     if (initialWorkingFolder) addWorkingFolder(initialWorkingFolder);
     if (initialAutomation && initialAutomation.task.trim().length >= 3) {
@@ -312,6 +317,14 @@ export function ConversationPane({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep the transcript on this machine, so closing the app (or letting it
+  // update) does not erase messages the user can see. Written on every change:
+  // an update can arrive at any moment, and a save that waits for a tidy moment
+  // is a save that does not happen.
+  useEffect(() => {
+    saveTranscript(transcriptId(chat.conversationId, paneKey), chat.turns);
+  }, [chat.turns, chat.conversationId, paneKey]);
 
   // Persist this conversation's working folder so reopening it restores the folder
   // (and keeps routing to the command engine), once the conversation has an id.
@@ -415,6 +428,18 @@ export function ConversationPane({
     const budget = 23_000 - head.length - rules.length - tail.length;
     const clamped = tree.length > budget ? `${tree.slice(0, budget)}\n...(more files not shown)` : tree;
     return `${head}${clamped || "(the folder listing could not be read)"}${tail}${rules}`;
+  }
+
+  /**
+   * Where this pane's transcript is stored.
+   *
+   * The conversation id once there is one, so reopening from Recents finds it.
+   * Before that (a brand new chat, or a task that never spoke to the chat
+   * backend) the pane's own key holds it, which is what makes an unsent-to-server
+   * conversation survive a restart at all.
+   */
+  function transcriptId(conversationId: string | undefined, fallback: string): string {
+    return conversationId ?? `pane:${fallback}`;
   }
 
   /**
