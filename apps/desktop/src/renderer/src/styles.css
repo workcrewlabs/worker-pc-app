@@ -723,6 +723,11 @@ select option:checked { background-color: var(--panel-2); }
    transcript. It already sits inside the message column, so it drops the column
    width of its own and just leads the answer it produced. */
 .folder-activity-past { width: 100%; margin: 0 0 8px; padding: 0; }
+/* An attached image shows itself on its chip: a small square thumbnail in place
+   of the status dot, so the right screenshot is recognisable without reading a
+   filename. */
+.chip-preview { width: 28px; height: 28px; flex: none; border-radius: 5px; object-fit: cover; border: 1px solid var(--line); background: var(--panel-2); }
+.chip-has-preview { padding-left: 4px; }
 .message-list { width: min(720px, calc(100% - 64px)); margin: 0 auto; padding: 28px 0 16px; display: flex; flex-direction: column; gap: 22px; }
 .turn { display: flex; flex-direction: column; }
 .turn-user { align-items: flex-end; }

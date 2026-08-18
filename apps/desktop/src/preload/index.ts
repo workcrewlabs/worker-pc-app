@@ -199,6 +199,9 @@ const workcrew = {
     // Whether a dropped path is a file or a folder, so a dropped folder becomes
     // the working folder instead of a failed file upload.
     pathKind: (path: string): Promise<"file" | "directory" | "missing"> => ipcRenderer.invoke("files:path-kind", path),
+    // A small preview of an attached image, as a data URL, or null when the file
+    // is not an image this can show. Used for the thumbnail on its chip.
+    thumbnail: (path: string): Promise<string | null> => ipcRenderer.invoke("files:thumbnail", path),
     // Resolve the absolute path of a file dropped onto the window, so it can be
     // uploaded through the same path-based pipeline as the file picker. Guarded
     // so an unavailable webUtils never breaks the bridge; the caller falls back.

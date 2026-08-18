@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AutomationRunner } from "../hooks/useAutomationRunner";
+import type { AutomationRunner, RunStatus } from "../hooks/useAutomationRunner";
 import type { TurnActivity } from "../lib/chat";
 import { summarizeActivity } from "../lib/automation";
 
@@ -116,25 +116,36 @@ export function FolderActivity({ runner }: { runner: AutomationRunner }) {
   );
 }
 
-// Shows an automation run inline inside the chat: the task being done, each step
-// as it happens, and the final result. This replaces the old separate Automation
-// panel, so the user just talks in one chat and watches the work unfold in place.
-export function AutomationActivity({
-  runner,
+/**
+ * One run, drawn as its card: what was asked, every step, the result, and the
+ * buttons that act on it.
+ *
+ * Shared by the run in flight and by finished runs kept in the transcript, so a
+ * run never changes shape the moment it ends. It used to exist only as live
+ * state, so starting the next run erased the last one and the card the user
+ * wanted to press Run again on was simply gone.
+ */
+export function RunCard({
   task,
-  onSaveRoutine,
-  onRerun
+  status,
+  steps,
+  summary,
+  error,
+  running,
+  onStop,
+  onRerun,
+  onSaveRoutine
 }: {
-  runner: AutomationRunner;
   task: string;
-  onSaveRoutine?: () => void;
+  status: RunStatus;
+  steps: TurnActivity[];
+  summary: string;
+  error?: string;
+  running?: boolean;
+  onStop?: () => void;
   onRerun?: () => void;
+  onSaveRoutine?: () => void;
 }) {
-  const { steps, summary, status, error, running } = runner;
-
-  // Nothing to show until a run has started or has left a result behind.
-  if (!running && steps.length === 0 && !summary && !error) return null;
-
   const headline = running
     ? "Working on it"
     : status === "complete"
@@ -144,15 +155,15 @@ export function AutomationActivity({
         : "Stopped early";
 
   return (
-    <section className={`run-activity run-${status}`} aria-live="polite">
+    <section className={`run-activity run-${status}`} aria-live={running ? "polite" : "off"}>
       <div className="run-head">
         <span className={`run-indicator ${running ? "run-indicator-busy" : ""}`} aria-hidden="true" />
         <div className="run-head-text">
           <strong>{headline}</strong>
           {task && <p className="run-task">{task}</p>}
         </div>
-        {running && (
-          <button type="button" className="stop-button" onClick={runner.stop}>Stop</button>
+        {running && onStop && (
+          <button type="button" className="stop-button" onClick={onStop}>Stop</button>
         )}
       </div>
 
@@ -189,5 +200,37 @@ export function AutomationActivity({
         </div>
       )}
     </section>
+  );
+}
+
+// The run in flight, drawn with the shared card.
+export function AutomationActivity({
+  runner,
+  task,
+  onSaveRoutine,
+  onRerun
+}: {
+  runner: AutomationRunner;
+  task: string;
+  onSaveRoutine?: () => void;
+  onRerun?: () => void;
+}) {
+  const { steps, summary, status, error, running } = runner;
+
+  // Nothing to show until a run has started or has left a result behind.
+  if (!running && steps.length === 0 && !summary && !error) return null;
+
+  return (
+    <RunCard
+      task={task}
+      status={status}
+      steps={steps}
+      summary={summary}
+      error={error}
+      running={running}
+      onStop={runner.stop}
+      onRerun={onRerun}
+      onSaveRoutine={onSaveRoutine}
+    />
   );
 }

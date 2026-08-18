@@ -4,12 +4,14 @@ import {
   DEFAULT_CHAT_EFFORT,
   kindForFilename,
   localId,
+  turnFromCompletedRun,
   turnFromRun,
   type ChatDeltaEnvelope,
   type ChatEffort,
   type ChatTurn,
   type LocalFile,
-  type TurnActivity
+  type TurnActivity,
+  type TurnRun
 } from "../lib/chat";
 
 // Parameters for sending one chat turn.
@@ -45,6 +47,8 @@ export type UseChatStream = {
   /** Keep a finished run in the transcript, where it stays: its answer, the
    *  work it did, and any failure. */
   appendAssistantTurn: (text: string, activity?: TurnActivity[], error?: string) => void;
+  /** Keep a finished computer task in the transcript as its own card. */
+  appendRunTurn: (run: TurnRun) => void;
 };
 
 // Drives a streamed chat conversation. It appends a user turn and an empty
@@ -191,6 +195,13 @@ export function useChatStream(): UseChatStream {
     if (turn) setTurns((current) => [...current, turn]);
   }, []);
 
+  // Keep a finished computer task in the transcript as its own card, so it stays
+  // put when the next one starts.
+  const appendRunTurn = useCallback((run: TurnRun) => {
+    const turn = turnFromCompletedRun(run);
+    if (turn) setTurns((current) => [...current, turn]);
+  }, []);
+
   // Replace the transcript, for starting a new chat or loading a saved one.
   const reset = useCallback((nextTurns: ChatTurn[] = [], nextConversationId?: string) => {
     const requestId = activeRequestId.current;
@@ -202,5 +213,5 @@ export function useChatStream(): UseChatStream {
     setStreaming(false);
   }, []);
 
-  return { turns, streaming, conversationId, usedTokens, send, stop, reset, appendUserTurn, appendAssistantTurn };
+  return { turns, streaming, conversationId, usedTokens, send, stop, reset, appendUserTurn, appendAssistantTurn, appendRunTurn };
 }

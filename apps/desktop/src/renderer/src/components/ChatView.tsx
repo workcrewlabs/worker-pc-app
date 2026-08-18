@@ -14,7 +14,9 @@ type PickedFile = LocalFile;
 // and nothing is read or uploaded until the message is sent (a local task works on
 // the original file and never uploads it). Only a pasted screenshot, which has no
 // path, uploads its bytes when pasted and shows a brief spinner.
-type Attachment = { id: string; filename: string; status: "uploading" | "ready" | "error"; ref?: AttachmentRef; path?: string; size?: number };
+// preview is a small picture of the attachment, when it is an image: a data URL
+// for a file on disk, or an object URL for bytes pasted straight in.
+type Attachment = { id: string; filename: string; status: "uploading" | "ready" | "error"; ref?: AttachmentRef; path?: string; size?: number; preview?: string };
 
 function PlusIcon() {
   return (
@@ -174,6 +176,7 @@ export function ChatView({
   onAlwaysAllowChange,
   onSaveRoutine,
   onRerun,
+  onRerunTask,
   composerSeed,
   workingFolder,
   onPickFolder,
@@ -200,6 +203,8 @@ export function ChatView({
   onAlwaysAllowChange: (value: boolean) => void;
   onSaveRoutine?: () => void;
   onRerun?: () => void;
+  /** Run a past task again from its own card in the transcript. */
+  onRerunTask?: (task: string) => void;
   composerSeed?: { text: string; nonce: number };
   workingFolder?: { path: string; name: string } | null;
   onPickFolder?: () => void;
@@ -343,6 +348,15 @@ export function ChatView({
         path: file.path,
         size: file.size
       }));
+      // Fetch each image thumbnail in the background; the chip is shown at once
+      // and the picture fills in when it is ready.
+      for (const chip of chips) {
+        if (!chip.path) continue;
+        void window.workcrew.files.thumbnail(chip.path).then((preview) => {
+          if (!preview) return;
+          setAttachments((list) => list.map((item) => (item.id === chip.id ? { ...item, preview } : item)));
+        }).catch(() => { /* a missing preview is not worth surfacing */ });
+      }
       return [...current, ...chips];
     });
   }
@@ -354,7 +368,9 @@ export function ChatView({
     const id = localId();
     setAttachError("");
     const filename = file.name || "Pasted image";
-    setAttachments((current) => [...current, { id, filename, status: "uploading" }]);
+    // The bytes are right here, so the preview needs no round trip at all.
+    const preview = URL.createObjectURL(file);
+    setAttachments((current) => [...current, { id, filename, status: "uploading", preview }]);
     file.arrayBuffer()
       .then((bytes) => window.workcrew.attachments.uploadBytes(filename, file.type || "image/png", bytes))
       .then((ref) => {
@@ -476,8 +492,12 @@ export function ChatView({
       {attachments.length > 0 && (
         <div className="attachment-row">
           {attachments.map((item) => (
-            <span className={`attachment-chip chip-${item.status}`} key={item.id}>
-              {item.status === "uploading" ? (
+            <span className={`attachment-chip chip-${item.status}${item.preview ? " chip-has-preview" : ""}`} key={item.id}>
+              {item.preview ? (
+                // The picture itself, so an attached screenshot is recognisable
+                // at a glance instead of being one grey chip among several.
+                <img className="chip-preview" src={item.preview} alt="" aria-hidden="true" />
+              ) : item.status === "uploading" ? (
                 <span className="chip-spinner" aria-label="Uploading" />
               ) : (
                 <span className="chip-icon" aria-hidden="true">{item.status === "error" ? "!" : "●"}</span>
@@ -661,7 +681,7 @@ export function ChatView({
   return (
     <div className="chat-active">
       <div className="chat-scroll" ref={scrollRef}>
-        <MessageList turns={turns} streaming={streaming} />
+        <MessageList turns={turns} streaming={streaming} onRerun={onRerunTask} />
         {workingFolder ? (
           <FolderActivity runner={runner} />
         ) : (
