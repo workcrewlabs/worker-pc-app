@@ -1,11 +1,34 @@
 import type { AuthVault } from "./auth-vault.js";
 import { getBackendUrl } from "./settings.js";
 
-// Thrown when the session cannot be refreshed after a 401. The renderer treats
-// this as a signal to return to the auth screen.
+/**
+ * The one sentence that means "this session is genuinely finished".
+ *
+ * Errors crossing the process boundary arrive as text, so the renderer can only
+ * recognise this by what it says. It used to guess with a loose pattern
+ * (session, auth, expired, 401), and then DELETE the stored session on a match.
+ * A refresh that merely failed to reach the server said "your session has
+ * expired" too, so restarting during a deploy or a moment of bad wifi signed the
+ * user out for real and made them type their password again. One exact sentence,
+ * raised only when the backend itself rejected the session, is the whole fix.
+ */
+export const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please sign in again.";
+
+// Thrown ONLY when the backend has rejected the session itself. Never for a
+// network failure, an outage, or a service restart: those are temporary, and
+// signing someone out over them loses their session for no reason.
 export class AuthExpiredError extends Error {
   readonly code = "AUTH_EXPIRED";
-  constructor(message = "Your session has expired. Please sign in again.") {
+  constructor(message = SESSION_EXPIRED_MESSAGE) {
+    super(message);
+  }
+}
+
+/** Thrown when the session could not be checked at all. The session stays on
+ *  disk: the next attempt, once the network or the service is back, uses it. */
+export class BackendUnreachableError extends Error {
+  readonly code = "BACKEND_UNAVAILABLE";
+  constructor(message = "Could not reach WorkCrew. Check your internet connection and try again.") {
     super(message);
   }
 }
@@ -67,8 +90,12 @@ export class ApiClient {
       let fresh: string;
       try {
         fresh = await this.auth.refresh();
-      } catch {
-        throw new AuthExpiredError();
+      } catch (error) {
+        // Only the backend rejecting the session ends it. A refresh that could
+        // not be delivered says nothing about whether the session is still good,
+        // and treating it as expired is what signed people out over a blip.
+        if ((error as { code?: string }).code === "INVALID_REFRESH_TOKEN") throw new AuthExpiredError();
+        throw new BackendUnreachableError();
       }
       response = await this.send(path, options, fresh);
       if (response.status === 401) throw new AuthExpiredError();

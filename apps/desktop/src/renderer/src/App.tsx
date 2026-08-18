@@ -97,6 +97,21 @@ function errorMessage(error: unknown): string {
 // LogoMark and Brand moved to components/Brand.tsx so onboarding and every
 // other surface share the exact same brand asset.
 
+/**
+ * Whether this failure means the session is genuinely over.
+ *
+ * Errors arrive here as text (Electron carries a message across the process
+ * boundary, not a code), so this matches the one exact sentence the main process
+ * raises when the BACKEND rejected the session. Nothing else qualifies: acting
+ * on a guess is what deleted people's stored sign-in over a passing outage.
+ * The sentence is pinned to its source by a test.
+ */
+export const SESSION_ENDED_TEXT = "Your session has expired. Please sign in again.";
+export function isSessionEnded(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.includes(SESSION_ENDED_TEXT);
+}
+
 // A success checkmark in a soft ring, shown on the "check your inbox" screens.
 function CheckBadge() {
   return (
@@ -1091,13 +1106,15 @@ export default function App() {
         identifyUser();
         setPhase(state.active ? "workspace" : "paywall");
       } catch (entitlementError) {
-        // A stored session can be invalid for the current backend, for example
-        // after switching the backend address or when the token has expired. In
-        // that case drop cleanly to the sign-in screen instead of a dead-end
-        // error. Any other failure (a real outage) still shows Try again.
-        const message = errorMessage(entitlementError).toLowerCase();
-        const isAuthIssue = /session|sign in|expired|auth|401|unauthor/.test(message);
-        if (isAuthIssue) {
+        // Only an ended session sends the user back to sign in, and only when
+        // the backend actually said so. This used to match any error mentioning
+        // session, auth, expired, or 401, then SIGN THE USER OUT, deleting their
+        // stored credentials. A refresh that simply could not reach the server
+        // said "your session has expired" too, so restarting during a deploy or
+        // a moment of bad wifi made them type their password again, every time.
+        // Anything else keeps the session exactly where it is and shows Try
+        // again, because the next attempt usually just works.
+        if (isSessionEnded(entitlementError)) {
           await window.workcrew.auth.signOut().catch(() => {});
           setPhase("auth");
           return;
