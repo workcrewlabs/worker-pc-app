@@ -476,6 +476,15 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   // Fold a pane's reported status into the map, and refresh recents the first time
   // a pane earns a conversation id, so a brand-new chat appears in the sidebar.
   function handlePaneStatus(key: string, status: PaneStatus): void {
+    // A task on the computer is recorded by the backend as its own conversation,
+    // but the app never learns its id: only a chat turn sets one on the pane. So
+    // the sidebar was never told to look again, and work the user had just
+    // watched WorkCrew do was missing from Recents. Ask again whenever a task
+    // starts or ends, which is exactly when the list has changed.
+    const before = statusesRef.current[key]?.automation;
+    if (status.automation !== before && (status.automation === "running" || before === "running")) {
+      void refreshRecents();
+    }
     setPaneStatuses((prev) => ({ ...prev, [key]: status }));
     if (status.conversationId && !knownConvIds.current.has(status.conversationId)) {
       knownConvIds.current.add(status.conversationId);
@@ -554,6 +563,14 @@ function Workspace({ info, entitlement, userName, onSetName, onRefreshEntitlemen
   useEffect(() => {
     void refreshRecents();
   }, []);
+
+  // Opening the sidebar is the moment the list is actually read, so refresh it
+  // then. A backstop rather than the main path: it catches anything that changed
+  // the list without this window knowing, including work done in another window.
+  useEffect(() => {
+    if (navOpen) void refreshRecents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navOpen]);
 
   // Escape closes the sidebar drawer, the same way it closes every other
   // temporary layer in the app.
