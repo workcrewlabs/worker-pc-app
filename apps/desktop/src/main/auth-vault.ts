@@ -78,23 +78,51 @@ export class AuthVault {
     if (this.session.expiresAtMs <= Date.now() + 60_000) {
       try {
         return await this.refresh();
-      } catch {
-        return this.session?.accessToken ?? null;
+      } catch (error) {
+        // A refresh the backend refused is final; let it through so the caller
+        // reports an ended session once.
+        if ((error as { code?: string }).code === "INVALID_REFRESH_TOKEN") throw error;
+        // Otherwise the service is simply unreachable. Handing back the expired
+        // token was worse than useless: the request 401s, the caller refreshes
+        // again, and that second attempt replays a refresh token the backend may
+        // already have consumed, which revokes the whole session. One failed
+        // refresh should never cost the user their sign-in.
+        throw Object.assign(new Error("Could not reach WorkCrew"), { code: "BACKEND_UNAVAILABLE" });
       }
     }
     return this.session.accessToken;
   }
 
   private async request(path: string, body: unknown): Promise<AuthResponse> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(20_000)
-    });
-    const payload = await response.json() as AuthResponse;
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(20_000)
+      });
+    } catch {
+      // Never reached the server, so this says nothing about the session.
+      throw Object.assign(new Error("Could not reach WorkCrew"), { code: "BACKEND_UNAVAILABLE" });
+    }
+    // Read as text first: a gateway or an outage page is not JSON, and calling
+    // .json() on it threw a parse error that read like an auth failure.
+    const text = await response.text().catch(() => "");
+    let payload: AuthResponse | null = null;
+    try {
+      payload = text ? JSON.parse(text) as AuthResponse : null;
+    } catch {
+      payload = null;
+    }
+    if (payload === null) {
+      throw Object.assign(new Error("Could not reach WorkCrew"), { code: "BACKEND_UNAVAILABLE" });
+    }
     if (!response.ok) {
-      throw Object.assign(new Error(payload.error ?? "Authentication failed"), { code: payload.code });
+      // Only what the backend actually said. A 5xx is the service failing, not a
+      // verdict on this session.
+      const code = response.status >= 500 ? "BACKEND_UNAVAILABLE" : payload.code;
+      throw Object.assign(new Error(payload.error ?? "Authentication failed"), { code });
     }
     return payload;
   }
