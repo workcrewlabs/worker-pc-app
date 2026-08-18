@@ -1,6 +1,6 @@
 import type { ChatTurn } from "../lib/chat";
 import { Markdown } from "../lib/markdown";
-import { TurnActivityBlock } from "./AutomationActivity";
+import { RunCard, TurnActivityBlock } from "./AutomationActivity";
 
 // Renders the conversation transcript. User turns sit in a tinted bubble on the
 // right of the column; assistant turns render as plain serif body text with no
@@ -16,7 +16,24 @@ function ThinkingBlock({ text }: { text: string }) {
   );
 }
 
-function AssistantTurn({ turn }: { turn: ChatTurn }) {
+function AssistantTurn({ turn, onRerun }: { turn: ChatTurn; onRerun?: (task: string) => void }) {
+  // A finished computer task keeps its card, exactly as it looked while running,
+  // so Run again is still there and the next task does not erase it.
+  if (turn.run) {
+    const past = turn.run;
+    return (
+      <div className="turn turn-assistant">
+        <RunCard
+          task={past.task}
+          status={past.status}
+          steps={past.steps}
+          summary={past.summary}
+          error={past.error}
+          onRerun={onRerun ? () => onRerun(past.task) : undefined}
+        />
+      </div>
+    );
+  }
   return (
     <div className="turn turn-assistant">
       {turn.thinking && turn.thinking.trim().length > 0 && <ThinkingBlock text={turn.thinking} />}
@@ -50,7 +67,7 @@ function UserTurn({ turn }: { turn: ChatTurn }) {
   );
 }
 
-export function MessageList({ turns }: { turns: ChatTurn[]; streaming?: boolean }) {
+export function MessageList({ turns, onRerun }: { turns: ChatTurn[]; streaming?: boolean; onRerun?: (task: string) => void }) {
   // Scrolling is managed by the parent (ChatView), which only sticks to the
   // bottom when the user is already there, so they can freely scroll up.
   return (
@@ -59,7 +76,7 @@ export function MessageList({ turns }: { turns: ChatTurn[]; streaming?: boolean 
         turn.role === "user" ? (
           <UserTurn key={turn.id} turn={turn} />
         ) : (
-          <AssistantTurn key={turn.id} turn={turn} />
+          <AssistantTurn key={turn.id} turn={turn} onRerun={onRerun} />
         )
       )}
     </div>

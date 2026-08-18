@@ -29,6 +29,23 @@ export function kindForFilename(name: string): AttachmentKind {
 // shape and does not depend on the live runner.
 export type TurnActivity = { id: string; label: string; status: string; detail?: string };
 
+/**
+ * A finished run, kept whole in the transcript.
+ *
+ * A computer task is not a message, it is a piece of work with a result and
+ * buttons that act on it. Held only as live state it was erased the moment the
+ * next run started, so the card the user wanted to press Run again on vanished
+ * and nothing was left of what had been done before. Kept as a turn, each run
+ * stays exactly where it happened and they stack up like messages do.
+ */
+export type TurnRun = {
+  task: string;
+  status: "complete" | "failed" | "stopped" | "idle" | "running";
+  summary: string;
+  error?: string;
+  steps: TurnActivity[];
+};
+
 export type ChatTurn = {
   // A local id, stable for the lifetime of the turn in the transcript.
   id: string;
@@ -43,6 +60,8 @@ export type ChatTurn = {
   // away from the request that caused it; on the turn it stays where it
   // happened, however many messages follow.
   activity?: TurnActivity[];
+  // A whole finished run, rendered as its card rather than as text.
+  run?: TurnRun;
   // True while the assistant turn is actively receiving deltas.
   streaming?: boolean;
   // Set when this turn could not complete.
@@ -99,6 +118,19 @@ export function conversationDigest(turns: ChatTurn[], budget = 3_500, perTurn = 
     used += line.length + 1;
   }
   return lines.join("\n");
+}
+
+/**
+ * The transcript entry a finished computer task leaves behind, or null when the
+ * run did nothing worth keeping.
+ *
+ * A run with no steps and no words is one that never started (a duplicate send,
+ * a task too short to run); recording it would litter the chat with empty cards.
+ */
+export function turnFromCompletedRun(run: TurnRun): ChatTurn | null {
+  const worthKeeping = run.steps.length > 0 || run.summary.trim().length > 0 || Boolean(run.error);
+  if (!worthKeeping) return null;
+  return { id: localId(), role: "assistant", text: "", run };
 }
 
 // A short local id for transcript turns. Distinct from the server message id.

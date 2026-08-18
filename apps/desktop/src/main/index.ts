@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { join, resolve, sep } from "node:path";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, screen, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, screen, session, shell } from "electron";
 import {
   APP_NAME,
   SUPPORT_EMAIL,
@@ -814,6 +814,35 @@ function registerIpc(): void {
 
   // Whether a dropped path is a file or a folder, so dragging a folder into the
   // chat sets it as the working folder instead of failing as a file upload.
+  /**
+   * A small preview of an image the user attached, as a data URL.
+   *
+   * An attachment used to be a filename on a grey chip, so a pasted screenshot
+   * was indistinguishable from any other and there was no way to tell you had
+   * attached the right one. The picture answers that at a glance.
+   *
+   * Reads nothing this app could not already read: attachments are uploaded from
+   * these same paths. It is still bounded on every axis, because a preview is
+   * never worth a stall: images only, a size ceiling, and downscaled here so a
+   * 20MB photo never crosses into the renderer.
+   */
+  ipcMain.handle("files:thumbnail", async (_event, raw) => {
+    if (typeof raw !== "string" || raw.length === 0 || raw.length > 4096) return null;
+    if (!/\.(png|jpe?g|gif|webp|bmp)$/i.test(raw)) return null;
+    const fs = await import("node:fs/promises");
+    try {
+      const info = await fs.stat(raw);
+      if (!info.isFile() || info.size > 25 * 1024 * 1024) return null;
+      const image = nativeImage.createFromPath(raw);
+      if (image.isEmpty()) return null;
+      const { width } = image.getSize();
+      const small = width > 96 ? image.resize({ width: 96, quality: "good" }) : image;
+      return small.toDataURL();
+    } catch {
+      return null;
+    }
+  });
+
   ipcMain.handle("files:path-kind", async (_event, raw) => {
     if (typeof raw !== "string" || !raw.trim()) return "missing";
     const fs = await import("node:fs/promises");

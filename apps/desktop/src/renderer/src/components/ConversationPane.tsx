@@ -280,7 +280,20 @@ export function ConversationPane({
           if (unheard.length > 0) answerUnheard(unheard.join("\n"), folder);
         });
     } else {
-      void runner.run(trimmed, model, label);
+      // A task on the computer is kept as its own card in the transcript, so the
+      // next one does not erase it and Run again is still there afterwards.
+      runChain.current = runner.run(trimmed, model, label)
+        .then((done) => {
+          chat.appendRunTurn({
+            task: trimmed,
+            status: done.status,
+            summary: done.summary,
+            error: done.error || undefined,
+            steps: done.steps.filter((step) => step.status !== "running")
+          });
+          runner.clear();
+        })
+        .catch(() => { /* the runner reports its own failures through the card */ });
       startingRef.current = false;
     }
   }
@@ -530,6 +543,7 @@ export function ConversationPane({
         onAlwaysAllowChange={onAlwaysAllowChange}
         onSaveRoutine={saveCurrentAsRoutine}
         onRerun={rerunAutomation}
+        onRerunTask={(task) => runAutomation(task, "Task")}
         composerSeed={active ? composerSeed : undefined}
         workingFolder={workingFolder}
         onPickFolder={() => void pickFolder()}
