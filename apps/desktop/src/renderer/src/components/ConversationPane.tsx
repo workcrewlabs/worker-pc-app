@@ -284,6 +284,11 @@ export function ConversationPane({
       // next one does not erase it and Run again is still there afterwards.
       runChain.current = runner.run(trimmed, model, label)
         .then((done) => {
+          // Adopt the conversation the backend recorded this task in, so the
+          // transcript is filed under the same id Recents opens it by. Without
+          // it the card was saved under a name nothing would look for, and
+          // coming back to the chat showed only the task text.
+          if (done.conversationId) chat.adoptConversation(done.conversationId);
           chat.appendRunTurn({
             task: trimmed,
             status: done.status,
