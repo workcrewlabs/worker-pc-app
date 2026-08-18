@@ -1423,6 +1423,14 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
       // period resets.
       throw error;
     }
+    if (code === "MODEL_REQUEST_FAILED" || code === "MODEL_UNAVAILABLE") {
+      // The provider failed to answer this step, and planStep already released
+      // its hold, so nothing was spent. That is a hiccup, not a verdict on the
+      // run: marking it failed here threw away every step of work before it,
+      // over one slow answer. Left resumable, the very next request picks up
+      // exactly where it stopped.
+      throw error;
+    }
     // planStep already released or settled its own reservation. Just record the run
     // as failed and surface the error.
     run.status = "failed";
