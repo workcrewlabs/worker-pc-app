@@ -33,6 +33,63 @@ function id(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Transcripts ---------------------------------------------------------------
+// What was actually on screen in a conversation, kept on this machine.
+//
+// Only chat turns are stored on the server. Everything a task produces (the run
+// cards, the work a folder run did, the answers written straight into the
+// transcript) lived in the window and died with it, so closing the app or
+// letting it update erased messages the user could see a moment earlier. This
+// keeps the whole transcript locally so it comes back exactly as it was.
+//
+// Bounded on every axis, because localStorage is small and a chat is unbounded:
+// the newest turns are kept, each run keeps a workable number of steps, and any
+// single body of text is clipped. Losing the tail of a very long conversation is
+// far better than the quota erroring and losing all of it.
+
+const TRANSCRIPT_KEY = "transcript";
+export const MAX_SAVED_TURNS = 120;
+const MAX_SAVED_STEPS = 40;
+const MAX_SAVED_TEXT = 20_000;
+
+type SavedTurn = Record<string, unknown>;
+
+/** Trim a transcript to something that will reliably fit. */
+export function trimTranscript(turns: unknown[]): SavedTurn[] {
+  return turns.slice(-MAX_SAVED_TURNS).map((raw) => {
+    const turn = { ...(raw as SavedTurn) };
+    if (typeof turn.text === "string" && turn.text.length > MAX_SAVED_TEXT) {
+      turn.text = `${turn.text.slice(0, MAX_SAVED_TEXT)}...`;
+    }
+    // Thinking is a live detail, not history worth the space.
+    delete turn.thinking;
+    // A turn saved mid-stream must not come back still pretending to stream.
+    delete turn.streaming;
+    if (Array.isArray(turn.activity)) turn.activity = turn.activity.slice(0, MAX_SAVED_STEPS);
+    if (turn.run && typeof turn.run === "object") {
+      const run = { ...(turn.run as SavedTurn) };
+      if (Array.isArray(run.steps)) run.steps = run.steps.slice(0, MAX_SAVED_STEPS);
+      turn.run = run;
+    }
+    return turn;
+  });
+}
+
+export function saveTranscript(id: string, turns: unknown[]): void {
+  if (!id) return;
+  if (turns.length === 0) {
+    write(`${TRANSCRIPT_KEY}:${id}`, undefined);
+    return;
+  }
+  write(`${TRANSCRIPT_KEY}:${id}`, trimTranscript(turns));
+}
+
+export function loadTranscript<T>(id: string): T[] {
+  if (!id) return [];
+  const saved = read<T[] | null>(`${TRANSCRIPT_KEY}:${id}`, null);
+  return Array.isArray(saved) ? saved : [];
+}
+
 // Composer mode -------------------------------------------------------------
 // Whether new chats open on Chat (answer here, never touch the computer) or on
 // Computer use. Each conversation keeps its own toggle; this only remembers what
