@@ -81,6 +81,13 @@ const envSchema = z.object({
     z.string().url().default("https://api.z.ai/api/anthropic")
   ),
   ZAI_MODEL: z.string().default("glm-4.6"),
+  // How much room the Economy engine gets to think, in tokens. Newer GLM models
+  // (5.3 and up) ALWAYS think and refuse any request that does not ask for it,
+  // answering "this model always engages in thinking and cannot be disabled".
+  // Older ones accept the same field happily, so it is sent for every z.ai model
+  // and switching ZAI_MODEL between them needs no other change. Zero turns it
+  // off, for an engine that one day rejects it.
+  ZAI_THINKING_BUDGET: z.coerce.number().int().min(0).max(8_000).default(1_024),
   // Transactional email (sign-up verification and password reset). When
   // RESEND_API_KEY is set the backend sends real email; otherwise it logs the
   // link to the server output so the flow is testable locally. WORKCREW_PUBLIC_URL
@@ -335,6 +342,7 @@ export const config = {
     opus: env.ANTHROPIC_OPUS_MODEL,
     glm: env.ZAI_MODEL
   },
+  zaiThinkingBudget: env.ZAI_THINKING_BUDGET,
   // Economy-mode provider. enabled is true only when an API key is present, which
   // is the single switch the routing layer checks before sending any work here.
   zai: {

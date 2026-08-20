@@ -477,6 +477,27 @@ async function fetchModel(
   throw transportFailure(lastError);
 }
 
+/**
+ * How much room to give the Economy engine to think on this step, in tokens.
+ *
+ * GLM 5.3 and later ALWAYS think, and refuse outright any request that does not
+ * ask for it ("this model always engages in thinking and cannot be disabled").
+ * Older GLM models accept the same field, so it is sent for every z.ai model and
+ * changing ZAI_MODEL between them needs nothing else.
+ *
+ * Always strictly under the step's own output ceiling, because thinking is spent
+ * FROM that ceiling: a budget at or above it leaves no room for the answer. When
+ * the user is near their limit the ceiling shrinks, so the budget shrinks with
+ * it, and below the floor it is dropped rather than sent as a token or two of
+ * useless thinking.
+ */
+export const MIN_THINKING_TOKENS = 128;
+export function thinkingBudgetFor(tier: ConcreteModelTier, maxOutputTokens: number): number {
+  if (provider(tier) !== "zai" || config.zaiThinkingBudget <= 0) return 0;
+  const room = Math.min(config.zaiThinkingBudget, Math.floor(maxOutputTokens / 2));
+  return room >= MIN_THINKING_TOKENS ? room : 0;
+}
+
 export async function callModel(input: {
   tier: ConcreteModelTier;
   messages: unknown[];
@@ -490,6 +511,7 @@ export async function callModel(input: {
   // the Economy engine does not accept the same field, so it is only sent for the
   // two Claude tiers that support it. Every other engine omits it.
   const supportsEffort = input.tier === "sonnet" || input.tier === "opus";
+  const thinkingTokens = thinkingBudgetFor(input.tier, input.maxOutputTokens);
   const body = {
     model: modelId(input.tier),
     max_tokens: input.maxOutputTokens,
@@ -502,6 +524,7 @@ export async function callModel(input: {
     // without a matching tool_result and the next request would be rejected.
     tool_choice: { type: "auto", disable_parallel_tool_use: true },
     ...(supportsEffort ? { output_config: { effort: AUTOMATION_EFFORT } } : {}),
+    ...(thinkingTokens > 0 ? { thinking: { type: "enabled" as const, budget_tokens: thinkingTokens } } : {}),
     messages: withRollingCacheBreakpoint(withoutUnseeableImages(input.messages, input.tier))
   };
   // A provider that is slow, unreachable, or answering with a gateway's HTML
