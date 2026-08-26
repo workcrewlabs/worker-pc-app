@@ -178,6 +178,7 @@ export function ChatView({
   onSaveRoutine,
   onRerun,
   onRerunTask,
+  onSaveRoutineTask,
   composerSeed,
   workingFolder,
   onPickFolder,
@@ -206,6 +207,8 @@ export function ChatView({
   onRerun?: () => void;
   /** Run a past task again from its own card in the transcript. */
   onRerunTask?: (task: string) => void;
+  /** Save a past task as a routine from its own card in the transcript. */
+  onSaveRoutineTask?: (task: string) => void;
   composerSeed?: { text: string; nonce: number };
   workingFolder?: { path: string; name: string } | null;
   onPickFolder?: () => void;
@@ -715,7 +718,7 @@ async function imageThumbnail(file: File, size = 96): Promise<string | null> {
   return (
     <div className="chat-active">
       <div className="chat-scroll" ref={scrollRef}>
-        <MessageList turns={turns} streaming={streaming} onRerun={onRerunTask} />
+        <MessageList turns={turns} streaming={streaming} onRerun={onRerunTask} onSaveRoutine={onSaveRoutineTask} />
         {workingFolder ? (
           <FolderActivity runner={runner} />
         ) : (
