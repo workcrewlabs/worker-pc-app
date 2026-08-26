@@ -1,0 +1,40 @@
+<resources>
+    <string name="app_name">App Blocker</string>
+
+    <string name="status_running">Blocker is running</string>
+    <string name="status_stopped">Blocker is stopped</string>
+
+    <string name="section_permissions">Permissions</string>
+    <string name="perm_usage_access">Usage access</string>
+    <string name="perm_overlay">Display over other apps</string>
+    <string name="granted">Granted</string>
+    <string name="not_granted">Not granted</string>
+    <string name="open_settings">Open settings</string>
+
+    <string name="section_limits">Limits</string>
+    <string name="label_watched_app">App to limit</string>
+    <string name="label_remind_minutes">Remind me every (minutes)</string>
+    <string name="label_limit_minutes">Switch me away after (minutes total)</string>
+    <string name="label_redirect_app">Switch me to</string>
+    <string name="change">Change</string>
+    <string name="home_screen">Home screen</string>
+    <string name="pick_app">Pick an app</string>
+
+    <string name="start_blocking">Start blocking</string>
+    <string name="stop_blocking">Stop</string>
+    <string name="need_usage_access">Grant Usage access first so the blocker can tell which app is on screen.</string>
+    <string name="need_overlay">Grant "Display over other apps" first so reminders can interrupt the screen.</string>
+
+    <string name="reminder_title">Time check</string>
+    <string name="reminder_message">You\'ve been on %1$s for %2$d minutes. You\'ll be switched away at %3$d minutes.</string>
+    <string name="reminder_keep_watching">Keep watching</string>
+    <string name="reminder_take_break">Take a break</string>
+
+    <string name="limit_title">Time\'s up</string>
+    <string name="limit_message">%1$d minutes on %2$s — switching you to %3$s.</string>
+    <string name="limit_ok">OK</string>
+
+    <string name="notification_channel">Blocker status</string>
+    <string name="notification_title">App Blocker is watching</string>
+    <string name="notification_text">%1$s: %2$d of %3$d min used</string>
+</resources>
