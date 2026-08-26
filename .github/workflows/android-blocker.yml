@@ -10,6 +10,9 @@ on:
       - '.github/workflows/android-blocker.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -33,3 +36,15 @@ jobs:
           name: app-blocker-apk
           path: apps/android-blocker/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # Also publish to a fixed release so the APK has a stable one-tap
+      # download URL (the run artifact is a zip and is hidden in the mobile app).
+      - name: Publish APK to the app-blocker release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create app-blocker \
+            --title "App Blocker APK" \
+            --notes "Latest App Blocker build. Download app-debug.apk below and open it on your phone to install." \
+            --target "${{ github.sha }}" || true
+          gh release upload app-blocker app/build/outputs/apk/debug/app-debug.apk --clobber
