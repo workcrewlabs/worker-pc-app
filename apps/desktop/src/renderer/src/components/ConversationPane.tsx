@@ -574,6 +574,7 @@ export function ConversationPane({
         onSaveRoutine={saveCurrentAsRoutine}
         onRerun={rerunAutomation}
         onRerunTask={(task) => runAutomation(task, "Task")}
+        onSaveRoutineTask={onSaveRoutine}
         composerSeed={active ? composerSeed : undefined}
         workingFolder={workingFolder}
         onPickFolder={() => void pickFolder()}

@@ -16,11 +16,22 @@ function ThinkingBlock({ text }: { text: string }) {
   );
 }
 
-function AssistantTurn({ turn, onRerun }: { turn: ChatTurn; onRerun?: (task: string) => void }) {
+function AssistantTurn({
+  turn,
+  onRerun,
+  onSaveRoutine
+}: {
+  turn: ChatTurn;
+  onRerun?: (task: string) => void;
+  onSaveRoutine?: (task: string) => void;
+}) {
   // A finished computer task keeps its card, exactly as it looked while running,
-  // so Run again is still there and the next task does not erase it.
+  // so Run again and Save as a routine are still there and the next task does
+  // not erase it. Both act on this card's own task, not on whatever the runner
+  // happens to be holding, which by then is usually a later run.
   if (turn.run) {
     const past = turn.run;
+    const task = past.task.trim();
     return (
       <div className="turn turn-assistant">
         <RunCard
@@ -30,6 +41,7 @@ function AssistantTurn({ turn, onRerun }: { turn: ChatTurn; onRerun?: (task: str
           summary={past.summary}
           error={past.error}
           onRerun={onRerun ? () => onRerun(past.task) : undefined}
+          onSaveRoutine={onSaveRoutine && task.length >= 3 ? () => onSaveRoutine(past.task) : undefined}
         />
       </div>
     );
@@ -67,7 +79,16 @@ function UserTurn({ turn }: { turn: ChatTurn }) {
   );
 }
 
-export function MessageList({ turns, onRerun }: { turns: ChatTurn[]; streaming?: boolean; onRerun?: (task: string) => void }) {
+export function MessageList({
+  turns,
+  onRerun,
+  onSaveRoutine
+}: {
+  turns: ChatTurn[];
+  streaming?: boolean;
+  onRerun?: (task: string) => void;
+  onSaveRoutine?: (task: string) => void;
+}) {
   // Scrolling is managed by the parent (ChatView), which only sticks to the
   // bottom when the user is already there, so they can freely scroll up.
   return (
@@ -76,7 +97,7 @@ export function MessageList({ turns, onRerun }: { turns: ChatTurn[]; streaming?:
         turn.role === "user" ? (
           <UserTurn key={turn.id} turn={turn} />
         ) : (
-          <AssistantTurn key={turn.id} turn={turn} onRerun={onRerun} />
+          <AssistantTurn key={turn.id} turn={turn} onRerun={onRerun} onSaveRoutine={onSaveRoutine} />
         )
       )}
     </div>
