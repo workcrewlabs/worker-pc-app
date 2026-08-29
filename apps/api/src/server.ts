@@ -103,6 +103,7 @@ import {
   listMpgsAttempts,
   listMpgsTestLinks,
   revokeMpgsTestLink,
+  expireLapsedPaidToFree,
   grantFreeSubscriptionIfAbsent,
   getUserById,
   initializeDatabase,
@@ -318,6 +319,15 @@ async function subscriptionState(userId: string): Promise<SubscriptionState> {
   if (!subscription) {
     await grantFreeSubscriptionIfAbsent(userId);
     subscription = await getSubscription(userId);
+  }
+  // A paid plan that has run out drops to the free plan here, the same choke
+  // point the free grant above uses. Until this existed a lapsed customer was
+  // simply locked out: the row stayed "pro" with a date in the past, every guard
+  // read it as inactive, and they hit a wall instead of the free tier they were
+  // still entitled to. The UPDATE only moves rows that are already paid AND
+  // past their end date, so it can never touch someone who is paying.
+  if (subscription && subscription.plan !== "free" && subscription.currentPeriodEndMs <= Date.now()) {
+    if (await expireLapsedPaidToFree(userId)) subscription = await getSubscription(userId);
   }
   if (!subscription) {
     return {

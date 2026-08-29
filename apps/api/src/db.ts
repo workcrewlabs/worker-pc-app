@@ -588,6 +588,35 @@ export async function grantFreeSubscriptionIfAbsent(userId: string): Promise<voi
   });
 }
 
+/**
+ * Drop a paid subscription that has run out onto the free plan.
+ *
+ * A paid row does not change when its month ends; it just goes stale, and every
+ * guard reads it as "not active". That locked a lapsed customer out of an app
+ * they were entitled to keep using on the free tier, which is the same place a
+ * hand-revoked customer lands. Expiring by time now does what revoking by hand
+ * has always done.
+ *
+ * The WHERE clause is the safety: it can only ever move a row that is already
+ * both paid AND past its end date, so it cannot downgrade a paying customer, and
+ * running it twice changes nothing the second time. The budget anchor is left
+ * alone, exactly as adminRevokeAccess leaves it, so lapsing cannot be used to
+ * mint a fresh allowance on demand.
+ */
+export async function expireLapsedPaidToFree(userId: string, nowMs = Date.now()): Promise<boolean> {
+  const FREE_PERIOD_END_MS = nowMs + 100 * 365 * 24 * 60 * 60 * 1000;
+  const result = await client.execute({
+    sql: `UPDATE subscriptions
+          SET plan = 'free', status = 'free', active = 1,
+              stripe_customer_id = NULL, stripe_subscription_id = NULL,
+              pending_plan = NULL, pending_interval = NULL, pending_effective_ms = NULL,
+              current_period_end_ms = ?, updated_at_ms = ?
+          WHERE user_id = ? AND plan <> 'free' AND current_period_end_ms <= ?`,
+    args: [FREE_PERIOD_END_MS, nowMs, userId, nowMs]
+  });
+  return (result.rowsAffected ?? 0) > 0;
+}
+
 // Record a scheduled downgrade that takes effect at the end of the current paid
 // period. The current (higher) plan and limit are untouched; only this marker is
 // set, so the UI can show "switches to <plan> on <date>" while access stays high.
@@ -656,6 +685,8 @@ export async function recordStripeEvent(eventId: string, eventType: string): Pro
   const result = await client.execute({ sql, args: [eventId, eventType, Date.now()] });
   return result.rowsAffected === 1;
 }
+
+/** Record why someone cancelled, and what they did when offered an alternative. */
 
 export async function createRun(run: RunRow): Promise<void> {
   await client.execute({

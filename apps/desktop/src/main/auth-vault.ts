@@ -1,5 +1,6 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { app, safeStorage } from "electron";
+import { AuthExpiredError } from "./api-client.js";
 import { getBackendUrl } from "./settings.js";
 
 // The session shape returned by the WorkCrew auth backend. The vault stores this
@@ -79,9 +80,18 @@ export class AuthVault {
       try {
         return await this.refresh();
       } catch (error) {
-        // A refresh the backend refused is final; let it through so the caller
-        // reports an ended session once.
-        if ((error as { code?: string }).code === "INVALID_REFRESH_TOKEN") throw error;
+        // A refresh the backend refused is final, and it is re-raised as the one
+        // sentence the renderer recognises as an ended session.
+        //
+        // It used to be re-thrown as-is, carrying the backend's own wording
+        // ("The session is no longer valid", "The refresh token was already
+        // used"). The renderer matches the exact sentence below, on purpose, so
+        // none of those matched: a customer whose session really had ended got a
+        // dead end that said Try again and retried forever, with no way through
+        // to the sign-in page. The backend's own code is what makes this final,
+        // so wording it here costs nothing and cannot sign anyone out over an
+        // outage.
+        if ((error as { code?: string }).code === "INVALID_REFRESH_TOKEN") throw new AuthExpiredError();
         // Otherwise the service is simply unreachable. Handing back the expired
         // token was worse than useless: the request 401s, the caller refreshes
         // again, and that second attempt replays a refresh token the backend may

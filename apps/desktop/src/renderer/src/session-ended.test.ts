@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SESSION_ENDED_TEXT, isSessionEnded } from "./App";
-import { SESSION_EXPIRED_MESSAGE } from "../../main/api-client";
+import { AuthExpiredError, SESSION_EXPIRED_MESSAGE } from "../../main/api-client";
 
 // The owner was sent back to the sign-in page after every restart and update.
 // The app decided he was signed out by pattern-matching the error text
@@ -37,6 +37,22 @@ describe("deciding that a session is really over", () => {
     expect(isSessionEnded(new Error("Could not read the author field"))).toBe(false);
     expect(isSessionEnded(new Error("Rate limit exceeded, 401 requests queued"))).toBe(false);
     expect(isSessionEnded(new Error("This session file could not be written"))).toBe(false);
+  });
+
+  it("recognises the error the vault raises when a refresh is refused", () => {
+    // The other half of the fix. The vault used to re-throw the backend's own
+    // wording, and because this check is a deliberate exact match, none of those
+    // sentences counted as an ended session: a customer whose session really had
+    // ended got a dead end saying Try again, with no route to the sign-in page.
+    expect(isSessionEnded(new AuthExpiredError())).toBe(true);
+  });
+
+  it("does not recognise the backend's own wording, which is why the vault rewords it", () => {
+    // If someone deletes the conversion in auth-vault and lets these through
+    // again, the dead end comes straight back. These are the real sentences the
+    // API raises on a refused refresh.
+    expect(isSessionEnded(new Error("The session is no longer valid"))).toBe(false);
+    expect(isSessionEnded(new Error("The refresh token was already used"))).toBe(false);
   });
 
   it("copes with whatever it is handed", () => {
