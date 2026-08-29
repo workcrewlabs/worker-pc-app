@@ -1515,6 +1515,10 @@ export type AdminCustomerRow = {
   status: string | null;
   active: boolean;
   currentPeriodEndMs: number | null;
+  // The anchor their monthly allowance renews on. Needed to work out which
+  // budget window is the current one, since every account renews on its own
+  // date rather than on the first of the month.
+  budgetAnchorMs: number | null;
 };
 
 function mapAdminCustomer(row: Record<string, unknown>): AdminCustomerRow {
@@ -1530,7 +1534,11 @@ function mapAdminCustomer(row: Record<string, unknown>): AdminCustomerRow {
     currentPeriodEndMs:
       row.current_period_end_ms === null || row.current_period_end_ms === undefined
         ? null
-        : Number(row.current_period_end_ms)
+        : Number(row.current_period_end_ms),
+    budgetAnchorMs:
+      row.budget_anchor_ms === null || row.budget_anchor_ms === undefined
+        ? null
+        : Number(row.budget_anchor_ms)
   };
 }
 
@@ -1556,7 +1564,7 @@ export async function listAdminCustomers(input: {
 
   const result = await client.execute({
     sql: `SELECT u.id, u.email, u.name, u.email_verified, u.created_at_ms,
-            s.plan, s.status, s.active, s.current_period_end_ms
+            s.plan, s.status, s.active, s.current_period_end_ms, s.budget_anchor_ms
           FROM users u
           LEFT JOIN subscriptions s ON s.user_id = u.id
           ${where}
@@ -1565,6 +1573,49 @@ export async function listAdminCustomers(input: {
     args: [...filterArgs, input.limit, input.offset]
   });
   return { rows: (result.rows as unknown as Record<string, unknown>[]).map(mapAdminCustomer), total };
+}
+
+/** One account's spend inside one budget window, as the ledger records it. */
+export type UsagePeriodRow = {
+  userId: string;
+  periodStartMs: number;
+  periodEndMs: number;
+  used: number;
+  reserved: number;
+};
+
+/**
+ * Spend per account per budget window, for the accounts named.
+ *
+ * One query for the whole page rather than one per row: the dashboard lists up
+ * to a hundred accounts, and a round trip each would make it crawl. It returns
+ * every window each account has ever spent in and lets the caller pick the
+ * current one, because a window's bounds depend on the plan (paid plans roll
+ * monthly, the free trial has a single fixed window) and that rule lives in
+ * budget.ts, not here.
+ *
+ * Sums the same two figures, the same way, as getBudgetUsage, so a number here
+ * can never disagree with the one the customer is held to.
+ */
+export async function listUsageByPeriodForUsers(userIds: string[]): Promise<UsagePeriodRow[]> {
+  if (userIds.length === 0) return [];
+  const placeholders = userIds.map(() => "?").join(", ");
+  const result = await client.execute({
+    sql: `SELECT user_id, period_start_ms, period_end_ms,
+            COALESCE(SUM(CASE WHEN status = 'settled' THEN actual_microdollars ELSE 0 END), 0) AS used,
+            COALESCE(SUM(CASE WHEN status = 'reserved' THEN reserved_microdollars ELSE 0 END), 0) AS reserved
+          FROM usage_ledger
+          WHERE user_id IN (${placeholders})
+          GROUP BY user_id, period_start_ms, period_end_ms`,
+    args: userIds
+  });
+  return (result.rows as unknown as Record<string, unknown>[]).map((row) => ({
+    userId: String(row.user_id),
+    periodStartMs: Number(row.period_start_ms),
+    periodEndMs: Number(row.period_end_ms),
+    used: Number(row.used ?? 0),
+    reserved: Number(row.reserved ?? 0)
+  }));
 }
 
 /** Record one admin action. Detail is a short plain string, never a secret. */

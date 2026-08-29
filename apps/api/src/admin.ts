@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyRequest } from "fastify";
-import { paidPlanIdSchema, type PaidPlanId } from "@workcrew/contracts";
+import { PLAN_CATALOG, paidPlanIdSchema, type PaidPlanId, type PlanId } from "@workcrew/contracts";
 import { authenticate } from "./auth.js";
 import { createPasswordCredential } from "./auth-local.js";
+import { budgetWindowFor, planBudget } from "./budget.js";
 import { config } from "./config.js";
 import {
   createUser,
@@ -11,11 +12,13 @@ import {
   getUserById,
   listAdminAudit,
   listAdminCustomers,
+  listUsageByPeriodForUsers,
   recordAdminAction,
   revokeUserSessions,
   updateUserPassword,
   upsertSubscription,
-  type AdminCustomerRow
+  type AdminCustomerRow,
+  type UsagePeriodRow
 } from "./db.js";
 import { z } from "zod";
 
@@ -111,6 +114,41 @@ function freePeriodEnd(nowMs: number): number {
   return nowMs + 100 * 365 * 24 * 60 * 60 * 1000;
 }
 
+/** The stored plan name as a plan we actually know, or null for an account with none. */
+function knownPlan(plan: string | null): PlanId | null {
+  return plan !== null && Object.prototype.hasOwnProperty.call(PLAN_CATALOG, plan) ? (plan as PlanId) : null;
+}
+
+/**
+ * What one account has spent of its monthly allowance, and what that allowance
+ * is, both in microdollars.
+ *
+ * Committed spend, not settled spend: money already charged plus money held for
+ * turns still running, which is exactly the figure reserveBudget measures the
+ * cap against. Showing settled only would read low while a run was in flight and
+ * leave the dashboard disagreeing with the wall the customer just hit.
+ *
+ * Referral credits are written as negative settled rows, so a heavily credited
+ * account can sum below zero. Clamped, because "spent minus four dollars" is not
+ * a thing anyone needs to read.
+ */
+function monthlySpendFor(
+  row: AdminCustomerRow,
+  periods: UsagePeriodRow[],
+  nowMs: number
+): { spent: number; limit: number } {
+  const plan = knownPlan(row.plan);
+  if (plan === null || row.budgetAnchorMs === null) return { spent: 0, limit: 0 };
+  const window = budgetWindowFor({ plan, budgetAnchorMs: row.budgetAnchorMs }, nowMs);
+  const match = periods.find(
+    (period) => period.periodStartMs === window.startMs && period.periodEndMs === window.endMs
+  );
+  return {
+    spent: match ? Math.max(0, match.used + match.reserved) : 0,
+    limit: planBudget(plan)
+  };
+}
+
 /**
  * The customer list, with each row's access state resolved server side.
  *
@@ -119,19 +157,46 @@ function freePeriodEnd(nowMs: number): number {
  * period end still in the future. Deciding it here rather than in the page means
  * the dashboard can never disagree with what the product actually enforces, so a
  * customer whose month has run out is never shown as still paying.
+ *
+ * Each row also carries what that account has run up against its monthly API
+ * allowance this period, so the cost of serving somebody is visible next to what
+ * they pay rather than having to be looked up per customer.
  */
 export async function adminListCustomers(query: unknown): Promise<{
-  customers: (AdminCustomerRow & { hasAccess: boolean; expired: boolean; daysLeft: number | null })[];
+  customers: (AdminCustomerRow & {
+    hasAccess: boolean;
+    expired: boolean;
+    daysLeft: number | null;
+    monthlySpentMicrodollars: number;
+    monthlyLimitMicrodollars: number;
+    monthlyPercent: number | null;
+  })[];
   total: number;
 }> {
   const input = adminListQuerySchema.parse(query);
   const { rows, total } = await listAdminCustomers({ search: input.search, limit: input.limit, offset: input.offset });
   const now = Date.now();
+
+  // One ledger query for the whole page, then matched to each row in memory.
+  const usage = await listUsageByPeriodForUsers(rows.map((row) => row.userId));
+  const periodsByUser = new Map<string, UsagePeriodRow[]>();
+  for (const period of usage) {
+    const existing = periodsByUser.get(period.userId);
+    if (existing) existing.push(period);
+    else periodsByUser.set(period.userId, [period]);
+  }
+
   const customers = rows.map((row) => {
     const paidPlan = Boolean(row.plan && row.plan !== "free" && row.active);
     const hasAccess = paidPlan && row.currentPeriodEndMs !== null && row.currentPeriodEndMs > now;
+    const { spent, limit } = monthlySpendFor(row, periodsByUser.get(row.userId) ?? [], now);
     return {
       ...row,
+      monthlySpentMicrodollars: spent,
+      monthlyLimitMicrodollars: limit,
+      // Null rather than zero when there is no allowance to be a share of, so
+      // the page shows a dash instead of a bar sitting reassuringly at 0%.
+      monthlyPercent: limit > 0 ? Math.min(100, Math.round((spent / limit) * 100)) : null,
       hasAccess,
       // Held a paid plan whose period has already run out: they are on the
       // paywall right now and are the ones to chase for payment.

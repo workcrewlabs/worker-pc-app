@@ -59,6 +59,17 @@ export function adminPage(): string {
   .pill-free { background: #2a2825; color: var(--muted); }
   .pill-soon { background: #241e12; color: var(--warn); }
   .pill-expired { background: #281619; color: #ffc3c3; }
+  /* Spend against the monthly allowance: the figures, then a bar that colours
+     as the account approaches its cap, so a heavy month is visible at a glance
+     down the column without reading a single number. */
+  .usage { min-width: 148px; }
+  .usage-nums { font-size: 12px; white-space: nowrap; }
+  .usage-pct { float: right; color: var(--muted); }
+  .bar { height: 5px; margin-top: 5px; border-radius: 99px; background: #2a2825; overflow: hidden; }
+  .bar span { display: block; height: 100%; border-radius: 99px; }
+  .bar-ok { background: var(--ok); }
+  .bar-warm { background: var(--warn); }
+  .bar-hot { background: var(--danger); }
   .notice { margin: 12px 0 0; padding: 10px 12px; border-radius: 9px; font-size: 13px; }
   .notice-error { background: #281619; color: #ffc3c3; }
   .notice-ok { background: #15241b; color: var(--ok); }
@@ -109,9 +120,9 @@ export function adminPage(): string {
     </div>
     <table>
       <thead>
-        <tr><th>Email</th><th>Plan</th><th>Paid until</th><th>Days left</th><th></th></tr>
+        <tr><th>Email</th><th>Plan</th><th>Paid until</th><th>Days left</th><th>Used this month</th><th></th></tr>
       </thead>
-      <tbody id="rows"><tr><td colspan="5" class="muted">Loading...</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="6" class="muted">Loading...</td></tr></tbody>
     </table>
     <div id="list-note" class="notice hidden"></div>
   </section>
@@ -207,6 +218,30 @@ export function adminPage(): string {
     return d.getDate() + " " + d.toLocaleString("en", { month: "short" }) + " " + d.getFullYear();
   }
 
+  // Microdollars are the ledger's unit: a millionth of a dollar, which the app
+  // shows customers as one token. Here it reads as money, because what this
+  // column is for is knowing what an account costs to serve.
+  function money(microdollars) {
+    return "$" + (Number(microdollars) / 1000000).toFixed(2);
+  }
+
+  function usageCell(row) {
+    // Null means no allowance to be a share of (an account with no plan row),
+    // which is a dash rather than a bar resting at zero.
+    if (row.monthlyPercent === null || row.monthlyPercent === undefined) return '<span class="muted">-</span>';
+    // Re-clamped here because this one goes into a style attribute rather than
+    // into text, so it must be a number this page produced, not a string the
+    // response happened to carry.
+    var pct = Math.max(0, Math.min(100, Number(row.monthlyPercent) || 0));
+    var tone = pct >= 90 ? "bar-hot" : pct >= 60 ? "bar-warm" : "bar-ok";
+    return '<div class="usage">' +
+      '<div class="usage-nums">' + escapeText(money(row.monthlySpentMicrodollars)) +
+        ' <span class="muted">of ' + escapeText(money(row.monthlyLimitMicrodollars)) + "</span>" +
+        '<span class="usage-pct">' + pct + "%</span></div>" +
+      '<div class="bar"><span class="' + tone + '" style="width:' + pct + '%"></span></div>' +
+    "</div>";
+  }
+
   function planPill(row) {
     if (row.expired) return '<span class="pill pill-expired">Expired ' + escapeText(row.plan) + "</span>";
     if (!row.hasAccess) return '<span class="pill pill-free">Free</span>';
@@ -236,7 +271,7 @@ export function adminPage(): string {
     var rows = visibleRows();
     var body = $("rows");
     if (rows.length === 0) {
-      body.innerHTML = '<tr><td colspan="5" class="muted">Nobody here.</td></tr>';
+      body.innerHTML = '<tr><td colspan="6" class="muted">Nobody here.</td></tr>';
       return;
     }
     body.innerHTML = rows.map(function (row) {
@@ -246,6 +281,7 @@ export function adminPage(): string {
         "<td>" + planPill(row) + "</td>" +
         "<td>" + ((paid || row.expired) ? escapeText(formatDate(row.currentPeriodEndMs)) : '<span class="muted">-</span>') + "</td>" +
         "<td>" + (row.daysLeft === null ? '<span class="muted">-</span>' : escapeText(row.daysLeft)) + "</td>" +
+        "<td>" + usageCell(row) + "</td>" +
         '<td class="actions">' +
           '<button class="ghost" data-act="grant" data-id="' + escapeText(row.userId) + '">Add month</button>' +
           '<button class="ghost" data-act="password" data-id="' + escapeText(row.userId) + '">Set password</button>' +
@@ -263,13 +299,18 @@ export function adminPage(): string {
       var paying = customers.filter(function (r) { return r.hasAccess; }).length;
       var soon = customers.filter(function (r) { return r.hasAccess && r.daysLeft !== null && r.daysLeft <= 7; }).length;
       var lapsed = customers.filter(function (r) { return r.expired; }).length;
+      // What the accounts on this page have run up so far in their current
+      // month. Each account renews on its own date, so this is a running total
+      // of live periods rather than one calendar month's bill.
+      var spend = customers.reduce(function (total, r) { return total + (Number(r.monthlySpentMicrodollars) || 0); }, 0);
       $("summary").textContent =
         payload.total + " account" + (payload.total === 1 ? "" : "s") + ", " +
-        paying + " paying, " + soon + " expiring within 7 days, " + lapsed + " already lapsed.";
+        paying + " paying, " + soon + " expiring within 7 days, " + lapsed + " already lapsed. " +
+        "Using " + money(spend) + " of API this period.";
       renderRows();
       note($("list-note"), "", true);
     }).catch(function (error) {
-      $("rows").innerHTML = '<tr><td colspan="5" class="muted">Could not load.</td></tr>';
+      $("rows").innerHTML = '<tr><td colspan="6" class="muted">Could not load.</td></tr>';
       note($("list-note"), error.message, false);
     });
   }
