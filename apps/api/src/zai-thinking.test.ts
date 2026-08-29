@@ -17,7 +17,7 @@ vi.mock("./config.js", () => ({
   }
 }));
 
-const { MIN_THINKING_TOKENS, thinkingBudgetFor } = await import("./anthropic.js");
+const { MIN_THINKING_TOKENS, thinkingBudgetFor, withoutForeignThinking } = await import("./anthropic.js");
 
 describe("room to think on an Economy step", () => {
   it("asks for it on the Economy engine, which refuses the request without it", () => {
@@ -46,5 +46,65 @@ describe("room to think on an Economy step", () => {
     // A token or two of thinking buys nothing and still costs a round trip.
     expect(thinkingBudgetFor("glm", 200)).toBe(0);
     expect(MIN_THINKING_TOKENS).toBeGreaterThanOrEqual(64);
+  });
+});
+
+// A run does not always stay on one engine. The moment a screenshot enters the
+// history the rest of the run moves to Claude, because the Economy engine cannot
+// see images. The history moved with it, still carrying the Economy engine's
+// SIGNED thinking blocks, and Claude rejected the whole request on a signature
+// it never issued: "messages.1.content.0: Invalid `signature` in `thinking`
+// block". Every Economy task that took a screenshot part way through died
+// mid-task, after real work, which is most tasks that look at the screen.
+
+const THOUGHT = { type: "thinking", thinking: "let me look", signature: "sig-from-the-other-engine" };
+
+describe("handing a run to a different engine", () => {
+  it("strips thinking the receiving engine cannot validate", () => {
+    const history = [
+      { role: "user", content: [{ type: "text", text: "open libra" }] },
+      { role: "assistant", content: [THOUGHT, { type: "text", text: "opening it" }] }
+    ];
+    const sent = withoutForeignThinking(history, false) as typeof history;
+    expect(sent[1].content).toEqual([{ type: "text", text: "opening it" }]);
+  });
+
+  it("strips redacted thinking too, which is signed the same way", () => {
+    const history = [{ role: "assistant", content: [{ type: "redacted_thinking", data: "x" }, { type: "text", text: "hi" }] }];
+    expect((withoutForeignThinking(history, false) as typeof history)[0].content).toHaveLength(1);
+  });
+
+  it("keeps the answer and the tool call beside it", () => {
+    // Only the private reasoning goes. Dropping a tool_use would break the
+    // pairing the provider validates on the next request.
+    const call = { type: "tool_use", id: "t1", name: "windows_action", input: {} };
+    const history = [{ role: "assistant", content: [THOUGHT, { type: "text", text: "clicking" }, call] }];
+    const sent = withoutForeignThinking(history, false) as typeof history;
+    expect(sent[0].content).toEqual([{ type: "text", text: "clicking" }, call]);
+  });
+
+  it("never leaves an empty turn behind", () => {
+    // A message with no content at all is rejected, which would trade one
+    // broken history for another.
+    const history = [{ role: "assistant", content: [THOUGHT] }];
+    const sent = withoutForeignThinking(history, false) as { content: { type: string }[] }[];
+    expect(sent[0].content).toHaveLength(1);
+    expect(sent[0].content[0].type).toBe("text");
+  });
+
+  it("leaves the history alone while the run stays on the thinking engine", () => {
+    // Same engine, so the signatures are its own and it needs them back.
+    const history = [{ role: "assistant", content: [THOUGHT, { type: "text", text: "opening it" }] }];
+    expect(withoutForeignThinking(history, true)).toBe(history);
+  });
+
+  it("returns the very same array when there was nothing to strip", () => {
+    const history = [{ role: "user", content: [{ type: "text", text: "hello" }] }];
+    expect(withoutForeignThinking(history, false)).toBe(history);
+  });
+
+  it("copes with whatever shape the history is in", () => {
+    expect(withoutForeignThinking([null, "x", { role: "user" }, { role: "user", content: "plain" }], false))
+      .toEqual([null, "x", { role: "user" }, { role: "user", content: "plain" }]);
   });
 });

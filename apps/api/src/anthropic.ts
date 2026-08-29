@@ -424,6 +424,46 @@ export function withoutUnseeableImages(messages: unknown[], tier: ConcreteModelT
   return replaced ? cleaned : messages;
 }
 
+/**
+ * Drop thinking blocks the engine about to be called did not write itself.
+ *
+ * An engine that thinks signs each thinking block, and only the engine that
+ * signed one can validate it. That is fine while a run stays on one engine, and
+ * a run does not always stay on one: the moment a screenshot enters the history
+ * the rest of the run moves to Claude, because the Economy engine cannot see
+ * images. The history moved with it, still carrying the Economy engine's signed
+ * thinking, and Claude rejected the whole request on a signature it never
+ * issued: "messages.1.content.0: Invalid `signature` in `thinking` block". The
+ * run died mid-task, after real work, on every Economy task that took a
+ * screenshot part way through, which is most tasks that look at the screen.
+ *
+ * Keyed off whether THIS request enables thinking, which is the same condition
+ * that decides whether the receiving engine will validate these blocks at all.
+ * Nothing of substance is lost: thinking is the planner's private reasoning
+ * about a step already taken, never the action, and the answer and tool calls
+ * beside it are untouched.
+ */
+export function withoutForeignThinking(messages: unknown[], thinkingEnabled: boolean): unknown[] {
+  if (thinkingEnabled) return messages;
+  let stripped = false;
+  const cleaned = messages.map((message) => {
+    if (!message || typeof message !== "object") return message;
+    const { content, ...rest } = message as { content?: unknown };
+    if (!Array.isArray(content)) return message;
+    const blocks = content.filter((block) => {
+      const type = block && typeof block === "object" ? (block as { type?: string }).type : undefined;
+      if (type !== "thinking" && type !== "redacted_thinking") return true;
+      stripped = true;
+      return false;
+    });
+    // Never send an empty turn: providers reject a message with no content at
+    // all, which would trade one broken history for another.
+    if (blocks.length === 0) return { ...rest, content: [{ type: "text", text: "(thought about the previous step)" }] };
+    return { ...rest, content: blocks };
+  });
+  return stripped ? cleaned : messages;
+}
+
 /** How long one planning request may take before it is treated as failed. The
  *  Economy engine gets slow on a long history, and a step that has run this
  *  long is not coming back; better to retry or fall back than to hang a run. */
@@ -525,7 +565,9 @@ export async function callModel(input: {
     tool_choice: { type: "auto", disable_parallel_tool_use: true },
     ...(supportsEffort ? { output_config: { effort: AUTOMATION_EFFORT } } : {}),
     ...(thinkingTokens > 0 ? { thinking: { type: "enabled" as const, budget_tokens: thinkingTokens } } : {}),
-    messages: withRollingCacheBreakpoint(withoutUnseeableImages(input.messages, input.tier))
+    messages: withRollingCacheBreakpoint(
+      withoutForeignThinking(withoutUnseeableImages(input.messages, input.tier), thinkingTokens > 0)
+    )
   };
   // A provider that is slow, unreachable, or answering with a gateway's HTML
   // page throws here rather than returning an HTTP error, and a raw throw was
