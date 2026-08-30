@@ -91,7 +91,9 @@ export type AutomationRunner = {
   pending: { action: AutomationAction; label: string; screenshot?: ScreenCapture; point?: { x: number; y: number } } | null;
   // workingFolder, when set, is the absolute path of the user's chosen folder; any
   // shell command in this run executes inside it instead of the hidden workspace.
-  run: (task: string, model: ModelTier, label?: string, workingFolder?: string) => Promise<RunOutcome>;
+  // conversationId, when set, is the chat this run continues, so a follow-up is
+  // recorded there rather than opening another chat in Recents.
+  run: (task: string, model: ModelTier, label?: string, workingFolder?: string, conversationId?: string) => Promise<RunOutcome>;
   /** Hand a message the user typed mid-run to the model with the next step.
    * Returns false when no run is in flight to hear it. */
   say: (text: string) => boolean;
@@ -372,7 +374,7 @@ export function useAutomationRunner(): AutomationRunner {
     return "complete";
   }
 
-  async function run(task: string, model: ModelTier, runLabel = "", workingFolder?: string): Promise<RunOutcome> {
+  async function run(task: string, model: ModelTier, runLabel = "", workingFolder?: string, conversationId?: string): Promise<RunOutcome> {
     // Tracked alongside every setState below, so the outcome is known here and
     // not read back out of React.
     const outcome: RunOutcome = { status: "idle", summary: "", error: "", steps: [] };
@@ -450,7 +452,7 @@ export function useAutomationRunner(): AutomationRunner {
       setTokens(0);
       interjections.current = [];
       const kind: RunKind = workingFolder ? "folder" : "screen";
-      const created = await window.workcrew.api.createRun(trimmed, model, kind);
+      const created = await window.workcrew.api.createRun(trimmed, model, kind, conversationId);
       const runId = created.runId;
       if (created.conversationId) outcome.conversationId = created.conversationId;
       let result: { toolUseId: string; ok: boolean; output: string; imageBase64?: string } | undefined;

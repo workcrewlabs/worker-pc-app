@@ -53,6 +53,7 @@ import {
   withAnsweredToolUseOnly,
   type ModelResult
 } from "./anthropic.js";
+import { conversationForRun } from "./run-conversation.js";
 import { economyEngineAvailable, provider, routeAutomationTier, type ConcreteModelTier } from "./model-registry.js";
 import { processAndStoreAttachment } from "./attachments.js";
 import { cancelSubscriptionForDeletion, changePlan, createCheckout, createPortal, handleStripeWebhook } from "./billing.js";
@@ -1092,13 +1093,16 @@ app.post("/v1/runs", routeLimit(30), async (request) => {
   // A failure here must never stop the work starting, so it is best effort.
   let conversationId: string | null = null;
   try {
-    const conversation = await createConversation({
-      id: randomUUID(),
+    // A follow-up is filed in the chat it continues rather than opening another
+    // one. The requested id is checked against the verified user inside; see
+    // run-conversation.ts for why an id that is not theirs is ignored rather
+    // than refused.
+    conversationId = await conversationForRun({
       userId,
-      title: runTitle(body.task),
-      model: body.model
+      task: body.task,
+      model: body.model,
+      requestedId: body.conversationId
     });
-    conversationId = conversation.id;
     await addMessage({
       id: randomUUID(),
       conversationId,

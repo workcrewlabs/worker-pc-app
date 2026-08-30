@@ -305,7 +305,12 @@ export const createRunSchema = z.object({
   task: z.string().trim().min(3).max(20_000),
   model: modelTierSchema.default("auto"),
   // Older desktop builds do not send this, and a run they start is screen work.
-  kind: runKindSchema.default("screen")
+  kind: runKindSchema.default("screen"),
+  // The chat this run belongs to, when it is a follow-up in one that already
+  // exists. Folder work sends every turn through a run, so without this the same
+  // chat was filed into Recents once per message. Ownership is checked against
+  // the verified user server side; an id that is not theirs is simply ignored.
+  conversationId: z.string().uuid().optional()
 }).strict();
 
 export const runToolResultSchema = z.object({

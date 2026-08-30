@@ -126,8 +126,10 @@ const workcrew = {
     portal: () => ipcRenderer.invoke("api:portal"),
     // conversationId is absent on a backend older than this field; the caller
     // falls back to its own key, so nothing breaks either way.
-    createRun: (task: string, model: ModelTier, kind: RunKind = "screen"): Promise<{ runId: string; conversationId?: string | null }> =>
-      ipcRenderer.invoke("api:create-run", { task, model, kind }),
+    // conversationId names the chat a follow-up belongs to, so a second message
+    // lands in the same chat instead of starting another one in Recents.
+    createRun: (task: string, model: ModelTier, kind: RunKind = "screen", conversationId?: string): Promise<{ runId: string; conversationId?: string | null }> =>
+      ipcRenderer.invoke("api:create-run", { task, model, kind, ...(conversationId ? { conversationId } : {}) }),
     nextRun: (runId: string, result?: { toolUseId: string; ok: boolean; output: string; imageBase64?: string }, say?: string): Promise<RunStepResponse> => ipcRenderer.invoke("api:next-run", runId, { result, say })
   },
   chat: {

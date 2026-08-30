@@ -246,7 +246,10 @@ export function ConversationPane({
     setAutomationMode(true);
     if (folder) {
       runChain.current = folderPreamble(folder, trimmed)
-        .then((preamble) => runner.run(preamble + trimmed, model, label, folder.path))
+        // Pass the chat this pane is already in, so a follow-up is recorded there.
+        // Folder work sends every turn through a run, so without it each message
+        // opened another copy of the same chat in Recents.
+        .then((preamble) => runner.run(preamble + trimmed, model, label, folder.path, chat.conversationId))
         .then((done) => {
           // Move the whole finished run into the transcript: the answer, the
           // work that produced it, and any failure. Held only in runner state
@@ -282,7 +285,7 @@ export function ConversationPane({
     } else {
       // A task on the computer is kept as its own card in the transcript, so the
       // next one does not erase it and Run again is still there afterwards.
-      runChain.current = runner.run(trimmed, model, label)
+      runChain.current = runner.run(trimmed, model, label, undefined, chat.conversationId)
         .then((done) => {
           // Adopt the conversation the backend recorded this task in, so the
           // transcript is filed under the same id Recents opens it by. Without
