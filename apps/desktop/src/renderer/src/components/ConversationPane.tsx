@@ -342,8 +342,11 @@ export function ConversationPane({
   useEffect(() => { runner.setAutoApprove(alwaysAllow); /* eslint-disable-next-line */ }, [alwaysAllow]);
   useEffect(() => { runner.setPermissions(permissions); /* eslint-disable-next-line */ }, [permissions]);
 
-  // A computer task cannot run in the background (it needs the real mouse and
-  // screen), so pause it when this pane is not on screen and resume when it is.
+  // Tell the runner whether this pane is on screen. It does not stop the run:
+  // the runner parks only when it reaches an action that drives the real mouse
+  // and screen, or one needing an approval nobody could give from a hidden pane.
+  // Folder work carries on, so opening another chat no longer freezes a
+  // spreadsheet or a file half written.
   useEffect(() => {
     if (active) runner.resume();
     else runner.pause();

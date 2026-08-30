@@ -20,6 +20,15 @@ import { browserRefLabel, buildRecipe, getRecipe, isReplayEnabled, normalizeTask
 // half-finished edit. The backend enforces the same two numbers.
 const MAX_STEPS: Record<RunKind, number> = { screen: 24, folder: 120 };
 
+// Whether an action drives the user's real mouse, keyboard or screen, and so
+// cannot happen while its conversation is off screen. Running a command,
+// writing a file and finishing touch none of those: they are ordinary work in a
+// folder the user attached, and stopping them the moment somebody opens another
+// chat is what froze a spreadsheet halfway through being built.
+export function needsTheMachine(action: AutomationAction): boolean {
+  return action.kind === "windows" || action.kind === "browser";
+}
+
 // Windows commands that do NOT move the mouse or type (read-only or app launch).
 // The overlay is raised for every OTHER windows command, so a future command that
 // drives input cannot silently bypass the "do not move the mouse" overlay.
@@ -99,9 +108,10 @@ export type AutomationRunner = {
   // from React state, which lags a tick), this is set the instant a run starts,
   // so callers can avoid launching a second run in the same tick.
   isBusy: () => boolean;
-  // A computer/browser task needs the real mouse and screen, so it cannot run in
-  // the background. When its conversation loses focus it is paused between steps
-  // (the mouse is released) and resumes from the same place when reopened.
+  // True only while the run has actually stopped, waiting for its conversation to
+  // come back on screen. That happens when the next action drives the real mouse
+  // and screen, or needs an approval nobody can give from a pane they cannot see.
+  // Work that needs neither keeps going in the background and never reports this.
   paused: boolean;
   pause: () => void;
   resume: () => void;
@@ -123,10 +133,13 @@ export function useAutomationRunner(): AutomationRunner {
   const [label, setLabel] = useState("");
   const [tokens, setTokens] = useState(0);
   const [pending, setPending] = useState<{ action: AutomationAction; label: string; screenshot?: ScreenCapture; point?: { x: number; y: number } } | null>(null);
-  // A paused run is one whose conversation is no longer on screen. The loop parks
-  // between steps until resumed, so the mouse is never driven for a background chat.
+  // Whether this run's conversation is off screen. On its own this stops nothing:
+  // it is the loop that decides, per action, whether that matters.
+  const backgroundedRef = useRef(false);
+  // Whether the loop is actually parked, waiting for its conversation to come
+  // back. Only this is reported as "paused", because it is the only state where
+  // the run really has stopped moving and opening the chat is what restarts it.
   const [paused, setPaused] = useState(false);
-  const pausedRef = useRef(false);
   const resumeResolve = useRef<(() => void) | null>(null);
 
   // The user's chosen working folder for the current run (absolute path), passed to
@@ -224,32 +237,35 @@ export function useAutomationRunner(): AutomationRunner {
     }
   }
 
-  // Park the loop while paused. Called between steps, before the next action is
-  // chosen or executed, so a pause never interrupts an action mid-flight; it takes
-  // effect at the next safe boundary. The mouse overlay is lowered while parked so
-  // the user has their cursor back, and re-raised by the next input action.
+  // Park the loop until this run's conversation is back on screen. Called only
+  // before an action that genuinely needs it, so a pause never interrupts an
+  // action mid-flight and never stalls work that did not need the user present.
+  // The mouse overlay is lowered while parked so the user has their cursor back,
+  // and re-raised by the next input action.
   async function waitIfPaused(): Promise<void> {
-    if (!pausedRef.current) return;
+    if (!backgroundedRef.current) return;
     hideOverlay();
+    setPaused(true);
     await new Promise<void>((resolve) => {
       resumeResolve.current = resolve;
     });
     resumeResolve.current = null;
-  }
-
-  // Pause the run (its conversation left the screen). The in-flight action, if any,
-  // finishes; the loop then parks at the next boundary.
-  function pause(): void {
-    if (!runningRef.current || pausedRef.current) return;
-    pausedRef.current = true;
-    setPaused(true);
-  }
-
-  // Resume a paused run from where it stopped (its conversation is on screen again).
-  function resume(): void {
-    if (!pausedRef.current) return;
-    pausedRef.current = false;
     setPaused(false);
+  }
+
+  // This run's conversation left the screen. Nothing stops here: the loop keeps
+  // planning, reading and writing, and parks only when it reaches something that
+  // needs the screen or the user.
+  function pause(): void {
+    if (!runningRef.current) return;
+    backgroundedRef.current = true;
+  }
+
+  // The conversation is on screen again: let a parked run carry on from exactly
+  // where it stopped.
+  function resume(): void {
+    if (!backgroundedRef.current) return;
+    backgroundedRef.current = false;
     const release = resumeResolve.current;
     resumeResolve.current = null;
     release?.();
@@ -299,15 +315,13 @@ export function useAutomationRunner(): AutomationRunner {
 
   function stop(): void {
     stoppedRef.current = true;
-    // If the run is parked (paused), release it so the loop wakes, sees the stop
-    // flag, and exits cleanly instead of hanging on the resume promise.
-    if (pausedRef.current) {
-      pausedRef.current = false;
-      setPaused(false);
-      const release = resumeResolve.current;
-      resumeResolve.current = null;
-      release?.();
-    }
+    // If the loop is parked waiting for its conversation, release it so it wakes,
+    // sees the stop flag, and exits cleanly instead of hanging on the promise.
+    backgroundedRef.current = false;
+    setPaused(false);
+    const release = resumeResolve.current;
+    resumeResolve.current = null;
+    release?.();
     // Stop the mouse-driving helper first; the overlay is lowered by the run's
     // exit path (or the main-process safety timer) once the in-flight action has
     // actually settled, so it never disappears while the mouse is still moving.
@@ -322,9 +336,11 @@ export function useAutomationRunner(): AutomationRunner {
   // a step or stops the run.
   async function replayRecipe(recipe: Recipe): Promise<"complete" | "failed" | "stopped"> {
     for (const step of recipe.steps) {
-      await waitIfPaused();
-      if (stoppedRef.current) return "stopped";
       const action = step.action;
+      // Same rule as the model loop: wait for the conversation only when this
+      // step needs the screen or an approval.
+      if (needsTheMachine(action) || shouldPrompt(action)) await waitIfPaused();
+      if (stoppedRef.current) return "stopped";
       const id = stepId();
       writeSteps((current) => [...current, { id, label: activityLine(action, true), doing: activityLine(action, false), detail: actionDetail(action), status: "running" }]);
 
@@ -380,7 +396,7 @@ export function useAutomationRunner(): AutomationRunner {
     // strand the runner with isBusy() stuck true until an app restart.
     try {
     stoppedRef.current = false;
-    pausedRef.current = false;
+    backgroundedRef.current = false;
     setPaused(false);
     mouseActiveRef.current = false;
     writeSteps(() => []);
@@ -443,9 +459,10 @@ export function useAutomationRunner(): AutomationRunner {
       let ended = false;
 
       for (let step = 0; step < MAX_STEPS[kind]; step += 1) {
-        // Park here if the conversation left the screen; resume picks up the same
-        // run (the backend run id is still valid, so no work is lost).
-        await waitIfPaused();
+        // Deliberately no park here. The loop used to stop dead at the top of
+        // every step whenever its conversation was off screen, which meant
+        // opening a new chat froze folder work that never needed the screen at
+        // all. It now parks further down, and only for an action that does.
         if (stoppedRef.current) {
           // Say so. A stopped run used to end with no words at all, so the chat
           // showed the work it had done and then nothing, which reads exactly
@@ -498,6 +515,22 @@ export function useAutomationRunner(): AutomationRunner {
         }
 
         const action = response.action;
+        // Park here, at the one boundary where being off screen actually
+        // matters: an action that drives the mouse cannot run while the user is
+        // elsewhere, and an action needing approval cannot be approved from a
+        // pane nobody can see. Everything else (planning, reading, writing,
+        // running a command) carries on in the background. Resume picks up the
+        // same run, since the backend run id stays valid, so no work is lost.
+        if (needsTheMachine(action) || shouldPrompt(action, lastSnapshot)) {
+          await waitIfPaused();
+          if (stoppedRef.current) {
+            setSummary("Stopped.");
+            setStatus("stopped");
+            settle("stopped", "Stopped.");
+            ended = true;
+            break;
+          }
+        }
         // Tracked per action so a failed or declined step is excluded from the
         // saved recipe (only the clean successful path is cached).
         const recordEntry = { action, snapshot: lastSnapshot, ok: true };
@@ -590,7 +623,7 @@ export function useAutomationRunner(): AutomationRunner {
     }
     } finally {
       runningRef.current = false;
-      pausedRef.current = false;
+      backgroundedRef.current = false;
       setPaused(false);
     }
     outcome.steps = stepsRef.current;
