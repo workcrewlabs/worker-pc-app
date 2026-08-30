@@ -6,6 +6,8 @@ export function actionLabel(action: AutomationAction): string {
   if (action.kind === "finish") return "Finishing up";
   if (action.kind === "shell") return "Run a command";
   if (action.kind === "write_file") return "Write a file";
+  if (action.kind === "read_file") return "Read a file";
+  if (action.kind === "edit_file") return "Edit a file";
   if (action.kind === "browser") {
     switch (action.command) {
       case "open":
@@ -116,6 +118,14 @@ export function activityLine(action: AutomationAction, done: boolean): string {
       const file = shortPath(action.path);
       return { doing: `Writing ${file}`, done: `Wrote ${file}` };
     }
+    if (action.kind === "read_file") {
+      const file = shortPath(action.path);
+      return { doing: `Reading ${file}`, done: `Read ${file}` };
+    }
+    if (action.kind === "edit_file") {
+      const file = shortPath(action.path);
+      return { doing: `Editing ${file}`, done: `Edited ${file}` };
+    }
     if (action.kind === "finish") return { doing: "Finishing up", done: "Finished" };
     // Browser and desktop steps already have readable labels; the target they
     // act on is the part worth adding.
@@ -159,6 +169,7 @@ export function summarizeActivity(steps: { label: string; status: string }[]): s
 export function actionDetail(action: AutomationAction): string | undefined {
   if (action.kind === "shell") return action.command;
   if (action.kind === "write_file") return action.path;
+  if (action.kind === "read_file" || action.kind === "edit_file") return action.path;
   if (action.kind === "browser") return action.url ?? action.value ?? action.target;
   if (action.kind === "windows") return action.application ?? action.windowTitle ?? action.control ?? action.value;
   return undefined;

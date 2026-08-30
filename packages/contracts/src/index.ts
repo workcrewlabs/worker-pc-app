@@ -222,6 +222,41 @@ export const writeFileActionSchema = z.object({
   content: z.string().max(400_000)
 }).strict();
 
+// Read part or all of one file inside the working folder, with line numbers.
+//
+// Reading used to mean shelling out to `type file`, which returns the whole
+// thing with no line numbers and no way to ask for a portion, so a large file
+// either flooded the context or was skipped. offset and limit make a 4,000 line
+// file readable in pieces, and the line numbers are what edit_file needs to be
+// aimed accurately.
+export const readFileActionSchema = z.object({
+  kind: z.literal("read_file"),
+  path: z.string().min(1).max(1_000),
+  /** First line to return, 1-based. Defaults to the start of the file. */
+  offset: z.number().int().min(1).max(1_000_000).optional(),
+  /** How many lines to return. Defaults to a bounded page. */
+  limit: z.number().int().min(1).max(4_000).optional()
+}).strict();
+
+// Replace an exact piece of text inside one file, leaving the rest untouched.
+//
+// The counterpart to write_file, and the safer of the two: write_file replaces
+// the WHOLE file, so changing one line means regenerating every other line
+// perfectly. A model under pressure sends only the part it changed, which is how
+// a 15 line handler once arrived as the entire content of a 1,000 line file.
+// Editing by find-and-replace cannot destroy what it does not mention.
+export const editFileActionSchema = z.object({
+  kind: z.literal("edit_file"),
+  path: z.string().min(1).max(1_000),
+  /** The exact text to find, including its indentation. */
+  find: z.string().min(1).max(100_000),
+  /** What to put in its place. Empty deletes the found text. */
+  replace: z.string().max(100_000),
+  /** Replace every occurrence. Off by default, so an edit meant for one place
+   *  cannot silently change ten. */
+  all: z.boolean().optional()
+}).strict();
+
 export const finishActionSchema = z.object({
   kind: z.literal("finish"),
   summary: z.string().min(1).max(10_000)
@@ -232,6 +267,8 @@ export const automationActionSchema = z.discriminatedUnion("kind", [
   windowsActionSchema,
   shellActionSchema,
   writeFileActionSchema,
+  readFileActionSchema,
+  editFileActionSchema,
   finishActionSchema
 ]);
 export type AutomationAction = z.infer<typeof automationActionSchema>;
@@ -239,6 +276,8 @@ export type BrowserAction = z.infer<typeof browserActionSchema>;
 export type WindowsAction = z.infer<typeof windowsActionSchema>;
 export type ShellAction = z.infer<typeof shellActionSchema>;
 export type WriteFileAction = z.infer<typeof writeFileActionSchema>;
+export type ReadFileAction = z.infer<typeof readFileActionSchema>;
+export type EditFileAction = z.infer<typeof editFileActionSchema>;
 
 // ---------------------------------------------------------------------------
 // Click recording -> AI-written routine.

@@ -7,6 +7,8 @@ import {
   recordedEventSchema,
   shellActionSchema,
   writeFileActionSchema,
+  readFileActionSchema,
+  editFileActionSchema,
   summarizeRecordingRequestSchema,
   chatSendSchema,
   chatDeltaFrameSchema,
@@ -41,6 +43,7 @@ import { extractPdfText, looksLikeText } from "./pdf-text.js";
 import { EXPORT_EXTENSIONS, generateExport, sanitizeExportName, type ExportExtension } from "./file-export.js";
 import { readProjectInstructions } from "./project-instructions.js";
 import { cancelRunningCommands, confinePath, looksLikeTruncatedWrite, resolveWorkingDir, runShellCommand } from "./shell-cli.js";
+import { applyEdit, formatFileSlice, readFooter, resolveInsideFolder } from "./file-tools.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -810,6 +813,80 @@ function registerIpc(): void {
       return `Could not write the file: ${error instanceof Error ? error.message : String(error)}`;
     }
     return `Wrote ${nextBytes} bytes to ${relative(base, target) || parsed.path}`;
+  });
+
+  // Read part or all of one file, with line numbers. A read, so unlike writing
+  // it is never approval-gated; the confinement to the working folder is what
+  // keeps it honest.
+  ipcMain.handle("file:read", async (_event, raw) => {
+    const input = (raw ?? {}) as { path?: unknown; offset?: unknown; limit?: unknown; cwd?: unknown };
+    const parsed = readFileActionSchema.parse({
+      kind: "read_file",
+      path: input.path,
+      ...(input.offset === undefined ? {} : { offset: input.offset }),
+      ...(input.limit === undefined ? {} : { limit: input.limit })
+    });
+    const cwd = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd : null;
+    const base = resolve(await resolveWorkingDir(cwd));
+    const resolved = resolveInsideFolder(base, parsed.path);
+    if ("error" in resolved) return resolved.error;
+    const fs = await import("node:fs/promises");
+    const { relative } = await import("node:path");
+    const name = relative(base, resolved.path) || parsed.path;
+    let content: string;
+    try {
+      const info = await fs.stat(resolved.path);
+      if (info.isDirectory()) return `Could not read ${name}: it is a folder, not a file.`;
+      // A binary file read as text is noise that costs a fortune in context and
+      // tells the model nothing, so it is refused with the reason.
+      if (info.size > 8_000_000) return `Could not read ${name}: it is ${Math.round(info.size / 1_000_000)} MB, too large to read as text.`;
+      content = await fs.readFile(resolved.path, "utf8");
+    } catch (error) {
+      const reason = error instanceof Error && "code" in error && error.code === "ENOENT"
+        ? "there is no file at that path"
+        : error instanceof Error ? error.message : String(error);
+      return `Could not read ${name}: ${reason}.`;
+    }
+    const slice = formatFileSlice(content, { offset: parsed.offset, limit: parsed.limit });
+    return `${name} (lines ${slice.from}-${slice.to} of ${slice.totalLines})\n${slice.text}${readFooter(slice.totalLines, slice.to)}`;
+  });
+
+  // Replace an exact piece of text in one file. A write, so it goes through the
+  // same approval gate as write_file.
+  ipcMain.handle("file:edit", async (_event, raw) => {
+    const input = (raw ?? {}) as { path?: unknown; find?: unknown; replace?: unknown; all?: unknown; cwd?: unknown };
+    const parsed = editFileActionSchema.parse({
+      kind: "edit_file",
+      path: input.path,
+      find: input.find,
+      replace: input.replace,
+      ...(input.all === undefined ? {} : { all: input.all })
+    });
+    const cwd = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd : null;
+    const base = resolve(await resolveWorkingDir(cwd));
+    const resolved = resolveInsideFolder(base, parsed.path);
+    if ("error" in resolved) return resolved.error;
+    const fs = await import("node:fs/promises");
+    const { relative } = await import("node:path");
+    const name = relative(base, resolved.path) || parsed.path;
+    let content: string;
+    try {
+      content = await fs.readFile(resolved.path, "utf8");
+    } catch (error) {
+      const reason = error instanceof Error && "code" in error && error.code === "ENOENT"
+        ? "there is no file at that path. Use write_file to create it"
+        : error instanceof Error ? error.message : String(error);
+      return `Could not edit ${name}: ${reason}.`;
+    }
+    const outcome = applyEdit(content, { find: parsed.find, replace: parsed.replace, all: parsed.all });
+    if (!outcome.ok) return outcome.message;
+    try {
+      await fs.writeFile(resolved.path, outcome.content, "utf8");
+    } catch (error) {
+      return `Could not edit ${name}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    const times = outcome.replacements === 1 ? "1 place" : `${outcome.replacements} places`;
+    return `Edited ${name} in ${times}.`;
   });
 
   // Whether a dropped path is a file or a folder, so dragging a folder into the

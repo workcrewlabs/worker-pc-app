@@ -5,8 +5,12 @@ export function actionNeedsApproval(action: AutomationAction): boolean {
   // Running a shell command on the user's computer always requires approval.
   if (action.kind === "shell") return true;
   // Writing a file inside the working folder is a write like shell: it asks
-  // unless "Always allow" covers it.
+  // unless "Always allow" covers it. Editing one changes the user's file just as
+  // surely, so it is gated identically; reading one changes nothing and never
+  // prompts, like every other read.
   if (action.kind === "write_file") return true;
+  if (action.kind === "edit_file") return true;
+  if (action.kind === "read_file") return false;
   if (action.kind === "browser") {
     return new Set(["click", "fill", "type", "press", "select", "check", "uncheck", "click-selector", "fill-selector"]).has(action.command);
   }

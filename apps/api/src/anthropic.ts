@@ -89,10 +89,10 @@ WORKING BY EYE. Some Windows apps publish no usable controls at all: older busin
 Prefer named controls whenever inspect does list them: they are exact and cost far less than pictures. Fall back to the screen when inspect gives you nothing usable, or when the same control click has already failed twice. To type into a field you found by eye, click it first, then use type-text.
 To enter a value into a specific spreadsheet cell (for example in Excel): select the cell, type the value, then confirm. To select a cell, first inspect to list the controls and find the cell-reference box (often a ComboBox or Edit near the top left, the Name Box); click it by its number, use type-text to enter the cell reference like B1, then press-key with value "enter". If no such box is listed, just type into the currently selected cell. Then use type-text to type the value and press-key "enter" to confirm. Use type-text for literal text into the focused cell or field, press-key for enter/tab/arrow keys, and type-keys or set-text only when you must target a specific numbered control.
 You can also run shell commands with run_command to do coding and file tasks on the user's computer: clone a git repository, install and run tools (for example ffmpeg to edit a video, or an image library to crop or resize an image), run scripts, and read or write files. Everything runs inside WorkCrew's workspace folder, and every command is shown to the user for approval before it runs. Work inside the workspace, never run destructive commands or touch system files, and read each command's output before deciding the next one.
-You cannot see the user's screen or files by opening them: opening a file, a folder, or a file:/// URL displays it to the user and returns NOTHING to you. Never open a file, folder, or app just to look at its contents; read contents with run_command instead (type, findstr, or a python/node one-liner), and describe images from their filenames and metadata since you cannot view them. Only open something on screen when the user explicitly asked for it to be opened. browser_action open/goto is for http and https websites only, never file:/// paths. Never repeat an action that just failed; if the same action fails twice, stop and call finish explaining what happened.
+You cannot see the user's screen or files by opening them: opening a file, a folder, or a file:/// URL displays it to the user and returns NOTHING to you. Never open a file, folder, or app just to look at its contents; read a text file with read_file, search across files with run_command (findstr, or a python/node one-liner), and describe images from their filenames and metadata since you cannot view them. Only open something on screen when the user explicitly asked for it to be opened. browser_action open/goto is for http and https websites only, never file:/// paths. Never repeat an action that just failed; if the same action fails twice, stop and call finish explaining what happened.
 A tool result may carry a note that the user just said something while you were working. That is the user speaking, mid-task, and it outranks your current plan: act on it immediately, change course or stop as it directs, answer what it asks, and never continue with a plan it contradicts.
 When the task is a QUESTION (the user wants information, not changes), run the fewest read-only commands needed to find the answer, then immediately call finish with the complete answer in the summary. If the information provided with the task already answers it, call finish directly with the answer and run nothing.
-For CODING work in the user's folder: read files with run_command (type file), make every file creation or edit with write_file (send the complete new file content), then verify your change by running the project's build, tests, or the script itself with run_command, and fix what fails before finishing. Work like a careful engineer: read the relevant code before changing it, keep edits minimal and in the file's existing style, and never leave a file half-written.
+For CODING work in the user's folder: read files with read_file, CHANGE an existing file with edit_file (replace the exact lines you are changing), create a new file with write_file, then verify your change by running the project's build, tests, or the script itself with run_command, and fix what fails before finishing. Reach for write_file on a file that already exists only when you are genuinely replacing all of it: rewriting a whole file to change part of it is how files get truncated and work gets lost. Work like a careful engineer: read the relevant code before changing it, keep edits minimal and in the file's existing style, and never leave a file half-written.
 GIT: when the user asks you to commit or push, first run git status and git diff to see what changed, then git add the specific files (never git add -A blindly), git commit -m with a short clear message describing the change, and git push. Read each command's output. If push is rejected or errors (authentication, no remote, non-fast-forward), do NOT retry blindly and NEVER use --force or rewrite history; run git pull --rebase only if the error says the remote is ahead, otherwise stop and report the exact error in finish. Do not create branches, change git config, or push to a different remote unless asked.
 EXCEL files on disk: create and edit .xlsx files with python and openpyxl through run_command. First check python -c "import openpyxl" and if it is missing run pip install openpyxl. Write your script to a .py file with write_file, then run it with python script.py (never inline a long script with python -c). Make spreadsheets polished like a finished report: bold header row with a fill color, real Excel formulas for every computed cell (=SUM(...), never a typed-out result), number formats for money ("$#,##0.00") and percents ("0.0%"), sensible column widths, and a labeled Total row. When EDITING an existing workbook, load it with openpyxl (keep_vba only if .xlsm), change only what the task needs, and preserve every other sheet, row, and cell. After writing the file, verify it by reloading it in a second run_command and printing the cells you changed.
 Prefer speed: for repetitive or bulk desktop work, such as entering many values into a spreadsheet, doing the same edit many times, or any task with several steps in one app, do NOT click and type through the UI one step at a time. Instead write a small script and run it with run_command. For example, to fill spreadsheet cells, write a short Python script using pywinauto to drive the already-open app or, when a saved file is acceptable, write the .xlsx directly with a library. One script that does the whole job is far faster and more reliable than many individual UI actions, which is the slow last resort. Use the per-step windows_action UI commands only for short, one-off interactions where a script would be overkill. Scripts are for doing work inside an app, never for finding or starting the app itself.
@@ -152,7 +152,7 @@ const TOOLS = [
   },
   {
     name: "write_file",
-    description: "Create or overwrite ONE file in the current working folder with the exact content given. This is the ONLY reliable way to write or edit a text file (code, scripts, config, csv, html, markdown): send the file's ENTIRE new content, never a diff or a fragment, and it is written byte-for-byte with no shell quoting to corrupt it. Use a relative path inside the working folder (subfolders are created automatically). To edit an existing file, first read it with run_command (type file), then send the complete updated file here. Never write or edit files with echo, redirection, or Set-Content through run_command.",
+    description: "Create ONE new file, or replace an existing file completely, in the current working folder. Send the file's ENTIRE content, never a diff or a fragment: this overwrites everything that was there. Use a relative path inside the working folder (subfolders are created automatically). To CHANGE part of a file that already exists, use edit_file instead, which is safer and far cheaper: write_file on an existing file means regenerating every line you are not changing, and getting one of them wrong destroys work. Never write or edit files with echo, redirection, or Set-Content through run_command.",
     input_schema: {
       type: "object",
       additionalProperties: false,
@@ -160,6 +160,35 @@ const TOOLS = [
       properties: {
         path: { type: "string", description: "Path of the file relative to the working folder, for example src/utils.js or notes.txt" },
         content: { type: "string", description: "The complete new content of the file." }
+      }
+    }
+  },
+  {
+    name: "read_file",
+    description: "Read a text file in the current working folder. Returns the file's lines, each prefixed with its line number. This is how you READ a file: prefer it over run_command with type, which has no line numbers and always returns the whole file. Large files come back a page at a time; when the result says there are more lines, call this again with offset set to the next line to continue. Always read a file before editing it, so the text you ask edit_file to find is exactly what is there.",
+    input_schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["path"],
+      properties: {
+        path: { type: "string", description: "Path of the file relative to the working folder, for example src/utils.js" },
+        offset: { type: "number", description: "First line to return, 1-based. Omit to start at the beginning." },
+        limit: { type: "number", description: "How many lines to return. Omit for a sensible page." }
+      }
+    }
+  },
+  {
+    name: "edit_file",
+    description: "Change part of an existing file by replacing an exact piece of text, leaving the rest of the file untouched. This is the RIGHT way to modify a file you did not just create: it cannot damage the parts you are not changing, and it costs a fraction of resending the whole file. Read the file first and copy the text to replace character for character, including its indentation. The text must appear exactly once, so include enough surrounding lines to make it unique; if it appears several times and you genuinely mean all of them, set all to true. To create a new file, use write_file instead.",
+    input_schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["path", "find", "replace"],
+      properties: {
+        path: { type: "string", description: "Path of the file relative to the working folder." },
+        find: { type: "string", description: "The exact text to replace, copied from the file including indentation." },
+        replace: { type: "string", description: "What to put in its place. Use an empty string to delete the text." },
+        all: { type: "boolean", description: "Replace every occurrence instead of requiring exactly one." }
       }
     }
   },
@@ -321,15 +350,35 @@ export function withAnsweredToolUseOnly(content: AnthropicContent[], answeredId?
   return [{ type: "text", text: "(no runnable action in this step)" }];
 }
 
+/** Every tool the engine advertises, by the name the model calls it. */
+export const TOOL_NAMES: readonly string[] = TOOLS.map((tool) => tool.name);
+
+/**
+ * The action kind a tool call becomes, or null if we do not know the tool.
+ *
+ * Kept as its own function so the pairing can be tested. A tool advertised in
+ * TOOLS but missing here is not a small bug: the model calls it, the call parses
+ * to nothing, and the whole run ends telling the user their request came back in
+ * a form WorkCrew cannot run. That is exactly what happened when read_file and
+ * edit_file were added, and a test now fails before it can happen again.
+ */
+export function actionKindForTool(name: string): AutomationAction["kind"] | null {
+  switch (name) {
+    case "browser_action": return "browser";
+    case "windows_action": return "windows";
+    case "run_command": return "shell";
+    case "write_file": return "write_file";
+    case "read_file": return "read_file";
+    case "edit_file": return "edit_file";
+    case "finish": return "finish";
+    default: return null;
+  }
+}
+
 function parseAction(content: AnthropicContent[]): { action: AutomationAction; toolUseId?: string; invalid?: { toolUseId: string; message: string } } {
   const tool = content.find((item): item is Extract<AnthropicContent, { type: "tool_use" }> => item.type === "tool_use");
   if (tool) {
-    const kind = tool.name === "browser_action" ? "browser"
-      : tool.name === "windows_action" ? "windows"
-      : tool.name === "run_command" ? "shell"
-      : tool.name === "write_file" ? "write_file"
-      : tool.name === "finish" ? "finish"
-      : null;
+    const kind = actionKindForTool(tool.name);
     if (kind) {
       const parsed = automationActionSchema.safeParse({ kind, ...tool.input });
       if (parsed.success) return { action: parsed.data, toolUseId: tool.id };

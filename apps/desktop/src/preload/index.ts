@@ -167,6 +167,8 @@ const workcrew = {
       if (action.kind === "windows") return await ipcRenderer.invoke("automation:windows", action) as ExecuteResult;
       if (action.kind === "shell") return { output: await ipcRenderer.invoke("shell:run", { command: action.command, cwd }) as string };
       if (action.kind === "write_file") return { output: await ipcRenderer.invoke("file:write", { path: action.path, content: action.content, cwd }) as string };
+      if (action.kind === "read_file") return { output: await ipcRenderer.invoke("file:read", { path: action.path, offset: action.offset, limit: action.limit, cwd }) as string };
+      if (action.kind === "edit_file") return { output: await ipcRenderer.invoke("file:edit", { path: action.path, find: action.find, replace: action.replace, all: action.all, cwd }) as string };
       return { output: action.summary };
     },
     launchBrowser: (): Promise<{ launched: boolean; message: string }> => ipcRenderer.invoke("automation:launch-browser"),
