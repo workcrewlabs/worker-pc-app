@@ -66,12 +66,12 @@ describe("handing a run to a different engine", () => {
       { role: "assistant", content: [THOUGHT, { type: "text", text: "opening it" }] }
     ];
     const sent = withoutForeignThinking(history, false) as typeof history;
-    expect(sent[1].content).toEqual([{ type: "text", text: "opening it" }]);
+    expect(sent[1]!.content).toEqual([{ type: "text", text: "opening it" }]);
   });
 
   it("strips redacted thinking too, which is signed the same way", () => {
     const history = [{ role: "assistant", content: [{ type: "redacted_thinking", data: "x" }, { type: "text", text: "hi" }] }];
-    expect((withoutForeignThinking(history, false) as typeof history)[0].content).toHaveLength(1);
+    expect((withoutForeignThinking(history, false) as typeof history)[0]!.content).toHaveLength(1);
   });
 
   it("keeps the answer and the tool call beside it", () => {
@@ -80,7 +80,7 @@ describe("handing a run to a different engine", () => {
     const call = { type: "tool_use", id: "t1", name: "windows_action", input: {} };
     const history = [{ role: "assistant", content: [THOUGHT, { type: "text", text: "clicking" }, call] }];
     const sent = withoutForeignThinking(history, false) as typeof history;
-    expect(sent[0].content).toEqual([{ type: "text", text: "clicking" }, call]);
+    expect(sent[0]!.content).toEqual([{ type: "text", text: "clicking" }, call]);
   });
 
   it("never leaves an empty turn behind", () => {
@@ -88,8 +88,8 @@ describe("handing a run to a different engine", () => {
     // broken history for another.
     const history = [{ role: "assistant", content: [THOUGHT] }];
     const sent = withoutForeignThinking(history, false) as { content: { type: string }[] }[];
-    expect(sent[0].content).toHaveLength(1);
-    expect(sent[0].content[0].type).toBe("text");
+    expect(sent[0]!.content).toHaveLength(1);
+    expect(sent[0]!.content[0]!.type).toBe("text");
   });
 
   it("leaves the history alone while the run stays on the thinking engine", () => {
