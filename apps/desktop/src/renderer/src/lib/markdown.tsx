@@ -17,6 +17,23 @@ function readableSize(text: string): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Formats that are BUILT from the text rather than being it.
+ *
+ * A spreadsheet and a document are assembled into zipped XML when the user
+ * saves, so the text length here is not the file's size and saying it is, is
+ * simply wrong: a card read "837 B" for a workbook that landed on disk at nearly
+ * 10 KB. There is no way to know the real size before building it, so these
+ * cards say what the file is and leave the size to the folder it lands in.
+ */
+const BUILT_FORMATS = new Set<ExportExtension>(["xlsx", "docx"]);
+
+/** The line under the file's name: its type, and its size when that is knowable. */
+function fileCardMeta(ext: ExportExtension, content: string): string {
+  const type = `${ext.toUpperCase()} file`;
+  return BUILT_FORMATS.has(ext) ? type : `${type}, ${readableSize(content)}`;
+}
+
 // A download card for a file the assistant generated. The button asks the main
 // process to save the file through a native Save dialog; the user picks where.
 function FileBlock({ name, ext, content }: { name: string; ext: ExportExtension; content: string }): ReactNode {
@@ -44,7 +61,7 @@ function FileBlock({ name, ext, content }: { name: string; ext: ExportExtension;
     <div className="file-card">
       <div className="file-card-info">
         <span className="file-card-name" title={name}>{name}</span>
-        <span className="file-card-meta">{ext.toUpperCase()} file, {readableSize(content)}</span>
+        <span className="file-card-meta">{fileCardMeta(ext, content)}</span>
       </div>
       <button type="button" className="file-card-button" onClick={() => void onSave()} disabled={state === "saving"}>
         {label}

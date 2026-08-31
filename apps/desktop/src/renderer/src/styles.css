@@ -338,8 +338,12 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .md h3.md-h { font-size: 1.18em; }
 .md h4.md-h { font-size: 1.08em; }
 .md h5.md-h { font-size: 1em; color: var(--text); }
-.md .md-ul, .md .md-ol { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 4px; }
+/* Spaced with margins, not flex. Making an <ol> a flex container turns its
+   items into flex items and the numbering stops counting: a two point list
+   rendered as "1." twice. Lists stay lists; the gap comes from the margin. */
+.md .md-ul, .md .md-ol { margin: 0; padding-left: 22px; }
 .md .md-ul li, .md .md-ol li { padding-left: 2px; }
+.md .md-ul li + li, .md .md-ol li + li { margin-top: 4px; }
 .md .md-code { padding: 1px 5px; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line); font: 0.88em/1.4 Consolas, monospace; }
 .md .md-pre { margin: 2px 0; padding: 12px 14px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); overflow-x: auto; }
 .md .md-pre code { font: 0.86em/1.5 Consolas, monospace; color: var(--text); white-space: pre; }

@@ -20,7 +20,7 @@ import {
   type AttachmentRow,
   type SubscriptionRow
 } from "./db.js";
-import { MODEL_PRICES, modelId, provider, routeChatTier, type ConcreteModelTier } from "./model-registry.js";
+import { MODEL_PRICES, attachmentNeedsEyes, modelId, provider, routeChatTier, type ConcreteModelTier } from "./model-registry.js";
 
 /**
  * Maximum output tokens for a chat turn. This caps the worst case budget
@@ -238,7 +238,8 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
   // A turn carrying a picture has to run on an engine that can look at it, which
   // the Economy engine cannot, so the attachment kinds are known before the
   // engine is chosen rather than after.
-  const hasImage = body.attachments.some((attachment) => attachment.kind === "image");
+  // A scanned PDF counts as a picture here; attachmentNeedsEyes explains why.
+  const hasImage = body.attachments.some((attachment) => attachmentNeedsEyes(attachment.kind));
   const tier: ConcreteModelTier = routeChatTier({
     mode: input.subscription.modelMode,
     requested: body.model,

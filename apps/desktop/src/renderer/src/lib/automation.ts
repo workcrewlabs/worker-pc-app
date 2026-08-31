@@ -55,6 +55,31 @@ export function actionLabel(action: AutomationAction): string {
       return "Read text from a desktop app";
     case "screenshot":
       return "Take a screenshot";
+    // Screen-level input, used when an app names none of its controls. These
+    // were the one gap in this list, and they are the steps that matter most:
+    // when a run goes wrong it is almost always here, clicking by eye. A run
+    // that failed a subtraction logged seventeen lines reading "Desktop step",
+    // which told the user nothing about what it had actually tried.
+    case "type-text":
+      return "Type text";
+    case "press-key":
+      return "Press a key";
+    case "key-combo":
+      return "Press a key combination";
+    case "click-at":
+      return "Click a spot on screen";
+    case "double-click-at":
+      return "Double-click a spot on screen";
+    case "right-click-at":
+      return "Right-click a spot on screen";
+    case "drag":
+      return "Drag across the screen";
+    case "scroll-at":
+      return "Scroll the screen";
+    case "record-start":
+      return "Start recording clicks";
+    case "record-stop":
+      return "Stop recording clicks";
     default:
       return "Desktop step";
   }
@@ -147,17 +172,24 @@ export function summarizeActivity(steps: { label: string; status: string }[]): s
   let commands = 0;
   let reads = 0;
   let writes = 0;
+  let edits = 0;
   let failed = 0;
   for (const step of steps) {
     if (step.label === "Finished" || step.label === "Finishing up") continue;
     if (step.status === "error") failed += 1;
     if (step.label.startsWith("Read ")) reads += 1;
     else if (step.label.startsWith("Wrote ")) writes += 1;
+    // Editing arrived as its own tool but not as its own bucket, so an edit was
+    // counted as a command: a run that read 2 files, ran 3 commands and made 2
+    // edits reported "Ran 5 commands, read 2 files" and never mentioned that it
+    // had changed anything.
+    else if (step.label.startsWith("Edited ")) edits += 1;
     else commands += 1;
   }
   const parts: string[] = [];
   if (commands) parts.push(`ran ${commands} command${commands === 1 ? "" : "s"}`);
   if (reads) parts.push(`read ${reads} file${reads === 1 ? "" : "s"}`);
+  if (edits) parts.push(`edited ${edits} file${edits === 1 ? "" : "s"}`);
   if (writes) parts.push(`wrote ${writes} file${writes === 1 ? "" : "s"}`);
   if (failed) parts.push(`${failed} failed`);
   if (parts.length === 0) return "";
@@ -171,6 +203,14 @@ export function actionDetail(action: AutomationAction): string | undefined {
   if (action.kind === "write_file") return action.path;
   if (action.kind === "read_file" || action.kind === "edit_file") return action.path;
   if (action.kind === "browser") return action.url ?? action.value ?? action.target;
-  if (action.kind === "windows") return action.application ?? action.windowTitle ?? action.control ?? action.value;
+  if (action.kind === "windows") {
+    // A screen-level step acts on a point, not a named control, so the point is
+    // the only detail there is. Without it a run that clicks by eye is a list of
+    // identical lines with nothing to tell them apart.
+    const named = action.application ?? action.windowTitle ?? action.control ?? action.value;
+    if (named) return named;
+    if (typeof action.x === "number" && typeof action.y === "number") return `at ${action.x}, ${action.y}`;
+    return undefined;
+  }
   return undefined;
 }

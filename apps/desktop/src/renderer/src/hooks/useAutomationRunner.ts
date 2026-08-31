@@ -29,6 +29,46 @@ export function needsTheMachine(action: AutomationAction): boolean {
   return action.kind === "windows" || action.kind === "browser";
 }
 
+// Going round in circles ------------------------------------------------------
+//
+// A run asked to work out a subtraction on the Calculator could not read the
+// app's controls, fell back to clicking by eye, and then repeated near-identical
+// clicks until it hit the 24 step ceiling. The user watched seventeen steps go by
+// and got no answer. Nothing was watching for the one thing that was obvious from
+// the outside: it was doing the same thing over and over.
+//
+// So the loop now counts repeats. The first few are fair (a click that misses is
+// worth retrying); after that the model is told plainly that it is repeating
+// itself and asked to change approach, and if it carries on anyway the run stops
+// and says why, rather than burning the whole budget to reach the same place.
+
+/** Told to change approach at this many identical steps in a row. */
+export const REPEAT_WARN_AT = 3;
+/** Given up on at this many, because the warning did not land. */
+export const REPEAT_STOP_AT = 5;
+
+/** What makes two steps "the same step" for the purpose of spotting a loop. */
+export function actionSignature(action: AutomationAction): string {
+  return JSON.stringify(action);
+}
+
+/**
+ * How many times in a row this action has now been chosen, counting the one
+ * about to run. A fresh action returns 1.
+ */
+export function consecutiveRepeats(history: string[], next: string): number {
+  let count = 1;
+  for (let i = history.length - 1; i >= 0 && history[i] === next; i -= 1) count += 1;
+  return count;
+}
+
+/** What to do about a step that has been chosen this many times running. */
+export function repeatVerdict(repeats: number): "run" | "warn" | "stop" {
+  if (repeats >= REPEAT_STOP_AT) return "stop";
+  if (repeats >= REPEAT_WARN_AT) return "warn";
+  return "run";
+}
+
 // Windows commands that do NOT move the mouse or type (read-only or app launch).
 // The overlay is raised for every OTHER windows command, so a future command that
 // drives input cannot silently bypass the "do not move the mouse" overlay.
@@ -442,6 +482,8 @@ export function useAutomationRunner(): AutomationRunner {
     // output current when each action was chosen, used to turn a numeric control
     // reference into a stable name at record time.
     const recorded: { action: AutomationAction; snapshot: string | null; ok: boolean }[] = [];
+    // Every step this run has chosen, so the loop can notice it is repeating.
+    const signatures: string[] = [];
     let lastSnapshot: string | null = null;
     // The newest screenshot taken during this run, shown in the approval popup
     // when the next action targets a bare screen coordinate.
@@ -533,6 +575,38 @@ export function useAutomationRunner(): AutomationRunner {
             break;
           }
         }
+        // Is this the same step again? A finish is exempt: ending twice is not a
+        // loop, and refusing it would trap a run that is trying to stop.
+        const signature = actionSignature(action);
+        const repeats = action.kind === "finish" ? 1 : consecutiveRepeats(signatures, signature);
+        const verdict = repeatVerdict(repeats);
+        signatures.push(signature);
+
+        if (verdict === "stop") {
+          const message =
+            "I kept repeating the same step without getting anywhere, so I stopped rather than keep trying. " +
+            "Tell me what you can see on screen and I will pick it up from there.";
+          setSummary(message);
+          setStatus("failed");
+          settle("failed", message);
+          ended = true;
+          break;
+        }
+        if (verdict === "warn") {
+          // Hand it back as a failed step rather than running it. The model gets
+          // the same channel it uses for any other error, so it can change plan
+          // on the next turn instead of being cut off mid-task.
+          result = {
+            toolUseId: response.toolUseId,
+            ok: false,
+            output:
+              `You have now chosen this exact step ${repeats} times in a row and the screen has not changed. ` +
+              "It is not working. Do something different: read the window's controls again, take a screenshot " +
+              "and look at where things actually are, or call finish and explain what is in the way."
+          };
+          continue;
+        }
+
         // Tracked per action so a failed or declined step is excluded from the
         // saved recipe (only the clean successful path is cached).
         const recordEntry = { action, snapshot: lastSnapshot, ok: true };

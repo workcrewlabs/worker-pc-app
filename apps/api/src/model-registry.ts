@@ -125,6 +125,22 @@ export function engineSeesImages(tier: ConcreteModelTier): boolean {
 }
 
 /**
+ * Whether an attachment of this kind can only be understood by an engine that
+ * can see.
+ *
+ * A picture, obviously. And a PDF, for a reason worth stating: the desktop reads
+ * a PDF on the machine before sending it, and when it finds a text layer it
+ * sends the TEXT instead. So a PDF that arrives here still a PDF is one with no
+ * readable text, which is a scan or a photograph of a document. Treating it as
+ * ordinary sent scanned invoices to an engine that cannot see, and the user was
+ * told "I can't read the contents of the attached PDF" about a page the same
+ * account had just read perfectly as a PNG.
+ */
+export function attachmentNeedsEyes(kind: string): boolean {
+  return kind === "image" || kind === "pdf";
+}
+
+/**
  * Pick the engine for a chat turn. Economy mode runs chats on the cost-efficient
  * engine to keep everyday cost low, with ONE deliberate exception: when the user
  * picks High effort (opus), that turn goes to top-quality Claude. This is the

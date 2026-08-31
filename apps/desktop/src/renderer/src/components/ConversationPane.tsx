@@ -261,6 +261,14 @@ export function ConversationPane({
           // Read from what run() reports, not from the runner's React state,
           // which at this instant is still a render behind and would file a
           // finished run away with no words.
+          // Adopt the conversation the backend recorded this run in, exactly as
+          // the screen path below does. Without it the transcript was saved
+          // under a pane-local name while Recents listed the chat under the
+          // backend's id, so reopening a finished folder job looked it up by an
+          // id nothing had ever been saved under. It fell back to the server
+          // copy, which stores the words and none of the work, and every "Read
+          // invoice.js / Edited invoice.js" line vanished.
+          if (done.conversationId) chat.adoptConversation(done.conversationId);
           const activity = done.steps.filter((step) => step.status !== "running");
           const failure = done.status === "stopped" ? "" : done.error;
           chat.appendAssistantTurn(done.summary, activity, failure);
