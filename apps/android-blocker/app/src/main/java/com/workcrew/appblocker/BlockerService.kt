@@ -13,12 +13,17 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.util.Calendar
 
 /**
  * Foreground service that polls "which app is on screen" every few seconds,
  * feeds a [WatchSession], and acts on its events: a full-screen overlay
  * reminder every N minutes, and a forced switch to the redirect app (or home
- * screen) once the limit is hit. Everything runs on-device; no network.
+ * screen) once the limit is hit, repeated for as long as the lockout holds.
+ *
+ * It also owns the two pieces of self-control friction: enforcement only runs
+ * inside the configured daily window, and a requested stop only takes effect
+ * after the configured wait. Everything runs on-device; no network.
  */
 class BlockerService : Service() {
 
@@ -27,7 +32,7 @@ class BlockerService : Service() {
     private lateinit var overlay: OverlayReminder
     private lateinit var powerManager: PowerManager
     private var session: WatchSession? = null
-    private var lastNotifiedMinutes = -1
+    private var lastNotificationText: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -42,15 +47,23 @@ class BlockerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val prefs = Prefs(this)
         createChannel()
-        startForeground(NOTIFICATION_ID, buildNotification(prefs, watchedMinutes = 0))
+        // Starting fresh cancels any stop that was counting down.
+        prefs.stopAllowedAtMs = 0L
+        startForeground(
+            NOTIFICATION_ID,
+            buildNotification(
+                getString(R.string.notification_text, prefs.watchedLabel, 0, prefs.limitMinutes)
+            ),
+        )
 
         // Re-reading settings here means pressing Start again applies changes.
         session = WatchSession(
             remindEveryMs = prefs.remindEveryMinutes * 60_000L,
             limitMs = prefs.limitMinutes * 60_000L,
             resetAfterAwayMs = RESET_AFTER_AWAY_MS,
+            lockoutMs = prefs.lockoutMinutes * 60_000L,
         )
-        lastNotifiedMinutes = -1
+        lastNotificationText = null
         handler.removeCallbacks(tick)
         handler.post(tick)
         return START_STICKY
@@ -82,15 +95,34 @@ class BlockerService : Service() {
         val session = session ?: return
         val prefs = Prefs(this)
         val now = System.currentTimeMillis()
+
+        val stopAllowedAt = prefs.stopAllowedAtMs
+        if (stopAllowedAt > 0L && now >= stopAllowedAt) {
+            prefs.stopAllowedAtMs = 0L
+            stopSelf()
+            return
+        }
+
         tracker.update(now)
+
+        val inWindow = Schedule.isWithinWindow(
+            minutesOfDay(), prefs.activeStartMinutes, prefs.activeEndMinutes
+        )
+        if (!inWindow) {
+            // Off duty: drop all progress so the next window starts clean.
+            session.onIdle(now)
+            updateNotification(status(prefs, session, inWindow = false, stopAllowedAt, now))
+            return
+        }
+
         // Screen off doesn't count as watching, even if the app is still "resumed".
         val watching = powerManager.isInteractive && tracker.currentPackage == prefs.watchedPackage
         when (val event = session.onTick(now, watching)) {
             is WatchSession.Remind -> showReminder(prefs, event.watchedMs)
-            is WatchSession.SwitchAway -> enforceLimit(prefs)
+            is WatchSession.SwitchAway -> enforce(prefs, session, event)
             null -> Unit
         }
-        updateNotification(prefs, session.watchedMs)
+        updateNotification(status(prefs, session, inWindow = true, stopAllowedAt, now))
     }
 
     private fun showReminder(prefs: Prefs, watchedMs: Long) {
@@ -107,20 +139,36 @@ class BlockerService : Service() {
         )
     }
 
-    private fun enforceLimit(prefs: Prefs) {
-        overlay.show(
-            title = getString(R.string.limit_title),
-            message = getString(
-                R.string.limit_message,
-                prefs.limitMinutes,
-                prefs.watchedLabel,
-                prefs.redirectLabel ?: getString(R.string.home_screen),
-            ),
-            primaryLabel = getString(R.string.limit_ok),
-            autoDismissMs = LIMIT_AUTO_DISMISS_MS,
-        )
-        // Small delay so the user sees why they are being moved before it happens.
-        handler.postDelayed({ launchRedirect(prefs) }, SWITCH_DELAY_MS)
+    private fun enforce(prefs: Prefs, session: WatchSession, event: WatchSession.SwitchAway) {
+        val target = prefs.redirectLabel ?: getString(R.string.home_screen)
+        if (event.firstTime) {
+            overlay.show(
+                title = getString(R.string.limit_title),
+                message = getString(
+                    R.string.limit_message,
+                    prefs.limitMinutes,
+                    prefs.watchedLabel,
+                    target,
+                    prefs.lockoutMinutes,
+                ),
+                primaryLabel = getString(R.string.limit_ok),
+                autoDismissMs = LIMIT_AUTO_DISMISS_MS,
+            )
+            // Small delay so the user sees why they are being moved.
+            handler.postDelayed({ launchRedirect(prefs) }, SWITCH_DELAY_MS)
+        } else {
+            overlay.show(
+                title = getString(R.string.locked_title),
+                message = getString(
+                    R.string.locked_message,
+                    prefs.watchedLabel,
+                    ceilMinutes(session.lockoutRemainingMs),
+                ),
+                primaryLabel = getString(R.string.limit_ok),
+                autoDismissMs = LOCKED_AUTO_DISMISS_MS,
+            )
+            handler.postDelayed({ launchRedirect(prefs) }, LOCKED_SWITCH_DELAY_MS)
+        }
     }
 
     private fun launchRedirect(prefs: Prefs) {
@@ -145,6 +193,41 @@ class BlockerService : Service() {
     private fun homeIntent(): Intent =
         Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
 
+    private fun minutesOfDay(): Int = Calendar.getInstance().let {
+        it.get(Calendar.HOUR_OF_DAY) * 60 + it.get(Calendar.MINUTE)
+    }
+
+    private fun status(
+        prefs: Prefs,
+        session: WatchSession,
+        inWindow: Boolean,
+        stopAllowedAtMs: Long,
+        nowMs: Long,
+    ): String {
+        val core = when {
+            !inWindow -> getString(
+                R.string.notification_off_duty, Schedule.format(prefs.activeStartMinutes)
+            )
+            session.locked -> getString(
+                R.string.notification_locked,
+                prefs.watchedLabel,
+                ceilMinutes(session.lockoutRemainingMs),
+            )
+            else -> getString(
+                R.string.notification_text,
+                prefs.watchedLabel,
+                (session.watchedMs / 60_000L).toInt(),
+                prefs.limitMinutes,
+            )
+        }
+        if (stopAllowedAtMs <= 0L) return core
+        return getString(R.string.notification_stopping, ceilMinutes(stopAllowedAtMs - nowMs)) +
+            " · " + core
+    }
+
+    private fun ceilMinutes(ms: Long): Int =
+        ((ms.coerceAtLeast(0L) + 59_999L) / 60_000L).toInt()
+
     private fun createChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -154,7 +237,7 @@ class BlockerService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun buildNotification(prefs: Prefs, watchedMinutes: Int): android.app.Notification {
+    private fun buildNotification(text: String): android.app.Notification {
         val openApp = PendingIntent.getActivity(
             this,
             0,
@@ -164,25 +247,17 @@ class BlockerService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText(
-                getString(
-                    R.string.notification_text,
-                    prefs.watchedLabel,
-                    watchedMinutes,
-                    prefs.limitMinutes,
-                )
-            )
+            .setContentText(text)
             .setContentIntent(openApp)
             .setOngoing(true)
             .build()
     }
 
-    private fun updateNotification(prefs: Prefs, watchedMs: Long) {
-        val minutes = (watchedMs / 60_000L).toInt()
-        if (minutes == lastNotifiedMinutes) return
-        lastNotifiedMinutes = minutes
+    private fun updateNotification(text: String) {
+        if (text == lastNotificationText) return
+        lastNotificationText = text
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, buildNotification(prefs, minutes))
+            .notify(NOTIFICATION_ID, buildNotification(text))
     }
 
     companion object {
@@ -197,7 +272,9 @@ class BlockerService : Service() {
         private const val POLL_INTERVAL_MS = 5_000L
         private const val RESET_AFTER_AWAY_MS = 5L * 60 * 1000
         private const val SWITCH_DELAY_MS = 1_500L
+        private const val LOCKED_SWITCH_DELAY_MS = 400L
         private const val REMINDER_AUTO_DISMISS_MS = 30_000L
         private const val LIMIT_AUTO_DISMISS_MS = 5_000L
+        private const val LOCKED_AUTO_DISMISS_MS = 3_000L
     }
 }

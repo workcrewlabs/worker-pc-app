@@ -1,6 +1,7 @@
 package com.workcrew.appblocker
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -13,6 +14,7 @@ class WatchSessionTest {
         remindEveryMs = 10 * minute,
         limitMs = 20 * minute,
         resetAfterAwayMs = 5 * minute,
+        lockoutMs = 45 * minute,
     )
 
     /** Ticks from [fromMs] to [toMs] and returns every non-null event with its timestamp. */
@@ -49,26 +51,85 @@ class WatchSessionTest {
     }
 
     @Test
-    fun switchesAwayAtTheLimitInsteadOfASecondReminder() {
+    fun switchesAwayAtTheLimitAndLocks() {
         val session = newSession()
         val events = run(session, 0, 21 * minute, foreground = true)
-        assertEquals(2, events.size)
         assertTrue(events[0].second is WatchSession.Remind)
-        assertTrue(events[1].second is WatchSession.SwitchAway)
+        val switch = events.first { it.second is WatchSession.SwitchAway }.second
+        assertTrue((switch as WatchSession.SwitchAway).firstTime)
+        assertTrue(session.locked)
     }
 
     @Test
-    fun switchesAgainWhenUserReturnsWhileStillOverTheLimit() {
+    fun keepsPushingTheUserOutWhileLocked() {
         val session = newSession()
-        var t = 0L
-        // Watch straight through the limit.
-        var events = run(session, t, 20 * minute + tickMs, foreground = true)
-        assertTrue(events.last().second is WatchSession.SwitchAway)
-        // Away for one minute (less than the reset window), then reopen the app.
-        t = 20 * minute + 2 * tickMs
-        run(session, t, t + 1 * minute, foreground = false)
-        events = run(session, t + 1 * minute + tickMs, t + 1 * minute + 3 * tickMs, foreground = true)
-        assertTrue(events.any { it.second is WatchSession.SwitchAway })
+        run(session, 0, 20 * minute + tickMs, foreground = true)
+        assertTrue(session.locked)
+
+        // Away for a couple of minutes, well short of the 45-minute lockout.
+        var t = 21 * minute
+        run(session, t, t + 2 * minute, foreground = false)
+        assertTrue(session.locked)
+
+        // Re-opening the app is bounced again, and not as a "time's up" event.
+        t += 2 * minute + tickMs
+        val events = run(session, t, t + 30_000L, foreground = true)
+        val repeat = events.map { it.second }.filterIsInstance<WatchSession.SwitchAway>()
+        assertTrue(repeat.isNotEmpty())
+        assertFalse(repeat.first().firstTime)
+    }
+
+    @Test
+    fun repeatSwitchesAreThrottled() {
+        val session = newSession()
+        run(session, 0, 20 * minute + tickMs, foreground = true)
+        var t = 21 * minute
+        run(session, t, t + 2 * minute, foreground = false)
+
+        // One minute of staying in the app at a 5s poll would be 12 ticks; the
+        // throttle keeps that from becoming 12 overlays.
+        t += 2 * minute + tickMs
+        val switches = run(session, t, t + minute, foreground = true)
+            .map { it.second }
+            .filterIsInstance<WatchSession.SwitchAway>()
+        assertTrue(switches.size in 1..8)
+    }
+
+    @Test
+    fun lockoutLiftsOnlyAfterTheFullBreak() {
+        val session = newSession()
+        run(session, 0, 20 * minute + tickMs, foreground = true)
+        val lockedAt = 21 * minute
+
+        // 44 minutes away is not enough.
+        run(session, lockedAt, lockedAt + 44 * minute, foreground = false)
+        assertTrue(session.locked)
+
+        // Crossing 45 minutes unlocks and clears the spent budget.
+        run(session, lockedAt + 44 * minute + tickMs, lockedAt + 46 * minute, foreground = false)
+        assertFalse(session.locked)
+        assertEquals(0, session.watchedMs)
+    }
+
+    @Test
+    fun returningDuringLockoutRestartsTheBreakClock() {
+        val session = newSession()
+        run(session, 0, 20 * minute + tickMs, foreground = true)
+        var t = 21 * minute
+
+        // 40 minutes away, then a peek at the app, then 40 more minutes away.
+        run(session, t, t + 40 * minute, foreground = false)
+        t += 40 * minute + tickMs
+        run(session, t, t + 30_000L, foreground = true)
+        t += 30_000L + tickMs
+        run(session, t, t + 40 * minute, foreground = false)
+        // Still locked: neither stretch away reached the full 45 minutes.
+        assertTrue(session.locked)
+
+        // Only a full uninterrupted 45 minutes clears it.
+        t += 40 * minute + tickMs
+        run(session, t, t + 6 * minute, foreground = false)
+        assertFalse(session.locked)
     }
 
     @Test
@@ -100,5 +161,20 @@ class WatchSessionTest {
         // Next tick arrives an hour later (device slept); credit is capped.
         session.onTick(60 * minute, true)
         assertTrue(session.watchedMs <= WatchSession.MAX_CREDIT_PER_TICK_MS)
+    }
+
+    @Test
+    fun goingIdleOutsideTheWindowClearsEverything() {
+        val session = newSession()
+        run(session, 0, 20 * minute + tickMs, foreground = true)
+        assertTrue(session.locked)
+
+        session.onIdle(25 * minute)
+        assertFalse(session.locked)
+        assertEquals(0, session.watchedMs)
+
+        // A fresh window starts with the full budget again.
+        val events = run(session, 26 * minute, 35 * minute, foreground = true)
+        assertTrue(events.none { it.second is WatchSession.SwitchAway })
     }
 }

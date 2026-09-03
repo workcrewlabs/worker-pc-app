@@ -28,6 +28,14 @@ class Prefs(context: Context) {
         get() = sp.getInt(KEY_LIMIT_MIN, 20).coerceIn(MIN_MINUTES, MAX_MINUTES)
         set(value) = sp.edit().putInt(KEY_LIMIT_MIN, value.coerceIn(MIN_MINUTES, MAX_MINUTES)).apply()
 
+    /**
+     * After the limit is hit, how long the user must stay continuously away
+     * from the watched app before it opens again.
+     */
+    var lockoutMinutes: Int
+        get() = sp.getInt(KEY_LOCKOUT_MIN, 45).coerceIn(MIN_MINUTES, MAX_MINUTES)
+        set(value) = sp.edit().putInt(KEY_LOCKOUT_MIN, value.coerceIn(MIN_MINUTES, MAX_MINUTES)).apply()
+
     /** Null means "go to the home screen" instead of a specific app. */
     var redirectPackage: String?
         get() = sp.getString(KEY_REDIRECT_PKG, null)
@@ -37,17 +45,54 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_REDIRECT_LABEL, null)
         set(value) = sp.edit().putString(KEY_REDIRECT_LABEL, value).apply()
 
+    /** Start of the daily enforcement window, in minutes from midnight. */
+    var activeStartMinutes: Int
+        get() = sp.getInt(KEY_ACTIVE_START, DEFAULT_ACTIVE_START).coerceIn(0, Schedule.MINUTES_PER_DAY - 1)
+        set(value) = sp.edit()
+            .putInt(KEY_ACTIVE_START, value.coerceIn(0, Schedule.MINUTES_PER_DAY - 1)).apply()
+
+    /** End of the daily enforcement window; equal to the start means all day. */
+    var activeEndMinutes: Int
+        get() = sp.getInt(KEY_ACTIVE_END, DEFAULT_ACTIVE_END).coerceIn(0, Schedule.MINUTES_PER_DAY - 1)
+        set(value) = sp.edit()
+            .putInt(KEY_ACTIVE_END, value.coerceIn(0, Schedule.MINUTES_PER_DAY - 1)).apply()
+
+    /**
+     * How long Stop takes to take effect. The blocker keeps enforcing during the
+     * wait, so quitting in a moment of weakness costs as much as it should. Zero
+     * stops immediately.
+     */
+    var stopDelayMinutes: Int
+        get() = sp.getInt(KEY_STOP_DELAY_MIN, 5).coerceIn(0, MAX_MINUTES)
+        set(value) = sp.edit().putInt(KEY_STOP_DELAY_MIN, value.coerceIn(0, MAX_MINUTES)).apply()
+
+    /**
+     * Wall-clock time at which a requested stop is allowed to take effect, or 0
+     * when no stop is pending. Absolute so that editing the delay afterwards
+     * can't shorten a wait already under way.
+     */
+    var stopAllowedAtMs: Long
+        get() = sp.getLong(KEY_STOP_ALLOWED_AT, 0L)
+        set(value) = sp.edit().putLong(KEY_STOP_ALLOWED_AT, value).apply()
+
     companion object {
         const val DEFAULT_WATCHED_PKG = "com.google.android.youtube"
         const val DEFAULT_WATCHED_LABEL = "YouTube"
         const val MIN_MINUTES = 1
         const val MAX_MINUTES = 720
+        const val DEFAULT_ACTIVE_START = 8 * 60
+        const val DEFAULT_ACTIVE_END = 20 * 60
 
         private const val KEY_WATCHED_PKG = "watched_pkg"
         private const val KEY_WATCHED_LABEL = "watched_label"
         private const val KEY_REMIND_MIN = "remind_min"
         private const val KEY_LIMIT_MIN = "limit_min"
+        private const val KEY_LOCKOUT_MIN = "lockout_min"
         private const val KEY_REDIRECT_PKG = "redirect_pkg"
         private const val KEY_REDIRECT_LABEL = "redirect_label"
+        private const val KEY_ACTIVE_START = "active_start_min"
+        private const val KEY_ACTIVE_END = "active_end_min"
+        private const val KEY_STOP_DELAY_MIN = "stop_delay_min"
+        private const val KEY_STOP_ALLOWED_AT = "stop_allowed_at"
     }
 }

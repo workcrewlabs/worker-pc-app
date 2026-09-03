@@ -17,6 +17,15 @@
             android:textStyle="bold" />
 
         <TextView
+            android:id="@+id/txt_settings_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_locked"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
@@ -133,6 +142,44 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
+            android:text="@string/label_active_hours" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_time_start"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="96dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="8dp"
+                android:text="@string/to" />
+
+            <Button
+                android:id="@+id/btn_time_end"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="96dp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/txt_active_hours_note"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
             android:text="@string/label_remind_minutes" />
 
         <EditText
@@ -150,6 +197,19 @@
 
         <EditText
             android:id="@+id/edit_limit"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:importantForAutofill="no"
+            android:inputType="number" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/label_lockout_minutes" />
+
+        <EditText
+            android:id="@+id/edit_lockout"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:importantForAutofill="no"
@@ -186,6 +246,34 @@
                 android:layout_height="wrap_content"
                 android:text="@string/change" />
         </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/section_stop"
+            android:textAllCaps="true"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/label_stop_delay" />
+
+        <EditText
+            android:id="@+id/edit_stop_delay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:importantForAutofill="no"
+            android:inputType="number" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/stop_delay_note"
+            android:textSize="12sp" />
 
         <Button
             android:id="@+id/btn_start"

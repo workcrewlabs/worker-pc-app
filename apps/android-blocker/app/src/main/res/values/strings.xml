@@ -3,6 +3,7 @@
 
     <string name="status_running">Blocker is running</string>
     <string name="status_stopped">Blocker is stopped</string>
+    <string name="settings_locked">Settings are locked while the blocker runs. Stop it first to change them.</string>
 
     <string name="section_permissions">Permissions</string>
     <string name="perm_usage_access">Usage access</string>
@@ -13,15 +14,28 @@
 
     <string name="section_limits">Limits</string>
     <string name="label_watched_app">App to limit</string>
+    <string name="label_active_hours">Enforce only between</string>
+    <string name="active_hours_note">Outside these hours the limit is off.</string>
+    <string name="active_hours_all_day">Same start and end means all day.</string>
+    <string name="to">to</string>
     <string name="label_remind_minutes">Remind me every (minutes)</string>
     <string name="label_limit_minutes">Switch me away after (minutes total)</string>
+    <string name="label_lockout_minutes">Then keep it locked until I\'ve been away (minutes)</string>
     <string name="label_redirect_app">Switch me to</string>
     <string name="change">Change</string>
     <string name="home_screen">Home screen</string>
     <string name="pick_app">Pick an app</string>
 
+    <string name="section_stop">Stopping</string>
+    <string name="label_stop_delay">Wait before Stop takes effect (minutes)</string>
+    <string name="stop_delay_note">The blocker keeps enforcing during this wait, so quitting takes a real decision. 0 stops right away.</string>
+
     <string name="start_blocking">Start blocking</string>
     <string name="stop_blocking">Stop</string>
+    <string name="stop_after_wait">Stop (waits %1$d min)</string>
+    <string name="stop_cancel">Cancel stop · %1$s</string>
+    <string name="stop_scheduled">Blocker keeps working for %1$d more minutes, then stops.</string>
+    <string name="stop_cancelled">Stop cancelled — blocker stays on.</string>
     <string name="need_usage_access">Grant Usage access first so the blocker can tell which app is on screen.</string>
     <string name="need_overlay">Grant "Display over other apps" first so reminders can interrupt the screen.</string>
 
@@ -31,10 +45,16 @@
     <string name="reminder_take_break">Take a break</string>
 
     <string name="limit_title">Time\'s up</string>
-    <string name="limit_message">%1$d minutes on %2$s — switching you to %3$s.</string>
+    <string name="limit_message">%1$d minutes on %2$s — switching you to %3$s. It stays locked until you\'ve been away %4$d minutes.</string>
     <string name="limit_ok">OK</string>
+
+    <string name="locked_title">Locked</string>
+    <string name="locked_message">%1$s is locked. Stay away %2$d more minutes to unlock it.</string>
 
     <string name="notification_channel">Blocker status</string>
     <string name="notification_title">App Blocker is watching</string>
     <string name="notification_text">%1$s: %2$d of %3$d min used</string>
+    <string name="notification_locked">%1$s locked — %2$d min away needed</string>
+    <string name="notification_off_duty">Off duty until %1$s</string>
+    <string name="notification_stopping">Stopping in %1$d min</string>
 </resources>
