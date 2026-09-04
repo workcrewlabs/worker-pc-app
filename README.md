@@ -97,3 +97,4 @@ scripts                  Build automation
 ## Current launch boundary
 
 The local MVP can be tested now. A public launch still requires real vendor accounts, Stripe eligibility, company and bank verification, a domain, email configuration, code signing, legal review, and a paid beta. Those activities require the company owner's identity and authorization.
+Pre-launch security review.
