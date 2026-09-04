@@ -6,7 +6,7 @@ import {
   type ChatDeltaFrame,
   type ChatSend
 } from "@workcrew/contracts";
-import { actualCostMicrodollars, budgetLimitedOutputTokens, estimatedInputMicrodollars, maximumReservationMicrodollars, withRollingCacheBreakpoint, withoutUnseeableImages } from "./anthropic.js";
+import { actualCostMicrodollars, budgetLimitedOutputTokens, estimatedInputMicrodollars, maximumReservationMicrodollars, thinkingBudgetFor, withoutForeignThinking, withRollingCacheBreakpoint, withoutUnseeableImages } from "./anthropic.js";
 import { blocksForRow, estimateMediaTokens } from "./attachments.js";
 import { budgetHeadroom, exhaustionErrorFor, getBudgetUsage, releaseBudget, reserveBudget, settleBudget } from "./budget.js";
 import { config } from "./config.js";
@@ -21,6 +21,7 @@ import {
   type SubscriptionRow
 } from "./db.js";
 import { MODEL_PRICES, attachmentNeedsEyes, modelId, provider, routeChatTier, type ConcreteModelTier } from "./model-registry.js";
+import { fetchReadablePage } from "./web-fetch.js";
 
 /**
  * Maximum output tokens for a chat turn. This caps the worst case budget
@@ -33,6 +34,52 @@ const MAX_OUTPUT_TOKENS = 8_000;
 // at least this many output tokens, we stop with the daily-limit message rather
 // than emit a uselessly truncated stub.
 const MIN_OUTPUT_TOKENS = 256;
+
+// Chat's one tool: read a page the user links to, so "what does this say" about
+// a URL gets an actual answer instead of "I have no access to the web". It
+// works for ordinary pages, APIs and documents; it does not run a browser, so a
+// page that builds its content in the browser rather than sending it in the
+// response comes back saying so, and the honest next step there is Computer
+// use, which drives a real one.
+const CHAT_TOOLS: Anthropic.Messages.Tool[] = [
+  {
+    name: "read_page",
+    description:
+      "Fetch a web page, plain text file, JSON, or markdown document by its URL and return its readable text. " +
+      "Use this whenever answering the user's question depends on what a specific link they gave you says. Works " +
+      "for ordinary web pages, articles, documentation and APIs. It does NOT run a browser and cannot render a " +
+      "page that builds its content in JavaScript rather than sending it in the response (most single-page apps, " +
+      "dashboards, and things like a claude.ai artifact link); those come back saying there was nothing readable, " +
+      "and the honest answer is to tell the user that link needs a real browser to open, which they can do with " +
+      "Computer use. It also cannot sign in anywhere, so a private or login-only page will not work either.",
+    input_schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["url"],
+      properties: {
+        url: { type: "string", description: "The exact http or https address to read." }
+      }
+    }
+  }
+];
+
+// One read_page call answers the ordinary case. A second covers a reasonable
+// follow-up (the first page links to the actual answer). Bounded this low
+// because each round is a full extra call to the model, billed as real
+// provider cost on top of the single call this turn's budget reservation was
+// sized for; settleBudget still clamps what the USER is charged to the
+// reservation, but an unbounded loop would let real, unreserved spend grow
+// with no ceiling at all.
+const MAX_CHAT_TOOL_ROUNDS = 2;
+
+/** A tool_use block with its input narrowed to what read_page actually takes,
+ *  or a plain explanation when the model sent something else. Written this way
+ *  rather than trusting the SDK's loose `unknown` input, because the one thing
+ *  worse than refusing a bad call is running fetch() on whatever came back. */
+function readPageUrl(block: { input?: unknown }): string | null {
+  const input = block.input as { url?: unknown } | undefined;
+  return typeof input?.url === "string" && input.url.trim().length > 0 ? input.url.trim() : null;
+}
 
 /**
  * The chat system prompt. It is kept byte stable (no timestamps or ids
@@ -426,69 +473,152 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
         const client = attemptEconomy
           ? new Anthropic({ authToken: config.zai.apiKey ?? "", baseURL: config.zai.baseUrl })
           : new Anthropic({ apiKey: config.anthropicApiKey });
-        const stream = client.messages.stream(
-          {
-            model: modelId(attemptTier),
-            max_tokens: effectiveMaxTokens,
-            system: cachedSystem,
-            messages: withRollingCacheBreakpoint(
-              withoutUnseeableImages(modelMessages, attemptTier)
-            ) as Anthropic.Messages.MessageParam[]
-          },
-          { signal: input.signal }
-        );
 
-        // Track whether the provider actually produced (and billed) output. If the
-        // client aborts after tokens were generated, those tokens cost real money and
-        // were already streamed to the user, so the turn must be charged, not freed.
+        // This attempt's own copy of the conversation, extended in place as
+        // read_page rounds add the tool call and its result. A fresh copy per
+        // attempt, so falling over to Claude starts from the real history, not
+        // from a tool round the failed engine may have half finished.
+        const liveMessages: ModelMessage[] = modelMessages.map((message) => ({ ...message, content: [...message.content] }));
+        let toolRoundsLeft = MAX_CHAT_TOOL_ROUNDS;
+        let attemptFailed = false;
+        // Whether the provider actually produced (and billed) output at all,
+        // across every round of this attempt. If the client aborts after tokens
+        // were generated, those tokens cost real money and were already streamed
+        // to the user, so the turn must be charged, not freed.
         let producedOutput = false;
-        try {
-          for await (const event of stream) {
-            if (event.type === "content_block_delta") {
-              const delta = event.delta;
-              if (delta.type === "text_delta") {
-                producedOutput = true;
-                yield { type: "text", text: delta.text };
-              } else if (delta.type === "thinking_delta") {
-                producedOutput = true;
-                yield { type: "thinking", text: delta.thinking };
-              } else if (delta.type === "citations_delta") {
-                yield { type: "citation", citation: delta.citation };
+
+        while (true) {
+          // Thinking is turned on from the round after a page has actually been
+          // read, not from the first round of every chat turn. The decision to
+          // call read_page at all is quick and did not need it in testing; what
+          // needed it was turning a long fetched page into an answer, which only
+          // happens once a tool_result exists. Scoping it this way keeps the
+          // added thinking cost to the turns that use the tool, rather than
+          // raising it for every Economy chat message.
+          const hasReadAPage = liveMessages.some(
+            (message) =>
+              message.role === "user" &&
+              message.content.some((block) => (block as { type?: string }).type === "tool_result")
+          );
+          const thinkingTokens = hasReadAPage ? thinkingBudgetFor(attemptTier, effectiveMaxTokens) : 0;
+          const stream = client.messages.stream(
+            {
+              model: modelId(attemptTier),
+              max_tokens: effectiveMaxTokens,
+              system: cachedSystem,
+              // Offered only while there is room left in this turn's tool
+              // budget. Once it runs out the tools param is simply absent, which
+              // is what forces a real prose answer instead of another call: the
+              // model cannot ask for a tool that was never on the menu.
+              ...(toolRoundsLeft > 0 ? { tools: CHAT_TOOLS } : {}),
+              ...(thinkingTokens > 0 ? { thinking: { type: "enabled" as const, budget_tokens: thinkingTokens } } : {}),
+              messages: withRollingCacheBreakpoint(
+                withoutForeignThinking(withoutUnseeableImages(liveMessages, attemptTier), thinkingTokens > 0)
+              ) as Anthropic.Messages.MessageParam[]
+            },
+            { signal: input.signal }
+          );
+
+          try {
+            for await (const event of stream) {
+              if (event.type === "content_block_delta") {
+                const delta = event.delta;
+                if (delta.type === "text_delta") {
+                  producedOutput = true;
+                  yield { type: "text", text: delta.text };
+                } else if (delta.type === "thinking_delta") {
+                  producedOutput = true;
+                  yield { type: "thinking", text: delta.thinking };
+                } else if (delta.type === "citations_delta") {
+                  yield { type: "citation", citation: delta.citation };
+                }
               }
             }
+          } catch (streamError) {
+            // Make sure the stream is torn down before surfacing the error so no
+            // socket is left open.
+            stream.abort();
+            // A client cancel is expected, not a fault. An abort AFTER output was
+            // generated still incurred real provider cost, so charge it at the
+            // reservation ceiling (settleBudget clamps to the headroom-limited
+            // reservation) rather than releasing it for free; only a genuine no-output
+            // abort is released. This closes a "stream then abort in a loop" hole.
+            if (input.signal?.aborted) {
+              if (producedOutput) await settleOnce(reservationAmount);
+              else await releaseOnce();
+              return;
+            }
+            // Economy engine failed before any output: fall back to Claude once. If
+            // this was already the fallback (or output had started), surface the error.
+            if (attemptEconomy && !producedOutput && attempt < attemptTiers.length - 1) {
+              attemptFailed = true;
+              break;
+            }
+            throw streamError;
           }
-        } catch (streamError) {
-          // Make sure the stream is torn down before surfacing the error so no
-          // socket is left open.
-          stream.abort();
-          // A client cancel is expected, not a fault. An abort AFTER output was
-          // generated still incurred real provider cost, so charge it at the
-          // reservation ceiling (settleBudget clamps to the headroom-limited
-          // reservation) rather than releasing it for free; only a genuine no-output
-          // abort is released. This closes a "stream then abort in a loop" hole.
-          if (input.signal?.aborted) {
-            if (producedOutput) await settleOnce(reservationAmount);
-            else await releaseOnce();
-            return;
+
+          const finalMessage = await stream.finalMessage();
+          providerRequestId = stream.request_id ?? undefined;
+          // Accumulated across every round of every attempt, since a round that
+          // ran before a later fallback still cost real money. Re-clamped after
+          // each round so this always holds the most this turn may ever be
+          // charged, not just the final round's cost.
+          actualCost = Math.min(
+            actualCost +
+              actualCostMicrodollars(attemptTier, {
+                input_tokens: finalMessage.usage.input_tokens,
+                output_tokens: finalMessage.usage.output_tokens,
+                cache_creation_input_tokens: finalMessage.usage.cache_creation_input_tokens ?? 0,
+                cache_read_input_tokens: finalMessage.usage.cache_read_input_tokens ?? 0
+              }),
+            reservationAmount
+          );
+
+          const toolCalls = finalMessage.content.filter(
+            (block): block is Anthropic.Messages.ToolUseBlock => block.type === "tool_use"
+          );
+          if (finalMessage.stop_reason === "tool_use" && toolCalls.length > 0 && toolRoundsLeft > 0) {
+            toolRoundsLeft -= 1;
+            liveMessages.push({ role: "assistant", content: finalMessage.content });
+            const results: { type: string; tool_use_id?: string; content?: string; text?: string }[] = [];
+            for (const call of toolCalls) {
+              const url = readPageUrl(call);
+              if (!url) {
+                results.push({ type: "tool_result", tool_use_id: call.id, content: "That call was missing a url." });
+                continue;
+              }
+              const page = await fetchReadablePage(url);
+              const content = page.ok
+                ? `${page.title ? `Title: ${page.title}\n\n` : ""}${page.text}` +
+                  (page.truncated ? "\n\n...[the rest of the page was too long to include]" : "")
+                : `Could not read that page. ${page.message}`;
+              results.push({ type: "tool_result", tool_use_id: call.id, content });
+            }
+            // This was the last read allowed this turn: the next call will not
+            // offer the tool at all, and a model left to discover that on its own
+            // tends to ramble about what it would try next instead of answering
+            // with what it has. Told plainly here, it does not.
+            if (toolRoundsLeft === 0) {
+              results.push({
+                type: "text",
+                text:
+                  "You have no further page reads this turn. Answer now using only what you have read. If you " +
+                  "could not find the answer in it, say so plainly, in one sentence, rather than describing what " +
+                  "you would try next."
+              });
+            }
+            liveMessages.push({ role: "user", content: results });
+            continue;
           }
-          // Economy engine failed before any output: fall back to Claude once. If
-          // this was already the fallback (or output had started), surface the error.
-          if (attemptEconomy && !producedOutput && attempt < attemptTiers.length - 1) continue;
-          throw streamError;
+
+          // A real final answer: either the model never asked for a tool, or the
+          // round budget ran out and tools were already withheld above, which is
+          // what forced this prose answer instead of another call.
+          assistantContent = finalMessage.content;
+          break;
         }
 
-        const finalMessage = await stream.finalMessage();
-        providerRequestId = stream.request_id ?? undefined;
-        assistantContent = finalMessage.content;
-        actualCost = actualCostMicrodollars(attemptTier, {
-          input_tokens: finalMessage.usage.input_tokens,
-          output_tokens: finalMessage.usage.output_tokens,
-          cache_creation_input_tokens: finalMessage.usage.cache_creation_input_tokens ?? 0,
-          cache_read_input_tokens: finalMessage.usage.cache_read_input_tokens ?? 0
-        });
-        // The settled amount is clamped to the reservation by settleBudget, but
-        // clamp here too so the ledger invariant is honored explicitly.
-        actualCost = Math.min(actualCost, reservationAmount);
+        if (attemptFailed) continue;
         break;
       }
     }
