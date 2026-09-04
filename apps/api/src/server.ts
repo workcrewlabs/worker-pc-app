@@ -82,7 +82,7 @@ import {
 import { mpgsCheckoutPage, mpgsResultPage } from "./mpgs-page.js";
 import { landingPage } from "./landing.js";
 import { pricingPage, privacyPage, refundPolicyPage, termsPage } from "./legal.js";
-import { budgetHeadroom, budgetWindowFor, creditReferralOnPayment, dailyLimitFor, exhaustionError, getBudgetUsage, getBudgetWindow, planBudget, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
+import { budgetHeadroom, budgetWindowFor, creditReferralOnPayment, dailyLimitFor, exhaustionErrorFor, getBudgetUsage, getBudgetWindow, planBudget, releaseBudget, reserveBudget, rollingSettledUsage, settleBudget } from "./budget.js";
 import { DAY_MS } from "@workcrew/contracts";
 import { streamChat } from "./chat.js";
 import { config } from "./config.js";
@@ -654,7 +654,7 @@ app.post("/v1/recordings/summarize", { ...authLimit(20), bodyLimit: 1_536 * 1024
   const headroom = await budgetHeadroom(userId, subscription);
   const summaryMaxTokens = Math.min(400, budgetLimitedOutputTokens(summaryTier, Math.min(headroom.daily, headroom.monthly)));
   if (summaryMaxTokens < 1) {
-    throw exhaustionError(subscription.plan, headroom.daily <= headroom.monthly);
+    throw await exhaustionErrorFor(subscription, headroom.daily <= headroom.monthly);
   }
   // Reserve against the text of the trace plus a flat allowance per screenshot: a
   // small crop costs a few hundred input tokens, while its base64 text would
@@ -1235,7 +1235,7 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
     );
     const outputPrice = MODEL_PRICES[tier].output;
     if (remaining - inputEstimate < MIN_STEP_OUTPUT_TOKENS * outputPrice) {
-      throw exhaustionError(subscription.plan, headroom.daily <= headroom.monthly);
+      throw await exhaustionErrorFor(subscription, headroom.daily <= headroom.monthly);
     }
     let maxOutputTokens = Math.min(STEP_MAX_OUTPUT_TOKENS, budgetLimitedOutputTokens(tier, remaining - inputEstimate));
     const payload = modelRequestPayload(estimateMessages, tier, maxOutputTokens);
@@ -1248,7 +1248,7 @@ app.post<{ Params: { runId: string } }>("/v1/runs/:runId/next", routeLimit(90), 
     const finalOutputBudget = reservation.reservedMicrodollars - inputEstimate;
     if (finalOutputBudget < MIN_STEP_OUTPUT_TOKENS * outputPrice) {
       await releaseBudget(reservation.reservationId);
-      throw exhaustionError(subscription.plan, headroom.daily <= headroom.monthly);
+      throw await exhaustionErrorFor(subscription, headroom.daily <= headroom.monthly);
     }
     maxOutputTokens = Math.min(maxOutputTokens, budgetLimitedOutputTokens(tier, finalOutputBudget));
     try {

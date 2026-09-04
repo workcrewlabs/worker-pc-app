@@ -214,6 +214,25 @@ export async function dayAllowance(
 ): Promise<{ limit: number; monthlyLeft: number; dailyUsed: number }> {
   const window = budgetWindowFor(subscription, nowMs);
   const limits = planLimits(subscription.plan);
+  // Heal the ledger before measuring it, but only for someone who is paying.
+  //
+  // releaseAbandonedReservations was written, tested, and then called from
+  // nowhere. So a hold left behind by a killed app or a dropped connection sat
+  // as 'reserved' for ever. The rolling daily sum ages those out inline, but the
+  // MONTHLY sum counts every reserved row regardless of age, and the day's
+  // allowance is derived from what the month has left. The result was a slow,
+  // permanent leak: seven dead holds across the accounts were keeping $1.25 of
+  // real budget, one of them seventeen days old, shrinking those customers'
+  // daily allowance a little more with every run that failed to settle. For a
+  // paying customer that money is theirs and was never spent, so it goes back.
+  //
+  // The free plan is deliberately excluded, and this is the whole reason the
+  // function was never wired in: it is a ONE-TIME trial on a window that never
+  // rolls, so forgiving a hold there would hand back an exhausted trial and
+  // reward killing the app mid-run. On the trial a hold stands.
+  if (subscription.plan !== "free") {
+    await releaseAbandonedReservations(subscription.userId, nowMs);
+  }
   const [monthly, dailyUsed] = await Promise.all([
     getBudgetUsage(subscription.userId, window),
     rollingUsage(subscription.userId, nowMs - DAY_MS, nowMs)
@@ -261,12 +280,67 @@ export async function budgetHeadroom(userId: string, subscription: SubscriptionR
  * permanent upgrade message, so a free user is never told to come back tomorrow
  * for tokens that are gone for good.
  */
-export function exhaustionError(plan: PlanId, dailyBinding: boolean): Error {
+/**
+ * When the oldest spend still inside the rolling day drops out of it.
+ *
+ * The daily cap counts the last 24 hours, not the calendar day, so it does not
+ * reset at midnight and it does not "free up tomorrow": it frees up piece by
+ * piece, as each charge turns 24 hours old. Returns null when nothing is
+ * counted, which means nothing is waiting to be given back.
+ */
+export async function nextDailyRelief(userId: string, nowMs = Date.now()): Promise<number | null> {
+  const result = await client.execute({
+    sql: `SELECT MIN(created_at_ms) AS oldest FROM usage_ledger
+          WHERE user_id = ? AND created_at_ms >= ?
+            AND (status = 'settled' OR status = 'reserved')`,
+    args: [userId, nowMs - DAY_MS]
+  });
+  const oldest = result.rows[0]?.oldest;
+  if (oldest === null || oldest === undefined) return null;
+  return Number(oldest) + DAY_MS;
+}
+
+/**
+ * "Some frees up in about ..." said the way a person would, or nothing at all
+ * when there is nothing useful to promise. Pure, so the wording is testable.
+ */
+export function relievesIn(msFromNow: number | null): string {
+  if (msFromNow === null || msFromNow <= 0) return "";
+  const hours = msFromNow / 3_600_000;
+  if (hours >= 1.5) return ` Some of it frees up in about ${Math.round(hours)} hours.`;
+  const minutes = Math.max(1, Math.round(msFromNow / 60_000));
+  return ` Some of it frees up in about ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+}
+
+/**
+ * The same error, with the wait looked up for you. Used by the callers that
+ * refuse a turn before it starts, so every place a user is turned away says the
+ * same accurate thing rather than only the main gate doing so.
+ */
+export async function exhaustionErrorFor(
+  subscription: { userId: string; plan: PlanId },
+  dailyBinding: boolean,
+  nowMs = Date.now()
+): Promise<Error> {
+  if (!dailyBinding || subscription.plan === "free") return exhaustionError(subscription.plan, dailyBinding);
+  const relief = await nextDailyRelief(subscription.userId, nowMs);
+  return exhaustionError(subscription.plan, true, relief === null ? null : relief - nowMs);
+}
+
+export function exhaustionError(plan: PlanId, dailyBinding: boolean, reliefInMs: number | null = null): Error {
   if (plan === "free") {
     return Object.assign(new Error("You have used all your free tokens. Upgrade to keep going."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
   }
   if (dailyBinding) {
-    return Object.assign(new Error("You have hit your usage limit for today. It will free up tomorrow."), { statusCode: 429, code: "RATE_LIMIT_DAY" });
+    // Deliberately not "today" and not "tomorrow". The cap is the last 24 hours,
+    // so a user who spent it last night and opened the app this morning was told
+    // his day's limit was gone before he had done anything, and that it would
+    // return "tomorrow", which was not true either. Say what is actually
+    // happening and when it actually eases.
+    return Object.assign(
+      new Error(`You have used your allowance for the last 24 hours.${relievesIn(reliefInMs)}`),
+      { statusCode: 429, code: "RATE_LIMIT_DAY" }
+    );
   }
   return Object.assign(new Error("You have used all your tokens for this period."), { statusCode: 402, code: "BUDGET_EXHAUSTED" });
 }
@@ -364,11 +438,13 @@ export async function reserveBudget(input: {
 
   if (rowsAffected !== 1) {
     // The insert only fails when a window is already exhausted. Report which one
-    // is binding so the user sees a clear, accurate message.
-    // "Frees up tomorrow" is only true when the day is what ran out. If the month
-    // is also gone, tomorrow brings nothing, so the month is reported instead.
+    // is binding so the user sees a clear, accurate message. Relief only means
+    // something when the DAY is what ran out; if the month is gone too, waiting
+    // brings nothing back and the message says so instead.
     const dailyUsed = await rollingUsage(input.subscription.userId, dayStart, nowMs);
-    throw exhaustionError(input.subscription.plan, day.monthlyLeft > 0 && dailyUsed >= dailyLimit);
+    const dailyBinding = day.monthlyLeft > 0 && dailyUsed >= dailyLimit;
+    const relief = dailyBinding ? await nextDailyRelief(input.subscription.userId, nowMs) : null;
+    throw exhaustionError(input.subscription.plan, dailyBinding, relief === null ? null : relief - nowMs);
   }
   // Read back the amount actually reserved. The SQL clamps it to the headroom that
   // was left at insert time (serialized by the advisory lock), so this is the real

@@ -83,7 +83,10 @@ describe("free tier", () => {
     // A paid plan's rolling daily cap genuinely does refill, so it keeps saying so.
     const paidDaily = exhaustionError("pro", true) as Error & { code: string };
     expect(paidDaily.code).toBe("RATE_LIMIT_DAY");
-    expect(paidDaily.message).toMatch(/tomorrow/i);
+    // Deliberately not "tomorrow": the paid daily cap is a rolling 24 hours, so
+    // it eases as each charge ages out rather than resetting at midnight.
+    expect(paidDaily.message).toMatch(/last 24 hours/i);
+    expect(paidDaily.message).not.toMatch(/tomorrow/i);
 
     const paidPeriod = exhaustionError("pro", false) as Error & { code: string };
     expect(paidPeriod.code).toBe("BUDGET_EXHAUSTED");
