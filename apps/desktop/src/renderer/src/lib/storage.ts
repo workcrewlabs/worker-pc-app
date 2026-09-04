@@ -127,6 +127,34 @@ export function setConversationFolder(conversationId: string, folder: WorkingFol
   write(FOLDERS_KEY, map);
 }
 
+// The folder new chats open in, so launching the app is enough to be back in
+// the project instead of picking the same folder on every launch. It is simply
+// the last folder the user chose: choosing one makes it the default, taking the
+// folder off gives the default up. localStorage is readable by anything in the
+// renderer, so what comes back is validated and bounded before it can become
+// a run's working directory.
+
+const DEFAULT_FOLDER_KEY = "defaultFolder";
+const MAX_FOLDER_TEXT = 1_000;
+
+export function loadDefaultFolder(): WorkingFolder | null {
+  const saved = read<WorkingFolder | null>(DEFAULT_FOLDER_KEY, null);
+  if (!saved || typeof saved.path !== "string" || typeof saved.name !== "string") return null;
+  if (saved.path.length === 0 || saved.path.length > MAX_FOLDER_TEXT || saved.name.length > MAX_FOLDER_TEXT) return null;
+  return { path: saved.path, name: saved.name };
+}
+
+export function saveDefaultFolder(folder: WorkingFolder | null): void {
+  if (!folder) {
+    write(DEFAULT_FOLDER_KEY, null);
+    return;
+  }
+  write(DEFAULT_FOLDER_KEY, {
+    path: folder.path.slice(0, MAX_FOLDER_TEXT),
+    name: folder.name.slice(0, MAX_FOLDER_TEXT)
+  });
+}
+
 // Onboarding ----------------------------------------------------------------
 // The first-run flow (name, role, starter prompt), shown once per install.
 // `starter` briefly holds the prompt the user picked so the workspace can drop

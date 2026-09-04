@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AttachmentRef, ModelTier, PlanId } from "@workcrew/contracts";
 import { conversationDigest, type ChatTurn, type LocalFile } from "../lib/chat";
-import { loadComposerMode, loadTranscript, saveComposerMode, saveTranscript, setConversationFolder, type PermissionState, type WorkingFolder } from "../lib/storage";
+import { loadComposerMode, loadDefaultFolder, loadTranscript, saveComposerMode, saveDefaultFolder, saveTranscript, setConversationFolder, type PermissionState, type WorkingFolder } from "../lib/storage";
 import { useChatStream } from "../hooks/useChatStream";
 import { useAutomationRunner } from "../hooks/useAutomationRunner";
 import { ChatView } from "./ChatView";
@@ -52,6 +52,26 @@ type Props = {
   plan: PlanId | null;
   onSeePlans: () => void;
 };
+
+/**
+ * The folder a pane that is just starting should open in.
+ *
+ * A conversation reopened from Recents keeps the folder it had (including
+ * having none), and a pane running a routine runs it where the routine said;
+ * only a genuinely fresh pane (the one the app opens with, or a New chat)
+ * starts in the remembered default, so launching WorkCrew is enough to be back
+ * in the project instead of picking the folder again.
+ */
+export function folderForNewPane(
+  restoredFolder: WorkingFolder | null | undefined,
+  conversationId: string | undefined,
+  automation: { task: string; label: string } | undefined,
+  remembered: WorkingFolder | null
+): WorkingFolder | null {
+  if (restoredFolder) return restoredFolder;
+  if (conversationId || automation) return null;
+  return remembered;
+}
 
 export function ConversationPane({
   paneKey,
@@ -139,6 +159,22 @@ export function ConversationPane({
     setComputerHint("");
   }
 
+  // A folder the user chooses themselves also becomes the default the next new
+  // chat opens in, so picking it once is enough. Restoring a conversation's own
+  // folder deliberately does not: reopening an old chat must not quietly change
+  // where the next new one starts.
+  function chooseWorkingFolder(folder: WorkingFolder): void {
+    saveDefaultFolder(folder);
+    addWorkingFolder(folder);
+  }
+
+  // Taking the folder off also gives up the default, so the default is always
+  // the user's last choice and never a setting they cannot turn off.
+  function clearWorkingFolder(): void {
+    setWorkingFolder(null);
+    saveDefaultFolder(null);
+  }
+
   async function pickFolder(): Promise<void> {
     if (isWebBuild) {
       setDownloadGate("Working in a folder");
@@ -146,7 +182,7 @@ export function ConversationPane({
     }
     try {
       const picked = await window.workcrew.files.pickFolder();
-      if (picked) addWorkingFolder(picked);
+      if (picked) chooseWorkingFolder(picked);
     } catch {
       // Cancelled or unavailable: leave the current folder as is.
     }
@@ -327,7 +363,18 @@ export function ConversationPane({
     if (seedTurns.length > 0 || initialConversationId) {
       chat.reset(seedTurns, initialConversationId);
     }
-    if (initialWorkingFolder) addWorkingFolder(initialWorkingFolder);
+    // A pane that starts fresh (the one the app opens with, or a New chat; not
+    // a conversation reopened from Recents, and not a routine's pane) opens in
+    // the remembered default folder. The startup pane keeps its transcript
+    // across launches but never kept its folder, which is why picking the same
+    // folder on every launch was the experience this replaces.
+    const opening = folderForNewPane(
+      initialWorkingFolder,
+      initialConversationId,
+      initialAutomation,
+      isWebBuild ? null : loadDefaultFolder()
+    );
+    if (opening) addWorkingFolder(opening);
     if (initialAutomation && initialAutomation.task.trim().length >= 3) {
       runAutomation(initialAutomation.task, initialAutomation.label);
     }
@@ -592,8 +639,8 @@ export function ConversationPane({
         composerSeed={active ? composerSeed : undefined}
         workingFolder={workingFolder}
         onPickFolder={() => void pickFolder()}
-        onClearFolder={() => setWorkingFolder(null)}
-        onAddFolder={isWebBuild ? undefined : addWorkingFolder}
+        onClearFolder={clearWorkingFolder}
+        onAddFolder={isWebBuild ? undefined : chooseWorkingFolder}
         plan={plan}
         mode={mode}
         onModeChange={setMode}
