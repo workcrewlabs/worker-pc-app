@@ -86,7 +86,7 @@ describe("holds left behind by a run that never finished", () => {
     ]);
     const day = await dayAllowance({ userId, plan: "pro", budgetAnchorMs: now - DAY_MS }, now);
     // With the hold released the whole monthly cap is available again.
-    expect(day.monthlyLeft).toBe(48_000_000);
+    expect(day.monthlyLeft).toBe(12_000_000);
   });
 
   it("never forgives a hold on the free trial, which is one-time", async () => {
@@ -112,7 +112,7 @@ describe("holds left behind by a run that never finished", () => {
       sql: `INSERT INTO usage_ledger(
           id, user_id, run_id, period_start_ms, period_end_ms, model,
           reserved_microdollars, actual_microdollars, status, created_at_ms
-        ) VALUES (?, ?, 'run', ?, ?, 'haiku', 1200000, 0, 'reserved', ?)`,
+        ) VALUES (?, ?, 'run', ?, ?, 'haiku', 300000, 0, 'reserved', ?)`,
       args: [randomUUID(), userId, window.startMs, window.endMs, now - 30 * DAY_MS]
     });
 

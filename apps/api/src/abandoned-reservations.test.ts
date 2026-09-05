@@ -75,7 +75,7 @@ describe("a reservation left behind by a run that died", () => {
     const headroom = await budgetHeadroom(subscription.userId, subscription, nowMs);
     // The whole allowance is back: nothing was actually spent.
     expect(headroom.daily).toBeGreaterThan(0);
-    expect(headroom.monthly).toBe(48_000_000);
+    expect(headroom.monthly).toBe(12_000_000);
   });
 
   it("does not block the next real reservation", async () => {

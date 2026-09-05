@@ -65,7 +65,7 @@ describe("streamChat mock path", () => {
     if (last?.type !== "done") throw new Error("expected a terminal done frame");
     expect(last.conversationId).toMatch(/[0-9a-f-]{36}/);
     expect(last.messageId).toMatch(/[0-9a-f-]{36}/);
-    expect(last.usage.budgetMicrodollars).toBe(240_000_000);
+    expect(last.usage.budgetMicrodollars).toBe(60_000_000);
     // The mock turn settles a small fixed cost, so used is positive but tiny.
     expect(last.usage.usedMicrodollars).toBeGreaterThan(0);
     expect(last.usage.usedMicrodollars).toBeLessThanOrEqual(last.usage.budgetMicrodollars);

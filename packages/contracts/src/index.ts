@@ -51,34 +51,30 @@ export const PLAN_CATALOG = {
     // a free user can spend the whole $0.30 on day one and then must upgrade
     // (or wait for the next monthly window). Runs on the Economy engine like
     // any economy-mode account, so the $0.30 stretches as far as possible.
-    //
-    // Every figure below is 4x its original value, funded by Economy mode's
-    // effort ladder moving off a single flagship model onto a cheap flash tier
-    // and a second cheap provider for most traffic: the same plan price now
-    // buys four times the allowance at the same real cost to serve it.
-    dailyMicrodollars: 1_200_000,
-    monthlyApiBudgetMicrodollars: 1_200_000,
+    dailyMicrodollars: 300_000,
+    monthlyApiBudgetMicrodollars: 300_000,
     devices: 1
   },
   pro: {
     name: "Pro",
     monthlyPriceUsd: 27,
     yearlyPriceUsd: 270,
-    // $12 / month worth of usage at the old rate, now 4x that (see the note on
-    // the free plan above), still paced at one thirtieth of the month per day.
-    dailyMicrodollars: 1_600_000,
-    monthlyApiBudgetMicrodollars: 48_000_000,
+    // $12 / month, paced as $0.40 / day (12 / 30). The daily cap is the everyday
+    // gate; the monthly cap is the overall allowance a steady daily user reaches
+    // at month end.
+    dailyMicrodollars: 400_000,
+    monthlyApiBudgetMicrodollars: 12_000_000,
     devices: 1
   },
   ultra: {
     name: "Ultra",
     monthlyPriceUsd: 200,
     yearlyPriceUsd: 2_000,
-    // $60 / month worth of usage at the old rate, now 4x that (see the note on
-    // the free plan above). Day-to-day headroom scales with it, still well above
-    // Pro, matching the higher price.
-    dailyMicrodollars: 7_800_000,
-    monthlyApiBudgetMicrodollars: 240_000_000,
+    // $60 / month. The daily gate stops at $1.95 (1_950_000), a small margin under
+    // $2.00 so a user never sees the day's spend tick past two dollars. Much higher
+    // day-to-day headroom than Pro, matching the higher price.
+    dailyMicrodollars: 1_950_000,
+    monthlyApiBudgetMicrodollars: 60_000_000,
     devices: 5
   }
 } as const satisfies Record<PlanId, {

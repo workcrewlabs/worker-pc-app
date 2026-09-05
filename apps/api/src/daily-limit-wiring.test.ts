@@ -64,7 +64,7 @@ describe("the day's allowance, everywhere it is used", () => {
     const subscription = makeSubscription("ultra", 5 * 24 * HOUR);
     const nowMs = subscription.budgetAnchorMs + 5 * 24 * HOUR;
     // Most of the month burned on earlier days, so only the month is squeezed.
-    await seedSettled(subscription, 220_000_000, nowMs - 2 * 24 * HOUR);
+    await seedSettled(subscription, 55_000_000, nowMs - 2 * 24 * HOUR);
     expect(await dailyLimitFor(subscription, nowMs)).toBe(ULTRA_FLAT_DAILY);
   });
 
@@ -86,7 +86,7 @@ describe("the day's allowance, everywhere it is used", () => {
   it("shows headroom against the same limit it enforces", async () => {
     const subscription = makeSubscription("ultra");
     const nowMs = subscription.budgetAnchorMs;
-    const spend = 12_000_000;
+    const spend = 3_000_000;
     const held = await reserveBudget({
       subscription, runId: randomUUID(), model: "sonnet", amountMicrodollars: spend, nowMs
     });

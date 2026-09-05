@@ -15,14 +15,14 @@ describe("plan catalog", () => {
   });
 
   it("sets the hard API-cost caps per plan", () => {
-    // Pro: $1.60 / day, $48 / month. The daily cap is the everyday rolling gate,
+    // Pro: $0.40 / day, $12 / month. The daily cap is the everyday rolling gate,
     // sized as the monthly divided by 30; the monthly cap is the overall ceiling.
-    expect(PLAN_CATALOG.pro.dailyMicrodollars).toBe(1_600_000);
-    expect(PLAN_CATALOG.pro.monthlyApiBudgetMicrodollars).toBe(48_000_000);
-    // Ultra: $7.80 / day (a small margin under the $8 pace so the shown daily spend
-    // never ticks past eight dollars), $240 / month.
-    expect(PLAN_CATALOG.ultra.dailyMicrodollars).toBe(7_800_000);
-    expect(PLAN_CATALOG.ultra.monthlyApiBudgetMicrodollars).toBe(240_000_000);
+    expect(PLAN_CATALOG.pro.dailyMicrodollars).toBe(400_000);
+    expect(PLAN_CATALOG.pro.monthlyApiBudgetMicrodollars).toBe(12_000_000);
+    // Ultra: $1.95 / day (a small margin under the $2 pace so the shown daily spend
+    // never ticks past two dollars), $60 / month.
+    expect(PLAN_CATALOG.ultra.dailyMicrodollars).toBe(1_950_000);
+    expect(PLAN_CATALOG.ultra.monthlyApiBudgetMicrodollars).toBe(60_000_000);
   });
 
   it("keeps each plan's caps consistent (daily below monthly, at or under monthly / 30)", () => {
@@ -33,9 +33,9 @@ describe("plan catalog", () => {
       expect(plan.dailyMicrodollars).toBeLessThan(plan.monthlyApiBudgetMicrodollars);
       expect(plan.dailyMicrodollars).toBeLessThanOrEqual(Math.round(plan.monthlyApiBudgetMicrodollars / 30));
     }
-    // Pro is exactly monthly / 30; Ultra is $0.20/day under its $8 pace.
+    // Pro is exactly monthly / 30; Ultra is $0.05/day under its $2 pace.
     expect(PLAN_CATALOG.pro.dailyMicrodollars).toBe(Math.round(PLAN_CATALOG.pro.monthlyApiBudgetMicrodollars / 30));
-    expect(Math.round(PLAN_CATALOG.ultra.monthlyApiBudgetMicrodollars / 30) - PLAN_CATALOG.ultra.dailyMicrodollars).toBe(200_000);
+    expect(Math.round(PLAN_CATALOG.ultra.monthlyApiBudgetMicrodollars / 30) - PLAN_CATALOG.ultra.dailyMicrodollars).toBe(50_000);
   });
 });
 
