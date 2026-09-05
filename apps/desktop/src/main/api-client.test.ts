@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RETRY_DELAY_MS, backendUnavailableMessage, isTransientStatus } from "./api-client";
+import { RETRY_DELAY_MS, backendUnavailableMessage, isTransientStatus, neverReachedTheBackend } from "./api-client";
 
 // A folder run died mid-task showing the user this:
 //   SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
@@ -75,5 +75,50 @@ describe("the pause before trying again", () => {
   it("waits long enough for a restart, briefly enough to sit through", () => {
     expect(RETRY_DELAY_MS).toBeGreaterThanOrEqual(500);
     expect(RETRY_DELAY_MS).toBeLessThanOrEqual(3_000);
+  });
+});
+
+// The chat stream opens its own connection rather than going through
+// ApiClient, so it needed the same judgement about what is safe to send twice.
+// The failure that prompted this was a message answered with the word "fetch
+// failed": the backend had been restarting, so nothing was ever delivered.
+
+describe("what is safe to send a second time", () => {
+  const withCode = (code: string): Error => Object.assign(new Error("fetch failed"), { cause: { code } });
+
+  it("retries a connection that was refused outright", () => {
+    // Nothing was delivered, so a second attempt cannot duplicate anything.
+    expect(neverReachedTheBackend(withCode("ECONNREFUSED"))).toBe(true);
+  });
+
+  it("retries a hostname that did not resolve", () => {
+    expect(neverReachedTheBackend(withCode("ENOTFOUND"))).toBe(true);
+  });
+
+  it("does not retry a connection dropped after it was opened", () => {
+    // This is the dangerous one. The request may have landed and started
+    // spending, so sending it again would file the message twice and charge
+    // for both.
+    expect(neverReachedTheBackend(withCode("ECONNRESET"))).toBe(false);
+    expect(neverReachedTheBackend(withCode("ETIMEDOUT"))).toBe(false);
+    expect(neverReachedTheBackend(withCode("EPIPE"))).toBe(false);
+  });
+
+  it("does not retry a failure that says nothing about delivery", () => {
+    expect(neverReachedTheBackend(new Error("fetch failed"))).toBe(false);
+    expect(neverReachedTheBackend(undefined)).toBe(false);
+    expect(neverReachedTheBackend(null)).toBe(false);
+    expect(neverReachedTheBackend("ECONNREFUSED")).toBe(false);
+  });
+
+  it("does not mistake a non-string code for one it recognises", () => {
+    expect(neverReachedTheBackend({ cause: { code: 111 } })).toBe(false);
+  });
+
+  it("tells the user something they can act on instead of 'fetch failed'", () => {
+    // The whole point of the change: Node's own wording never reaches a person.
+    const shown = backendUnavailableMessage(0);
+    expect(shown).not.toMatch(/fetch failed/i);
+    expect(shown).toMatch(/connection/i);
   });
 });

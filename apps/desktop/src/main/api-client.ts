@@ -68,6 +68,21 @@ export function backendUnavailableMessage(status: number): string {
  *  it. */
 export const RETRY_DELAY_MS = 1_200;
 
+/**
+ * Whether a failed connection attempt definitely never reached the backend.
+ *
+ * This is the whole safety question behind retrying. "Refused" and "not found"
+ * mean nothing was delivered, so sending it again cannot duplicate anything. A
+ * connection dropped mid-flight is different: the request may have landed and
+ * started work, and retrying it would file the message twice and charge for
+ * both. So only the two unambiguous cases are retried.
+ */
+export function neverReachedTheBackend(error: unknown): boolean {
+  const cause = (error as { cause?: { code?: unknown } } | undefined)?.cause;
+  const code = typeof cause?.code === "string" ? cause.code : "";
+  return code === "ECONNREFUSED" || code === "ENOTFOUND";
+}
+
 export class ApiClient {
   // Resolved per request so a backend URL saved in Settings takes effect without
   // an app restart.

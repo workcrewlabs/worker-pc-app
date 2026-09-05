@@ -21,7 +21,7 @@ import {
   type ChatDeltaFrame
 } from "@workcrew/contracts";
 import { z } from "zod";
-import { ApiClient } from "./api-client.js";
+import { ApiClient, RETRY_DELAY_MS, backendUnavailableMessage, neverReachedTheBackend } from "./api-client.js";
 import { AuthVault } from "./auth-vault.js";
 import { BrowserCli } from "./browser-cli.js";
 import {
@@ -123,14 +123,19 @@ function sendChatFrame(requestId: string, frame: ChatDeltaFrame): void {
 // blank lines, parse each "data:" line as a ChatDeltaFrame, and forward every
 // frame to the renderer. Any failure is reported to the renderer as an error
 // frame carrying the same request id so the UI can recover.
-async function streamChat(requestId: string, body: unknown): Promise<void> {
-  const controller = new AbortController();
-  chatStreams.set(requestId, controller);
-  try {
-    const token = await auth.getAccessToken();
-    if (!token) throw new Error("Sign in is required");
 
-    const response = await fetch(`${getBackendUrl()}/v1/chat`, {
+/**
+ * Open the chat stream, retrying once when the backend was not listening.
+ *
+ * A backend that is restarting refuses connections for a second or two. Without
+ * this, a message sent inside that window died with Node's own words, "fetch
+ * failed", shown to the user as the answer to what they asked. That is both
+ * unreadable and needless: nothing had been sent, so asking again a moment later
+ * simply works.
+ */
+async function openChatStream(token: string, body: unknown, signal: AbortSignal): Promise<Response> {
+  const send = (): Promise<Response> =>
+    fetch(`${getBackendUrl()}/v1/chat`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
@@ -138,8 +143,34 @@ async function streamChat(requestId: string, body: unknown): Promise<void> {
         accept: "text/event-stream"
       },
       body: JSON.stringify(body),
-      signal: controller.signal
+      signal
     });
+
+  try {
+    return await send();
+  } catch (error) {
+    if (signal.aborted || !neverReachedTheBackend(error)) {
+      // Anything else keeps its own error, but never Node's raw wording.
+      throw signal.aborted ? error : new Error(backendUnavailableMessage(0));
+    }
+    await new Promise((wait) => setTimeout(wait, RETRY_DELAY_MS));
+    try {
+      return await send();
+    } catch (retryError) {
+      if (signal.aborted) throw retryError;
+      throw new Error(backendUnavailableMessage(0));
+    }
+  }
+}
+
+async function streamChat(requestId: string, body: unknown): Promise<void> {
+  const controller = new AbortController();
+  chatStreams.set(requestId, controller);
+  try {
+    const token = await auth.getAccessToken();
+    if (!token) throw new Error("Sign in is required");
+
+    const response = await openChatStream(token, body, controller.signal);
 
     if (!response.ok || !response.body) {
       let message = "The chat service is unavailable";
