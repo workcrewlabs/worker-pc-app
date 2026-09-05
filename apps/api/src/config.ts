@@ -81,6 +81,11 @@ const envSchema = z.object({
     z.string().url().default("https://api.z.ai/api/anthropic")
   ),
   ZAI_MODEL: z.string().default("glm-4.6"),
+  // The cheap, high-throughput sibling of ZAI_MODEL, same provider and endpoint,
+  // a different model id. This is what Quick answer routes to in Economy mode:
+  // ZAI_MODEL stays the stronger, pricier model for High effort and for Auto's
+  // own escalation, so one env var never has to serve two very different jobs.
+  ZAI_FLASH_MODEL: z.string().default("glm-5.3-flash"),
   // How much room the Economy engine gets to think, in tokens. Newer GLM models
   // (5.3 and up) ALWAYS think and refuse any request that does not ask for it,
   // answering "this model always engages in thinking and cannot be disabled".
@@ -88,6 +93,20 @@ const envSchema = z.object({
   // and switching ZAI_MODEL between them needs no other change. Zero turns it
   // off, for an engine that one day rejects it.
   ZAI_THINKING_BUDGET: z.coerce.number().int().min(0).max(8_000).default(1_024),
+  // A second, independent Economy-tier engine for Medium effort: a different
+  // provider from ZAI, same Anthropic-compatible Messages format, so it plugs
+  // into the same request-building code with no new wire format to support.
+  // Optional, like ZAI_API_KEY: unset means Medium effort quietly falls back to
+  // the flagship Economy model instead of failing, so nothing breaks before this
+  // key exists. Getting it requires an account at platform.minimax.io, which is
+  // the operator's own sign-up (a real account and its own billing), not
+  // something this app can create on anyone's behalf.
+  MINIMAX_API_KEY: z.string().optional(),
+  MINIMAX_BASE_URL: z.preprocess(
+    (value) => (typeof value === "string" && value.length > 0 ? value : undefined),
+    z.string().url().default("https://api.minimax.io/anthropic")
+  ),
+  MINIMAX_MODEL: z.string().default("MiniMax-M3"),
   // Transactional email (sign-up verification and password reset). When
   // RESEND_API_KEY is set the backend sends real email; otherwise it logs the
   // link to the server output so the flow is testable locally. WORKCREW_PUBLIC_URL
@@ -340,7 +359,9 @@ export const config = {
     haiku: env.ANTHROPIC_HAIKU_MODEL,
     sonnet: env.ANTHROPIC_SONNET_MODEL,
     opus: env.ANTHROPIC_OPUS_MODEL,
-    glm: env.ZAI_MODEL
+    glm: env.ZAI_MODEL,
+    "glm-flash": env.ZAI_FLASH_MODEL,
+    minimax: env.MINIMAX_MODEL
   },
   zaiThinkingBudget: env.ZAI_THINKING_BUDGET,
   // Economy-mode provider. enabled is true only when an API key is present, which
@@ -349,6 +370,15 @@ export const config = {
     apiKey: env.ZAI_API_KEY,
     baseUrl: env.ZAI_BASE_URL.replace(/\/$/, ""),
     enabled: Boolean(env.ZAI_API_KEY)
+  },
+  // Same shape as zai above, a second Economy-tier provider. enabled gates
+  // Medium effort exactly the way zai's own flag gates the rest of Economy
+  // mode: false until a real key is added, and every route falls back rather
+  // than failing in the meantime.
+  minimax: {
+    apiKey: env.MINIMAX_API_KEY,
+    baseUrl: env.MINIMAX_BASE_URL.replace(/\/$/, ""),
+    enabled: Boolean(env.MINIMAX_API_KEY)
   },
   resendApiKey: env.RESEND_API_KEY,
   emailFrom: env.EMAIL_FROM,

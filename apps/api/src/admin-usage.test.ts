@@ -65,10 +65,10 @@ describe("what each account has spent of its monthly allowance", () => {
   it("reports the spend and the cap for a paying account", async () => {
     const { userId, email } = await makeUser();
     await adminGrantAccess(actor, userId, "pro", 1);
-    await spend(userId, { settled: 3_000_000 });
+    await spend(userId, { settled: 12_000_000 });
 
     const row = await rowFor(email);
-    expect(row.monthlySpentMicrodollars).toBe(3_000_000);
+    expect(row.monthlySpentMicrodollars).toBe(12_000_000);
     expect(row.monthlyLimitMicrodollars).toBe(planBudget("pro"));
     expect(row.monthlyPercent).toBe(25);
   });
@@ -108,7 +108,7 @@ describe("what each account has spent of its monthly allowance", () => {
       budgetAnchorMs: Date.now(),
       currentPeriodEndMs: Date.now() + 100 * 365 * 24 * 60 * 60 * 1000
     });
-    await spend(userId, { settled: 150_000 });
+    await spend(userId, { settled: 600_000 });
 
     const row = await rowFor(email);
     expect(row.monthlyLimitMicrodollars).toBe(planBudget("free"));

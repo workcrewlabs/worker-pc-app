@@ -154,7 +154,7 @@ describe("budget ledger invariants", () => {
     const anchor = subscription.budgetAnchorMs;
     // Fill the whole monthly cap as old usage, outside the rolling windows, so only
     // the monthly cap is binding.
-    await seedSettled(subscription.userId, 12_000_000, anchor, anchor);
+    await seedSettled(subscription.userId, 48_000_000, anchor, anchor);
     await expect(
       reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000, nowMs: anchor + 48 * HOUR })
     ).rejects.toMatchObject({ code: "BUDGET_EXHAUSTED" });
@@ -225,17 +225,17 @@ describe("budget ledger invariants", () => {
     // (monthly) accurately.
     const subscription = makeSubscription();
     const nowMs = subscription.budgetAnchorMs;
-    // Pro caps: monthly 12M, plan daily 400k. Seed 300k of settled usage today.
+    // Pro caps: monthly 48M, plan daily 1.6M. Seed 300k of settled usage today.
     await seedSettled(subscription.userId, 300_000, nowMs, subscription.budgetAnchorMs);
     const headroom = await budgetHeadroom(subscription.userId, subscription, nowMs);
-    expect(headroom.monthly).toBe(11_700_000); // 12M cap - 300k used
+    expect(headroom.monthly).toBe(47_700_000); // 48M cap - 300k used
     // The daily allowance is no longer a fixed 400k: it is what the month had
-    // before today (the full 12M) spread over the days left, doubled so a heavy
+    // before today (the full 48M) spread over the days left, doubled so a heavy
     // day is possible. Of that, 300k is spent.
     const period = budgetWindowFor(subscription, nowMs);
-    const allowance = adaptiveDailyLimit(400_000, 12_000_000, period.endMs - nowMs);
+    const allowance = adaptiveDailyLimit(1_600_000, 48_000_000, period.endMs - nowMs);
     expect(headroom.daily).toBe(allowance - 300_000);
-    // The point of the change: far more than the old fixed 400k cap allowed.
+    // The point of the change: far more than the old fixed daily cap allowed.
     expect(headroom.daily).toBeGreaterThan(100_000);
     // And it is still genuinely a daily limit: smaller than the month.
     expect(headroom.daily).toBeLessThan(headroom.monthly);

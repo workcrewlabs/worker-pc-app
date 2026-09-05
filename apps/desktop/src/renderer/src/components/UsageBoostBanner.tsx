@@ -4,7 +4,7 @@ import { useState } from "react";
 // upgrade. It is purely informational and changes nothing. Dismissing it (the X,
 // the Got it button, or clicking the backdrop) records a flag so it never shows
 // again on this device. Bump the key suffix to run a future one-time announcement.
-const SEEN_KEY = "workcrew.announce.usageBoost.v1";
+const SEEN_KEY = "workcrew.announce.usageBoost.v2";
 
 function alreadySeen(): boolean {
   // Treat unavailable storage as "seen" so a storage error can never make the
@@ -34,8 +34,8 @@ export function UsageBoostBanner() {
       <div className="announce-card" onClick={(event) => event.stopPropagation()}>
         <button type="button" className="announce-close" aria-label="Dismiss" onClick={dismiss}>&#215;</button>
         <span className="announce-eyebrow">What's new</span>
-        <h2 id="announce-title" className="announce-title">You now get about <span className="announce-accent">3x more</span> usage</h2>
-        <p className="announce-body">WorkCrew just got much more efficient, so your plan goes a lot further. The same plan now gets you roughly three times more chats and automations, at no extra cost. It's already on, nothing to change.</p>
+        <h2 id="announce-title" className="announce-title">You now get <span className="announce-accent">4x more</span> usage</h2>
+        <p className="announce-body">WorkCrew just got much more efficient, so your plan goes a lot further. The same plan now gets you four times more chats and automations, at no extra cost. It's already on, nothing to change.</p>
         <div className="announce-actions">
           <button type="button" className="primary announce-cta" onClick={dismiss}>Got it</button>
         </div>

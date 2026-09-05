@@ -49,7 +49,7 @@ describe("free tier", () => {
     expect(row?.stripeSubscriptionId).toBe(stripeSubscriptionId);
   });
 
-  it("caps a free user's spend at the $0.30 monthly allowance", async () => {
+  it("caps a free user's spend at the $1.20 monthly allowance", async () => {
     const userId = randomUUID();
     await grantFreeSubscriptionIfAbsent(userId);
     const subscription = await getSubscription(userId);
@@ -57,14 +57,14 @@ describe("free tier", () => {
 
     const headroom = await budgetHeadroom(userId, subscription);
     expect(headroom.monthly).toBe(PLAN_CATALOG.free.monthlyApiBudgetMicrodollars);
-    expect(headroom.monthly).toBe(300_000);
+    expect(headroom.monthly).toBe(1_200_000);
 
     // Reserve most of the allowance, then confirm the next reservation is
-    // clamped to what is actually left, so the total can never pass $0.30.
-    const first = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 250_000 });
-    expect(first.reservedMicrodollars).toBe(250_000);
-    const second = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 100_000 });
-    expect(second.reservedMicrodollars).toBeLessThanOrEqual(50_000);
+    // clamped to what is actually left, so the total can never pass $1.20.
+    const first = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_000_000 });
+    expect(first.reservedMicrodollars).toBe(1_000_000);
+    const second = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 400_000 });
+    expect(second.reservedMicrodollars).toBeLessThanOrEqual(200_000);
   });
 
   // Every budget gate in the API reports exhaustion through this one helper. A
@@ -110,10 +110,10 @@ describe("free tier", () => {
     const subscription = await getSubscription(userId);
     if (!subscription) throw new Error("free grant missing");
 
-    // Spend the whole $0.30 now.
+    // Spend the whole $1.20 now.
     const now = Date.UTC(2026, 2, 1);
-    const spend = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 300_000, nowMs: now });
-    expect(spend.reservedMicrodollars).toBe(300_000);
+    const spend = await reserveBudget({ subscription, runId: randomUUID(), model: "haiku", amountMicrodollars: 1_200_000, nowMs: now });
+    expect(spend.reservedMicrodollars).toBe(1_200_000);
 
     // 90 days later a paid plan's window would have rolled twice; the free plan
     // must still be blocked because the lifetime window never moves.

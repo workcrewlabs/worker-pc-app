@@ -76,6 +76,33 @@ const MAX_CHAT_TOOL_ROUNDS = 2;
  *  or a plain explanation when the model sent something else. Written this way
  *  rather than trusting the SDK's loose `unknown` input, because the one thing
  *  worse than refusing a bad call is running fetch() on whatever came back. */
+/** Whether this tier's provider has a real key configured right now. */
+function engineKeyPresent(tier: ConcreteModelTier): boolean {
+  const engine = provider(tier);
+  if (engine === "zai") return Boolean(config.zai.apiKey);
+  if (engine === "minimax") return Boolean(config.minimax.apiKey);
+  return Boolean(config.anthropicApiKey);
+}
+
+/**
+ * Build the SDK client for whichever provider serves this tier. All three speak
+ * the Anthropic Messages format, so one client type covers every engine; only
+ * the address and the auth header differ.
+ *
+ * MiniMax's own docs say to set `ANTHROPIC_API_KEY`, the variable name the
+ * official Anthropic SDK reads for its default `apiKey` (x-api-key) auth, which
+ * is why this uses `apiKey` here rather than the `authToken` (Bearer) zai
+ * needs. Not verified against a real MiniMax key yet; if every Medium-effort
+ * call fails with an auth error once a key is added, this is the first place
+ * to check.
+ */
+function buildClient(tier: ConcreteModelTier): Anthropic {
+  const engine = provider(tier);
+  if (engine === "zai") return new Anthropic({ authToken: config.zai.apiKey ?? "", baseURL: config.zai.baseUrl });
+  if (engine === "minimax") return new Anthropic({ apiKey: config.minimax.apiKey ?? "", baseURL: config.minimax.baseUrl });
+  return new Anthropic({ apiKey: config.anthropicApiKey });
+}
+
 function readPageUrl(block: { input?: unknown }): string | null {
   const input = block.input as { url?: unknown } | undefined;
   return typeof input?.url === "string" && input.url.trim().length > 0 ? input.url.trim() : null;
@@ -412,8 +439,7 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
     }
     effectiveMaxTokens = Math.min(effectiveMaxTokens, budgetLimitedOutputTokens(tier, finalOutputBudget));
 
-    const isEconomyEngine = provider(tier) === "zai";
-    const useMock = config.mockAi || (isEconomyEngine ? !config.zai.apiKey : !config.anthropicApiKey);
+    const useMock = config.mockAi || !engineKeyPresent(tier);
 
     let assistantContent: unknown[] = [];
     let actualCost = 0;
@@ -455,24 +481,34 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       const cachedSystem: Anthropic.Messages.TextBlockParam[] = [
         { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }
       ];
-      // Try the routed engine; if the Economy engine fails BEFORE any output has
-      // streamed (a config, format, or upstream error, not a user cancel), fall back
-      // once to Claude so a provider hiccup never blocks a chat. The same reservation
-      // is reused (settleBudget clamps the pricier Claude cost to it).
-      const fallbackTier = routeChatTier({ mode: "privacy", requested: body.model, task: body.text });
-      // Only line up a Claude fallback when a Claude key is actually configured.
-      // In production it always is (required at boot); this guards a non-production
-      // setup running with only the economy key, where a doomed fallback would just
-      // add a failing call. Without a Claude key the economy engine stands alone.
-      const attemptTiers: ConcreteModelTier[] = isEconomyEngine && config.anthropicApiKey
-        ? [tier, fallbackTier]
-        : [tier];
+      // Try the routed engine; if it fails BEFORE any output has streamed (a
+      // config, format, or upstream error, not a user cancel), fall back so a
+      // provider hiccup never blocks a chat. The same reservation is reused
+      // (settleBudget clamps a pricier fallback's cost to it).
+      //
+      // Economy failures stay inside Economy first: the flash and second
+      // Economy provider both fall back to the flagship (same idea behind
+      // Economy mode never needing to reach Claude at all), and only the
+      // flagship itself falls through to Claude, which remains the ultimate
+      // safety net for when the whole Economy stack is down.
+      const attemptTiers: ConcreteModelTier[] = [tier];
+      if (tier === "glm-flash" || tier === "minimax") attemptTiers.push("glm");
+      // Only line up a Claude fallback when this is a non-Claude tier to begin
+      // with, and a Claude key is actually configured. In production the key
+      // always is (required at boot); this guards a non-production setup
+      // running with only Economy keys, where a doomed fallback would just add
+      // a failing call. Without a Claude key the Economy chain stands alone.
+      if (provider(tier) !== "anthropic" && config.anthropicApiKey) {
+        const claudeFallback = routeChatTier({ mode: "privacy", requested: body.model, task: body.text });
+        if (attemptTiers[attemptTiers.length - 1] !== claudeFallback) attemptTiers.push(claudeFallback);
+      }
       for (let attempt = 0; attempt < attemptTiers.length; attempt += 1) {
         const attemptTier = attemptTiers[attempt]!;
-        const attemptEconomy = provider(attemptTier) === "zai";
-        const client = attemptEconomy
-          ? new Anthropic({ authToken: config.zai.apiKey ?? "", baseURL: config.zai.baseUrl })
-          : new Anthropic({ apiKey: config.anthropicApiKey });
+        // Whether this attempt is on a non-Claude engine, which is what decides
+        // both which client to build and whether a clean pre-output failure is
+        // allowed to move to the next tier in the chain rather than surfacing.
+        const attemptEconomy = provider(attemptTier) !== "anthropic";
+        const client = buildClient(attemptTier);
 
         // This attempt's own copy of the conversation, extended in place as
         // read_page rounds add the tool call and its result. A fresh copy per

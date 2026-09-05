@@ -4,13 +4,15 @@ import { config } from "./config.js";
 // The three Claude tiers a request can be pinned to or routed to.
 export type ClaudeTier = Exclude<ModelTier, "auto">;
 
-// Every concrete engine a step can actually run on. "glm" is the Economy-mode
-// engine (a separate, cost-efficient provider); the rest are the Claude tiers.
-// Kept as a superset of ClaudeTier so all the existing pricing and sizing helpers
-// accept a glm tier unchanged; only callModel branches on the provider.
-export type ConcreteModelTier = ClaudeTier | "glm";
+// Every concrete engine a step can actually run on. "glm" and "glm-flash" are
+// two different models from the same Economy provider (the flagship and its
+// cheap, high-throughput sibling); "minimax" is a second, independent Economy
+// provider. The rest are the Claude tiers. Kept as a superset of ClaudeTier so
+// all the existing pricing and sizing helpers accept these unchanged; only
+// callModel and the chat client builder branch on the provider.
+export type ConcreteModelTier = ClaudeTier | "glm" | "glm-flash" | "minimax";
 
-export type Provider = "anthropic" | "zai";
+export type Provider = "anthropic" | "zai" | "minimax";
 
 /**
  * MODEL_PRICES is the single source of truth for per token pricing in
@@ -23,12 +25,22 @@ export const MODEL_PRICES = {
   haiku: { input: 1, output: 5 },
   sonnet: { input: 3, output: 15 },
   opus: { input: 5, output: 25 },
-  glm: { input: 1.4, output: 4.4 }
+  // Flagship GLM: standard list price, $1.40 / $4.40 per million tokens.
+  glm: { input: 1.4, output: 4.4 },
+  // GLM's cheap sibling: standard list price ($0.15 / $0.50 per million), not
+  // the September 2026 launch promo, since a reservation sized off a discount
+  // that expires would quietly undercharge every request once it ends.
+  "glm-flash": { input: 0.15, output: 0.5 },
+  // MiniMax M3: standard pay-as-you-go list price ($0.60 / $2.40 per million),
+  // not their launch discount, for the same reason.
+  minimax: { input: 0.6, output: 2.4 }
 } as const satisfies Record<ConcreteModelTier, { input: number; output: number }>;
 
 /** Which upstream provider serves a given engine tier. */
 export function provider(tier: ConcreteModelTier): Provider {
-  return tier === "glm" ? "zai" : "anthropic";
+  if (tier === "glm" || tier === "glm-flash") return "zai";
+  if (tier === "minimax") return "minimax";
+  return "anthropic";
 }
 
 /**
@@ -38,6 +50,11 @@ export function provider(tier: ConcreteModelTier): Provider {
  */
 export function economyEngineAvailable(): boolean {
   return config.zai.enabled;
+}
+
+/** Whether the second Economy provider (Medium effort) is usable right now. */
+export function minimaxAvailable(): boolean {
+  return Boolean(config.minimax?.enabled);
 }
 
 /** Prompt and tool schema version. Persisted on run records lets failures be reproduced. */
@@ -119,7 +136,9 @@ function mustSee(hasImage: boolean | undefined): boolean {
   return Boolean(hasImage) && Boolean(config.anthropicApiKey);
 }
 
-/** Whether this engine actually looks at images it is sent. */
+/** Whether this engine actually looks at images it is sent. Verified directly
+ *  for zai: it does not, and answers as though it had looked anyway. MiniMax-M3
+ *  is genuinely multimodal, so it is not excluded here alongside zai. */
 export function engineSeesImages(tier: ConcreteModelTier): boolean {
   return provider(tier) !== "zai";
 }
@@ -141,13 +160,36 @@ export function attachmentNeedsEyes(kind: string): boolean {
 }
 
 /**
- * Pick the engine for a chat turn. Economy mode runs chats on the cost-efficient
- * engine to keep everyday cost low, with ONE deliberate exception: when the user
- * picks High effort (opus), that turn goes to top-quality Claude. This is the
- * on-demand escape for hard work such as a complex spreadsheet, where the cheap
- * engine is not good enough, without making ordinary chat expensive. It only
- * applies when a Claude key is configured; otherwise the turn stays on the cheap
- * engine rather than failing. Privacy mode uses the normal Claude routing.
+ * Auto's economy-mode ladder: the same complexity read chooseModel uses for
+ * Claude (short and simple vs. ordinary planning vs. genuinely hard), pointed
+ * at the three Economy engines instead. A plain question spends the least; the
+ * moment the request looks like real work, it moves up a step, and a request
+ * that reads as genuinely hard goes straight to the flagship rather than
+ * paying for two engines that were only ever going to hand it upward anyway.
+ */
+function chooseEconomyModel(task: string): "glm-flash" | "minimax" | "glm" {
+  const text = task ?? "";
+  if (text.length > 4_000 || DEEP_REASONING_PATTERN.test(text)) return "glm";
+  if (text.length > 600 || PLANNING_PATTERN.test(text)) return minimaxAvailable() ? "minimax" : "glm";
+  return "glm-flash";
+}
+
+/**
+ * Pick the engine for a chat turn.
+ *
+ * Economy mode runs the whole effort ladder on non-Claude engines, cheapest
+ * first: Quick answer on the flash model, Medium effort on the second Economy
+ * provider, High effort on the flagship. Auto follows the same ladder by
+ * reading how demanding the request looks, rather than defaulting to the
+ * cheapest tier for everything the way a fixed choice would. Claude is never
+ * reached from Economy mode; that is the whole point of the mode, and the
+ * flagship Economy model is now strong enough that it no longer needs a Claude
+ * escape hatch for the hard cases the way it once did.
+ *
+ * Medium effort falls back to the flagship, not to Claude, when the second
+ * Economy provider has no key configured yet: still cheaper than Claude, and
+ * consistent with staying inside Economy mode's own engines. Privacy mode is
+ * untouched and always uses the normal Claude routing.
  */
 export function routeChatTier(opts: {
   mode: ModelMode;
@@ -157,11 +199,24 @@ export function routeChatTier(opts: {
   hasImage?: boolean;
 }): ConcreteModelTier {
   if (opts.mode === "economy" && economyEngineAvailable()) {
-    if (opts.requested === "opus" && Boolean(config.anthropicApiKey)) return "opus";
+    let tier: ConcreteModelTier;
+    if (opts.requested === "haiku") tier = "glm-flash";
+    else if (opts.requested === "sonnet") tier = minimaxAvailable() ? "minimax" : "glm";
+    else if (opts.requested === "opus") tier = "glm";
+    else tier = chooseEconomyModel(opts.task);
+
     // A pasted screenshot is the whole question. Answering it on an engine that
-    // cannot see is not a cheaper answer, it is a made up one.
-    if (mustSee(opts.hasImage)) return chooseModel(opts.requested, opts.task);
-    return "glm";
+    // cannot see is not a cheaper answer, it is a made up one. The picked tier
+    // only needs to move when it actually lands on a blind one (either GLM
+    // tier); MiniMax already sees, so a Medium or Auto turn with a picture
+    // usually needs nothing extra here at all.
+    if (Boolean(opts.hasImage) && !engineSeesImages(tier)) {
+      if (minimaxAvailable()) return "minimax";
+      if (config.anthropicApiKey) return chooseModel(opts.requested, opts.task);
+      // Nothing configured that can see: stay put rather than fail. The turn
+      // answers blind, same as before any of this existed.
+    }
+    return tier;
   }
   return chooseModel(opts.requested, opts.task);
 }

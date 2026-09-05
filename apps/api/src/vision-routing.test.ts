@@ -7,7 +7,11 @@ vi.mock("./config.js", () => ({
   config: {
     anthropicApiKey: "sk-test-key",
     zai: { enabled: true, apiKey: "zai-test-key", baseUrl: "https://example.invalid" },
-    models: { glm: "glm-5.2", haiku: "claude-haiku", sonnet: "claude-sonnet", opus: "claude-opus" },
+    // The second Economy provider left unconfigured here on purpose: this suite
+    // is about the ONE zai engine that cannot see, so leaving MiniMax off keeps
+    // that the only route off it, exactly as when this suite was first written.
+    minimax: { enabled: false, apiKey: undefined, baseUrl: "https://example.invalid" },
+    models: { glm: "glm-5.3", "glm-flash": "glm-5.3-flash", minimax: "MiniMax-M3", haiku: "claude-haiku", sonnet: "claude-sonnet", opus: "claude-opus" },
     mockAi: false,
     nodeEnv: "test"
   }
@@ -36,8 +40,9 @@ describe("which engines can see", () => {
 
 describe("routing a chat turn that carries a picture", () => {
   it("still runs an ordinary text turn on the cheap engine", () => {
-    // The saving that Economy mode exists for, unchanged.
-    expect(routeChatTier({ mode: "economy", requested: "auto", task: "write me a haiku" })).toBe("glm");
+    // The saving that Economy mode exists for, unchanged: a plain short request
+    // stays on the flash tier rather than the pricier flagship.
+    expect(routeChatTier({ mode: "economy", requested: "auto", task: "write me a haiku" })).toBe("glm-flash");
   });
 
   it("moves a turn with an image off it", () => {
