@@ -16,6 +16,7 @@ import {
   createRunSchema,
   nextRunStepSchema,
   modelModeSchema,
+  type ChatSend,
   type ModelMode,
   type RecordedEvent,
   type ChatDeltaFrame
@@ -44,6 +45,8 @@ import { EXPORT_EXTENSIONS, generateExport, sanitizeExportName, type ExportExten
 import { readProjectInstructions } from "./project-instructions.js";
 import { cancelRunningCommands, confinePath, looksLikeTruncatedWrite, resolveWorkingDir, runShellCommand } from "./shell-cli.js";
 import { applyEdit, formatFileSlice, readFooter, resolveInsideFolder } from "./file-tools.js";
+import { renderPage } from "./page-reader.js";
+import { describePage, findLinks, mergeContext } from "./page-text.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -163,13 +166,43 @@ async function openChatStream(token: string, body: unknown, signal: AbortSignal)
   }
 }
 
-async function streamChat(requestId: string, body: unknown): Promise<void> {
+/**
+ * Open any link the user pasted in a real browser and send what it says along
+ * with the question.
+ *
+ * The backend can fetch a URL, but fetching returns the HTML the server sends,
+ * and a page that builds itself in the browser sends almost nothing. Doing it
+ * here, in the app's own browser, is what makes those links readable at all, and
+ * it costs the server nothing.
+ *
+ * Everything here is best effort. A link that will not open adds nothing and
+ * says nothing, leaving the backend's own fetch to try, so a bad link can never
+ * be the reason a question went unanswered.
+ */
+async function withPagesRead(body: ChatSend): Promise<ChatSend> {
+  const links = findLinks(body.text);
+  if (links.length === 0) return body;
+
+  let context = body.context;
+  for (const link of links) {
+    try {
+      const page = await renderPage(link);
+      if (page.ok) context = mergeContext(context, describePage(page));
+    } catch (error) {
+      console.error("[WorkCrew] could not read pasted link:", error instanceof Error ? error.message : error);
+    }
+  }
+  return context === body.context ? body : { ...body, context };
+}
+
+async function streamChat(requestId: string, rawBody: ChatSend): Promise<void> {
   const controller = new AbortController();
   chatStreams.set(requestId, controller);
   try {
     const token = await auth.getAccessToken();
     if (!token) throw new Error("Sign in is required");
 
+    const body = controller.signal.aborted ? rawBody : await withPagesRead(rawBody);
     const response = await openChatStream(token, body, controller.signal);
 
     if (!response.ok || !response.body) {
