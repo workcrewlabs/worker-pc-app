@@ -21,6 +21,7 @@ import {
   type SubscriptionRow
 } from "./db.js";
 import { MODEL_PRICES, attachmentNeedsEyes, modelId, provider, routeChatTier, type ConcreteModelTier } from "./model-registry.js";
+import { chatFailureDetail, chatFailureMessage, isDeliberateMessage } from "./chat-errors.js";
 import { fetchReadablePage } from "./web-fetch.js";
 
 /**
@@ -693,7 +694,12 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
     // user can retry into it.
     await releaseOnce();
     void isNewConversation;
-    const message = error instanceof Error ? error.message : "The chat request could not be completed";
-    yield { type: "error", message };
+    // Only an error raised deliberately for the user keeps its own words. A
+    // provider library's failure is a fault on our side of the line, so its
+    // wording goes to the log and the user gets a sentence they can act on.
+    if (!isDeliberateMessage(error)) {
+      console.error("[chat] turn failed:", chatFailureDetail(error));
+    }
+    yield { type: "error", message: chatFailureMessage(error) };
   }
 }

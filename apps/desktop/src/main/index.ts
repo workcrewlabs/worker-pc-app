@@ -47,6 +47,7 @@ import { cancelRunningCommands, confinePath, looksLikeTruncatedWrite, resolveWor
 import { applyEdit, formatFileSlice, readFooter, resolveInsideFolder } from "./file-tools.js";
 import { renderPage } from "./page-reader.js";
 import { describePage, findLinks, mergeContext } from "./page-text.js";
+import { PageMemory } from "./page-memory.js";
 import { WindowsAgent } from "./windows-agent.js";
 
 const auth = new AuthVault();
@@ -58,6 +59,9 @@ let mainWindow: BrowserWindow | null = null;
 // One AbortController per in-flight chat stream, keyed by the renderer-supplied
 // request id so chat:stop can cancel exactly the right stream.
 const chatStreams = new Map<string, AbortController>();
+
+// Pages the user linked to, kept for the questions that follow them.
+const pageMemory = new PageMemory();
 
 // Attachment uploads are serialized through this promise chain. Dragging in many
 // files fires one upload call per file at the same time; running them one after
@@ -181,13 +185,25 @@ async function openChatStream(token: string, body: unknown, signal: AbortSignal)
  */
 async function withPagesRead(body: ChatSend): Promise<ChatSend> {
   const links = findLinks(body.text);
-  if (links.length === 0) return body;
+
+  // No link in this message, but the conversation may still be about one the
+  // user pasted a moment ago. Without this, the second question about a page
+  // ("tell me what is in the link") was answered as though it had never been
+  // read, because the context it arrived in belonged to the previous turn.
+  if (links.length === 0) {
+    const remembered = pageMemory.recall(body.conversationId, Date.now());
+    if (!remembered) return body;
+    return { ...body, context: mergeContext(body.context, remembered.block) };
+  }
 
   let context = body.context;
   for (const link of links) {
     try {
       const page = await renderPage(link);
-      if (page.ok) context = mergeContext(context, describePage(page));
+      if (!page.ok) continue;
+      const block = describePage(page);
+      context = mergeContext(context, block);
+      pageMemory.remember(body.conversationId, page.url, block, Date.now());
     } catch (error) {
       console.error("[WorkCrew] could not read pasted link:", error instanceof Error ? error.message : error);
     }
@@ -232,6 +248,10 @@ async function streamChat(requestId: string, rawBody: ChatSend): Promise<void> {
         if (!json) continue;
         try {
           const frame = chatDeltaFrameSchema.parse(JSON.parse(json));
+          // The first message of a chat is sent before the conversation exists,
+          // so a page read on that turn has nothing to be filed under until the
+          // backend reports the id it created. This is that moment.
+          if (frame.type === "done") pageMemory.adopt(frame.conversationId, Date.now());
           sendChatFrame(requestId, frame);
         } catch {
           // A malformed or unrecognized frame is skipped rather than aborting
