@@ -80,6 +80,41 @@ function humanSize(bytes) {
   return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 }
 
+/**
+ * The owner/repo a git remote URL points at, or null if it is not a GitHub one.
+ *
+ * Both forms have to be understood, because either can be configured for the
+ * same repository: https://github.com/owner/repo.git and
+ * git@github.com:owner/repo.git. Compared lowercased, since GitHub treats
+ * owner and repository names as case insensitive.
+ */
+function githubRepoOf(url) {
+  const match = /github\.com[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(url.trim());
+  return match ? `${match[1].toLowerCase()}/${match[2].toLowerCase()}` : null;
+}
+
+/**
+ * The remote that points at the repository this release is published to.
+ *
+ * Found by where a remote POINTS, never by what it is called. This used to
+ * check "origin", which on the machine releases are cut from is a personal
+ * fork, while the release, the update feed, and the backend deploy all belong
+ * to the repository named in the desktop package's publish config. So the
+ * check that main was up to date was comparing against a repository nothing is
+ * shipped from: it stayed quiet while the real main was ahead, which is the one
+ * thing it exists to catch.
+ */
+function remoteFor(repo) {
+  const wanted = repo.toLowerCase();
+  const lines = capture("git", ["remote", "-v"]).split("\n");
+  for (const line of lines) {
+    const [name, url] = line.trim().split(/\s+/);
+    if (!name || !url) continue;
+    if (githubRepoOf(url) === wanted) return name;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // What is being shipped
 // ---------------------------------------------------------------------------
@@ -116,10 +151,17 @@ if (PUBLISH) {
     fail("there are uncommitted changes, so this build would not match any commit.",
       "Commit or stash them, or run without --publish to just build.");
   }
-  run("git", ["fetch", "origin", "main", "--quiet"], { failMessage: "could not reach GitHub to check main is up to date." });
-  const behind = capture("git", ["rev-list", "--count", "HEAD..origin/main"]);
+  const remote = remoteFor(repo);
+  if (!remote) {
+    fail(`no git remote points at ${repo}, so there is nothing to check this build against.`,
+      `The release is published to ${repo}, so a remote for it must exist. Add one:\n` +
+      `      git remote add canonical https://github.com/${repo}.git`);
+  }
+  note(`checking against "${remote}", the remote for ${repo}.`);
+  run("git", ["fetch", remote, "main", "--quiet"], { failMessage: "could not reach GitHub to check main is up to date." });
+  const behind = capture("git", ["rev-list", "--count", `HEAD..${remote}/main`]);
   if (behind && behind !== "0") {
-    fail(`main on GitHub is ${behind} commit(s) ahead of this copy.`, "Run: git pull, then run this again.");
+    fail(`main on ${repo} is ${behind} commit(s) ahead of this copy.`, `Run: git pull ${remote} main, then run this again.`);
   }
   if (!process.env.GH_TOKEN && !process.env.GITHUB_TOKEN) {
     fail("no GitHub token, so the release cannot be published.",
