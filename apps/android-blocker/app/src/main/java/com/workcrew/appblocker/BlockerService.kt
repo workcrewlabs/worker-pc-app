@@ -33,6 +33,7 @@ class BlockerService : Service() {
     private lateinit var powerManager: PowerManager
     private var session: WatchSession? = null
     private var lastNotificationText: String? = null
+    private var lastPersisted: Triple<Long, Boolean, Long>? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -57,13 +58,15 @@ class BlockerService : Service() {
         )
 
         // Re-reading settings here means pressing Start again applies changes.
-        session = WatchSession(
+        val started = WatchSession(
             remindEveryMs = prefs.remindEveryMinutes * 60_000L,
             limitMs = prefs.limitMinutes * 60_000L,
-            resetAfterAwayMs = RESET_AFTER_AWAY_MS,
             lockoutMs = prefs.lockoutMinutes * 60_000L,
         )
+        restoreSavedProgress(prefs, started, System.currentTimeMillis())
+        session = started
         lastNotificationText = null
+        lastPersisted = null
         handler.removeCallbacks(tick)
         handler.post(tick)
         return START_STICKY
@@ -111,6 +114,8 @@ class BlockerService : Service() {
         if (!inWindow) {
             // Off duty: drop all progress so the next window starts clean.
             session.onIdle(now)
+            prefs.clearSessionState()
+            lastPersisted = null
             updateNotification(status(prefs, session, inWindow = false, stopAllowedAt, now))
             return
         }
@@ -122,7 +127,34 @@ class BlockerService : Service() {
             is WatchSession.SwitchAway -> enforce(prefs, session, event)
             null -> Unit
         }
+        persistProgress(prefs, session, now)
         updateNotification(status(prefs, session, inWindow = true, stopAllowedAt, now))
+    }
+
+    /**
+     * Progress from earlier in the same window is picked back up, so a service
+     * restart — system kill, reboot, or a stop and start — cannot refund spent
+     * budget. Progress from an earlier window, or against a different app, is
+     * dropped instead.
+     */
+    private fun restoreSavedProgress(prefs: Prefs, session: WatchSession, nowMs: Long) {
+        val savedAt = prefs.stateSavedAtMs
+        if (savedAt <= 0L) return
+        val windowStart = Schedule.currentWindowStartMs(
+            nowMs, minutesOfDay(), prefs.activeStartMinutes
+        )
+        if (savedAt < windowStart || savedAt > nowMs || prefs.statePackage != prefs.watchedPackage) {
+            prefs.clearSessionState()
+            return
+        }
+        session.restore(nowMs, prefs.stateWatchedMs, prefs.stateLocked, prefs.stateAwaySinceMs)
+    }
+
+    private fun persistProgress(prefs: Prefs, session: WatchSession, nowMs: Long) {
+        val snapshot = Triple(session.watchedMs, session.locked, session.awaySinceMs)
+        if (snapshot == lastPersisted) return
+        lastPersisted = snapshot
+        prefs.saveSessionState(session.watchedMs, session.locked, session.awaySinceMs, nowMs)
     }
 
     private fun showReminder(prefs: Prefs, watchedMs: Long) {
@@ -270,7 +302,6 @@ class BlockerService : Service() {
         private const val NOTIFICATION_ID = 1
 
         private const val POLL_INTERVAL_MS = 5_000L
-        private const val RESET_AFTER_AWAY_MS = 5L * 60 * 1000
         private const val SWITCH_DELAY_MS = 1_500L
         private const val LOCKED_SWITCH_DELAY_MS = 400L
         private const val REMINDER_AUTO_DISMISS_MS = 30_000L

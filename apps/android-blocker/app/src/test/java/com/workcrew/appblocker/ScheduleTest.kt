@@ -42,6 +42,29 @@ class ScheduleTest {
     }
 
     @Test
+    fun windowStartIsTodaysOccurrenceOnceItHasPassed() {
+        val now = 1_000_000_000_000L
+        // 13:00 with an 08:00 start: the window began five hours ago.
+        val start = Schedule.currentWindowStartMs(now, at(13), at(8))
+        assertEquals(now - 5 * 60 * 60_000L, start)
+    }
+
+    @Test
+    fun windowStartIsYesterdaysOccurrenceBeforeItComesRoundAgain() {
+        val now = 1_000_000_000_000L
+        // 07:00 with an 08:00 start: the last start was 23 hours ago, so saved
+        // progress from yesterday afternoon is correctly treated as stale.
+        val start = Schedule.currentWindowStartMs(now, at(7), at(8))
+        assertEquals(now - 23 * 60 * 60_000L, start)
+    }
+
+    @Test
+    fun windowStartIsNowWhenTheWindowJustOpened() {
+        val now = 1_000_000_000_000L
+        assertEquals(now, Schedule.currentWindowStartMs(now, at(8), at(8)))
+    }
+
+    @Test
     fun formatsAsZeroPaddedClockTime() {
         assertEquals("08:00", Schedule.format(at(8)))
         assertEquals("20:30", Schedule.format(at(20, 30)))

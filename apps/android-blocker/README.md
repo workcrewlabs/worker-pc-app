@@ -10,6 +10,11 @@ A tiny, fully local Android app that limits how long you spend in a chosen app
 - **Reminder** — after every 10 minutes of watching (configurable), a
   full-screen overlay interrupts whatever you were watching: *"You've been on
   YouTube for 10 minutes"*, with **Keep watching** and **Take a break** buttons.
+- **One budget for the whole window** — the limit is a running total, not a
+  per-sitting allowance. Breaks never refund time: five minutes now and five
+  minutes an hour later still add up to ten. The total is kept across a service
+  restart, a reboot, or a stop and start, so nothing hands back time you already
+  spent. It resets only when you serve a full lockout or the active window ends.
 - **Hard switch, then lockout** — once you hit your total limit (default 20
   minutes), it shows a "Time's up" screen and launches another app you picked
   (or the home screen). From then on the app stays locked: every attempt to
@@ -31,11 +36,13 @@ A foreground service polls Android's `UsageStatsManager` every 5 seconds to see
 which app is on screen (screen-off time doesn't count). A small state machine
 (`WatchSession`, unit-tested) accumulates watch time, fires a reminder every N
 minutes, fires the switch at the limit, and then holds the lockout until a full
-uninterrupted break has passed. Before the limit, a shorter 5-minute break
-clears the accumulated time so a quick hop to check a message doesn't burn the
-budget. `Schedule` (also unit-tested) decides whether the current time falls in
-the active window. Interruptions use a "display over other apps" window; the
-switch launches the redirect app's launcher intent.
+uninterrupted break has passed. Progress is written to SharedPreferences
+whenever it changes and restored on start — keyed to the current window and
+watched app — so a restart cannot reset the count; the away timer is stored as a
+wall-clock instant, so a lockout served while the service was dead still counts.
+`Schedule` (also unit-tested) decides whether the current time falls in the
+active window and when that window last began. Interruptions use a "display over
+other apps" window; the switch launches the redirect app's launcher intent.
 
 ## Build
 

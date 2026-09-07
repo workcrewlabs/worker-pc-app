@@ -20,6 +20,18 @@ object Schedule {
         else -> nowMinutes >= startMinutes || nowMinutes < endMinutes
     }
 
+    /**
+     * Wall-clock instant of the most recent occurrence of the window's start
+     * time — today's if it has already passed, otherwise yesterday's. Saved
+     * progress from before this instant belongs to an earlier window and is
+     * stale, which is what gives the budget a daily rollover.
+     */
+    fun currentWindowStartMs(nowMs: Long, nowMinutes: Int, startMinutes: Int): Long {
+        val minutesSinceStart = ((nowMinutes - startMinutes) % MINUTES_PER_DAY + MINUTES_PER_DAY) %
+            MINUTES_PER_DAY
+        return nowMs - minutesSinceStart * 60_000L
+    }
+
     fun format(minutes: Int): String {
         val safe = minutes.coerceIn(0, MINUTES_PER_DAY - 1)
         return String.format(Locale.US, "%02d:%02d", safe / 60, safe % 60)

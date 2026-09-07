@@ -75,6 +75,55 @@ class Prefs(context: Context) {
         get() = sp.getLong(KEY_STOP_ALLOWED_AT, 0L)
         set(value) = sp.edit().putLong(KEY_STOP_ALLOWED_AT, value).apply()
 
+    /**
+     * Live session progress, saved every time it changes so that the service
+     * being killed and restarted — by the system, a reboot, or a stop/start —
+     * cannot hand back budget the user already spent. Restored only when it
+     * belongs to the current active window and the same watched app.
+     */
+    var stateWatchedMs: Long
+        get() = sp.getLong(KEY_STATE_WATCHED_MS, 0L)
+        set(value) = sp.edit().putLong(KEY_STATE_WATCHED_MS, value).apply()
+
+    var stateLocked: Boolean
+        get() = sp.getBoolean(KEY_STATE_LOCKED, false)
+        set(value) = sp.edit().putBoolean(KEY_STATE_LOCKED, value).apply()
+
+    /** Wall-clock start of the current stretch away, or -1 when not away. */
+    var stateAwaySinceMs: Long
+        get() = sp.getLong(KEY_STATE_AWAY_SINCE, -1L)
+        set(value) = sp.edit().putLong(KEY_STATE_AWAY_SINCE, value).apply()
+
+    /** When the state above was written; 0 when there is nothing saved. */
+    var stateSavedAtMs: Long
+        get() = sp.getLong(KEY_STATE_SAVED_AT, 0L)
+        set(value) = sp.edit().putLong(KEY_STATE_SAVED_AT, value).apply()
+
+    /** The app the saved progress was accumulated against. */
+    var statePackage: String?
+        get() = sp.getString(KEY_STATE_PACKAGE, null)
+        set(value) = sp.edit().putString(KEY_STATE_PACKAGE, value).apply()
+
+    fun saveSessionState(watchedMs: Long, locked: Boolean, awaySinceMs: Long, nowMs: Long) {
+        sp.edit()
+            .putLong(KEY_STATE_WATCHED_MS, watchedMs)
+            .putBoolean(KEY_STATE_LOCKED, locked)
+            .putLong(KEY_STATE_AWAY_SINCE, awaySinceMs)
+            .putLong(KEY_STATE_SAVED_AT, nowMs)
+            .putString(KEY_STATE_PACKAGE, watchedPackage)
+            .apply()
+    }
+
+    fun clearSessionState() {
+        sp.edit()
+            .remove(KEY_STATE_WATCHED_MS)
+            .remove(KEY_STATE_LOCKED)
+            .remove(KEY_STATE_AWAY_SINCE)
+            .remove(KEY_STATE_SAVED_AT)
+            .remove(KEY_STATE_PACKAGE)
+            .apply()
+    }
+
     companion object {
         const val DEFAULT_WATCHED_PKG = "com.google.android.youtube"
         const val DEFAULT_WATCHED_LABEL = "YouTube"
@@ -94,5 +143,10 @@ class Prefs(context: Context) {
         private const val KEY_ACTIVE_END = "active_end_min"
         private const val KEY_STOP_DELAY_MIN = "stop_delay_min"
         private const val KEY_STOP_ALLOWED_AT = "stop_allowed_at"
+        private const val KEY_STATE_WATCHED_MS = "state_watched_ms"
+        private const val KEY_STATE_LOCKED = "state_locked"
+        private const val KEY_STATE_AWAY_SINCE = "state_away_since"
+        private const val KEY_STATE_SAVED_AT = "state_saved_at"
+        private const val KEY_STATE_PACKAGE = "state_package"
     }
 }

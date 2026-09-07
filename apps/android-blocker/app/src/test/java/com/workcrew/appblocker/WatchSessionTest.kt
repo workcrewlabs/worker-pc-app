@@ -13,7 +13,6 @@ class WatchSessionTest {
     private fun newSession() = WatchSession(
         remindEveryMs = 10 * minute,
         limitMs = 20 * minute,
-        resetAfterAwayMs = 5 * minute,
         lockoutMs = 45 * minute,
     )
 
@@ -48,6 +47,37 @@ class WatchSessionTest {
         val session = newSession()
         val events = run(session, 0, 9 * minute, foreground = true)
         assertTrue(events.isEmpty())
+    }
+
+    @Test
+    fun aLongBreakDoesNotRefundSpentBudget() {
+        val session = newSession()
+        run(session, 0, 5 * minute, foreground = true)
+        val afterFirstSitting = session.watchedMs
+        assertTrue(afterFirstSitting >= 5 * minute - tickMs)
+
+        // An hour away — under the old behaviour this wiped the counter.
+        run(session, 5 * minute + tickMs, 65 * minute, foreground = false)
+        assertEquals(afterFirstSitting, session.watchedMs)
+
+        // A second five-minute sitting adds to the first rather than restarting it.
+        run(session, 65 * minute + tickMs, 70 * minute, foreground = true)
+        assertTrue(session.watchedMs >= 10 * minute - 2 * tickMs)
+    }
+
+    @Test
+    fun theLimitIsReachedAcrossSeparateSittings() {
+        val session = newSession()
+        // 15 minutes, a long break, then 6 more: 21 total, so the limit lands in
+        // the second sitting even though neither one alone would reach it.
+        run(session, 0, 15 * minute, foreground = true)
+        run(session, 15 * minute + tickMs, 90 * minute, foreground = false)
+        val events = run(session, 90 * minute + tickMs, 96 * minute, foreground = true)
+
+        val switch = events.map { it.second }.filterIsInstance<WatchSession.SwitchAway>()
+        assertTrue(switch.isNotEmpty())
+        assertTrue(switch.first().firstTime)
+        assertTrue(session.locked)
     }
 
     @Test
@@ -133,28 +163,6 @@ class WatchSessionTest {
     }
 
     @Test
-    fun counterResetsAfterALongBreak() {
-        val session = newSession()
-        run(session, 0, 9 * minute, foreground = true)
-        // Away for six minutes — longer than the five-minute reset window.
-        run(session, 9 * minute + tickMs, 15 * minute + tickMs, foreground = false)
-        assertEquals(0, session.watchedMs)
-        // Nine more minutes of watching stays under the reminder threshold again.
-        val events = run(session, 16 * minute, 25 * minute - tickMs, foreground = true)
-        assertTrue(events.isEmpty())
-    }
-
-    @Test
-    fun shortHopAwayDoesNotResetTheCounter() {
-        val session = newSession()
-        run(session, 0, 9 * minute, foreground = true)
-        val before = session.watchedMs
-        // One minute away — under the reset window.
-        run(session, 9 * minute + tickMs, 10 * minute + tickMs, foreground = false)
-        assertEquals(before, session.watchedMs)
-    }
-
-    @Test
     fun deviceSleepGapIsNotChargedAsWatching() {
         val session = newSession()
         session.onTick(0, true)
@@ -176,5 +184,94 @@ class WatchSessionTest {
         // A fresh window starts with the full budget again.
         val events = run(session, 26 * minute, 35 * minute, foreground = true)
         assertTrue(events.none { it.second is WatchSession.SwitchAway })
+    }
+
+    @Test
+    fun restoreResumesSpentBudgetAfterARestart() {
+        val session = newSession()
+        val now = 100 * minute
+        session.restore(now, savedWatchedMs = 18 * minute, savedLocked = false, savedAwaySinceMs = -1)
+        assertEquals(18 * minute, session.watchedMs)
+
+        // Only two minutes of budget are left, so the limit lands almost at once
+        // instead of the restart handing back a fresh twenty.
+        val events = run(session, now, now + 3 * minute, foreground = true)
+        assertTrue(events.any { it.second is WatchSession.SwitchAway })
+    }
+
+    @Test
+    fun restoreDoesNotChargeTheTimeTheServiceWasDown() {
+        val session = newSession()
+        val now = 100 * minute
+        session.restore(now, savedWatchedMs = 5 * minute, savedLocked = false, savedAwaySinceMs = -1)
+        // First tick after the restore credits nothing, even though the saved
+        // state is from long before.
+        session.onTick(now, true)
+        assertEquals(5 * minute, session.watchedMs)
+    }
+
+    @Test
+    fun restoreSkipsRemindersAlreadyGiven() {
+        // A longer limit than the default, so the reminder under test isn't the
+        // same moment as the switch-away.
+        val session = WatchSession(
+            remindEveryMs = 10 * minute,
+            limitMs = 60 * minute,
+            lockoutMs = 45 * minute,
+        )
+        val now = 100 * minute
+        session.restore(now, savedWatchedMs = 12 * minute, savedLocked = false, savedAwaySinceMs = -1)
+
+        // The 10-minute reminder is already spent, so nothing fires again for it.
+        val events = run(session, now, now + 7 * minute, foreground = true)
+        assertTrue(events.none { it.second is WatchSession.Remind })
+
+        // The next one is due at 20 minutes and still arrives.
+        val later = run(session, now + 7 * minute + tickMs, now + 9 * minute, foreground = true)
+        assertTrue(later.any { it.second is WatchSession.Remind })
+    }
+
+    @Test
+    fun restoreKeepsALockoutThatIsStillOwed() {
+        val session = newSession()
+        val now = 100 * minute
+        session.restore(
+            now,
+            savedWatchedMs = 20 * minute,
+            savedLocked = true,
+            savedAwaySinceMs = now - 10 * minute,
+        )
+        assertTrue(session.locked)
+        assertEquals(35 * minute, session.lockoutRemainingMs)
+    }
+
+    @Test
+    fun restoreClearsALockoutServedWhileTheServiceWasDead() {
+        val session = newSession()
+        val now = 100 * minute
+        session.restore(
+            now,
+            savedWatchedMs = 20 * minute,
+            savedLocked = true,
+            savedAwaySinceMs = now - 50 * minute,
+        )
+        assertFalse(session.locked)
+        assertEquals(0, session.watchedMs)
+    }
+
+    @Test
+    fun restoreIgnoresAnImpossibleSavedAwayTime() {
+        val session = newSession()
+        val now = 100 * minute
+        // A clock change could leave a future timestamp behind; it must not
+        // shorten the lockout.
+        session.restore(
+            now,
+            savedWatchedMs = 20 * minute,
+            savedLocked = true,
+            savedAwaySinceMs = now + 30 * minute,
+        )
+        assertTrue(session.locked)
+        assertEquals(45 * minute, session.lockoutRemainingMs)
     }
 }
