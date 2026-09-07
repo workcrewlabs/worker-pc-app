@@ -220,3 +220,41 @@ export function routeChatTier(opts: {
   }
   return chooseModel(opts.requested, opts.task);
 }
+
+/**
+ * The order of engines a chat turn tries when one fails before producing output.
+ *
+ * Economy exhausts every Economy engine before Claude, and crosses to a
+ * DIFFERENT provider first. The two GLM tiers share one z.ai account, so when
+ * GLM fails for the reason that matters in practice (that account being empty
+ * or rate limited) its sibling fails the same way a moment later; the other
+ * provider is the attempt that can still succeed. Claude stays last because it
+ * costs roughly ten times more per token and the budget caps are denominated in
+ * money, so defaulting to it would burn a customer's monthly allowance many
+ * times faster and strand them early.
+ *
+ * `claudeFallback` is null when no Claude key is configured, and is ignored for
+ * a tier that is already on Claude: Privacy mode routes to Claude and must
+ * never leave it.
+ */
+export function fallbackChain(
+  tier: ConcreteModelTier,
+  claudeFallback: ConcreteModelTier | null
+): ConcreteModelTier[] {
+  const chain: ConcreteModelTier[] = [tier];
+  const economyNext: ConcreteModelTier[] = tier === "glm-flash"
+    ? ["minimax", "glm"]
+    : tier === "minimax"
+      ? ["glm"]
+      : tier === "glm"
+        ? ["minimax"]
+        : [];
+  for (const next of economyNext) {
+    if (next === "minimax" && !minimaxAvailable()) continue;
+    if (!chain.includes(next)) chain.push(next);
+  }
+  if (provider(tier) !== "anthropic" && claudeFallback && !chain.includes(claudeFallback)) {
+    chain.push(claudeFallback);
+  }
+  return chain;
+}

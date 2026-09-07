@@ -20,7 +20,7 @@ import {
   type AttachmentRow,
   type SubscriptionRow
 } from "./db.js";
-import { MODEL_PRICES, attachmentNeedsEyes, modelId, provider, routeChatTier, type ConcreteModelTier } from "./model-registry.js";
+import { MODEL_PRICES, attachmentNeedsEyes, fallbackChain, modelId, provider, routeChatTier, type ConcreteModelTier } from "./model-registry.js";
 import { chatFailureDetail, chatFailureMessage, isDeliberateMessage } from "./chat-errors.js";
 import { fetchReadablePage } from "./web-fetch.js";
 
@@ -486,23 +486,13 @@ export async function* streamChat(input: StreamChatInput): AsyncGenerator<ChatDe
       // config, format, or upstream error, not a user cancel), fall back so a
       // provider hiccup never blocks a chat. The same reservation is reused
       // (settleBudget clamps a pricier fallback's cost to it).
-      //
-      // Economy failures stay inside Economy first: the flash and second
-      // Economy provider both fall back to the flagship (same idea behind
-      // Economy mode never needing to reach Claude at all), and only the
-      // flagship itself falls through to Claude, which remains the ultimate
-      // safety net for when the whole Economy stack is down.
-      const attemptTiers: ConcreteModelTier[] = [tier];
-      if (tier === "glm-flash" || tier === "minimax") attemptTiers.push("glm");
-      // Only line up a Claude fallback when this is a non-Claude tier to begin
-      // with, and a Claude key is actually configured. In production the key
-      // always is (required at boot); this guards a non-production setup
-      // running with only Economy keys, where a doomed fallback would just add
-      // a failing call. Without a Claude key the Economy chain stands alone.
-      if (provider(tier) !== "anthropic" && config.anthropicApiKey) {
-        const claudeFallback = routeChatTier({ mode: "privacy", requested: body.model, task: body.text });
-        if (attemptTiers[attemptTiers.length - 1] !== claudeFallback) attemptTiers.push(claudeFallback);
-      }
+      // fallbackChain decides the order and explains why.
+      const attemptTiers = fallbackChain(
+        tier,
+        config.anthropicApiKey
+          ? routeChatTier({ mode: "privacy", requested: body.model, task: body.text })
+          : null
+      );
       for (let attempt = 0; attempt < attemptTiers.length; attempt += 1) {
         const attemptTier = attemptTiers[attempt]!;
         // Whether this attempt is on a non-Claude engine, which is what decides
