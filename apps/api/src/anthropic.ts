@@ -102,18 +102,37 @@ When the task is complete, call finish.`;
 const TOOLS = [
   {
     name: "browser_action",
-    description: "Perform one allowlisted action in the automated web browser. Use this only for websites and web apps.",
+    description: "Act in the automated web browser. Use this only for websites and web apps. Prefer command \"batch\" whenever you already know the next few steps, for example clicking a field, filling it, and pressing Enter: the steps in a batch run together and cost one round trip instead of one each, which is much faster for the user. A batch stops at the first step that fails and always returns a fresh snapshot at the end, so the refs you were holding are refreshed for you. Use single commands when you genuinely need to see the page before deciding what to do next.",
     input_schema: {
       type: "object",
       additionalProperties: false,
       required: ["command"],
       properties: {
-        command: { enum: ["open", "goto", "snapshot", "click", "fill", "type", "press", "select", "check", "uncheck", "hover", "screenshot", "go-back", "go-forward", "reload", "tab-list", "tab-new", "tab-select", "tab-close"] },
+        command: { enum: ["open", "goto", "snapshot", "click", "fill", "type", "press", "select", "check", "uncheck", "hover", "screenshot", "go-back", "go-forward", "reload", "tab-list", "tab-new", "tab-select", "tab-close", "batch"] },
         target: { type: "string" },
         value: { type: "string" },
         url: { type: "string" },
         key: { type: "string" },
-        index: { type: "integer", minimum: 0, maximum: 100 }
+        index: { type: "integer", minimum: 0, maximum: 100 },
+        steps: {
+          type: "array",
+          minItems: 1,
+          maxItems: 20,
+          description: "Only for command \"batch\": the actions to run in order, in one round trip.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["command"],
+            properties: {
+              command: { enum: ["open", "goto", "snapshot", "click", "fill", "type", "press", "select", "check", "uncheck", "hover", "screenshot", "go-back", "go-forward", "reload", "tab-list", "tab-new", "tab-select", "tab-close"] },
+              target: { type: "string" },
+              value: { type: "string" },
+              url: { type: "string" },
+              key: { type: "string" },
+              index: { type: "integer", minimum: 0, maximum: 100 }
+            }
+          }
+        }
       }
     }
   },

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import { browserActionSchema, type RecordedEvent } from "@workcrew/contracts";
+import { browserActionSchema, type BrowserStep, type RecordedEvent } from "@workcrew/contracts";
 import { browserEventFromPayload, dedupeTrace } from "./recorder-steps.js";
 
 // Browser automation drives a real Chrome over the Chrome DevTools Protocol, so
@@ -255,6 +255,49 @@ export class BrowserCli {
     }
     const page = await this.connect();
 
+    if (action.command === "batch") {
+      if (!action.steps?.length) throw new Error("A batch needs at least one step.");
+      return this.runBatch(page, action.steps);
+    }
+    // Narrowed above: every command except "batch" is a valid step.
+    return this.runStep(page, action as BrowserStep);
+  }
+
+  // Run a whole sequence in one round trip. Every step in between happens
+  // without the model seeing anything, which is the entire point (a click, a
+  // typed value and Enter is one trip instead of three) and also the risk: the
+  // page can change under a later step. So it stops at the first failure and
+  // reports which step broke and what the page looked like at that moment,
+  // rather than plowing on and leaving the model to guess how far it got.
+  private async runBatch(page: Page, steps: BrowserStep[]): Promise<string> {
+    const done: string[] = [];
+    for (const [i, step] of steps.entries()) {
+      const label = `${i + 1}. ${step.command}`;
+      try {
+        const result = await this.runStep(page, step);
+        done.push(`${label}: ${result}`);
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        const sofar = done.length ? `${done.join("\n")}\n` : "";
+        // The current page, so the model can re-plan from what is actually
+        // there now instead of from refs that may no longer exist.
+        const state = await this.snapshot(this.activePage() ?? page).catch(() => "(page unavailable)");
+        return clamp(`${sofar}${label}: FAILED - ${why}\nStopped here. Current page:\n${state}`);
+      }
+    }
+    // A batch always ends on a fresh snapshot: the steps have moved the page on,
+    // so every ref the model was holding is stale by now.
+    const state = await this.snapshot(this.activePage() ?? page).catch(() => "(page unavailable)");
+    return clamp(`${done.join("\n")}\nDone. Current page:\n${state}`);
+  }
+
+  // The page a batch should act on next. Steps like tab-new or tab-select move
+  // the active page, and this.page tracks that.
+  private activePage(): Page | null {
+    return this.page;
+  }
+
+  private async runStep(page: Page, action: BrowserStep): Promise<string> {
     switch (action.command) {
       case "open":
       case "goto":

@@ -131,8 +131,23 @@ export const browserCommandSchema = z.enum([
   // click/fill (which target an ephemeral snapshot ref like e12), these target a
   // stable CSS selector captured at record time, so they replay deterministically.
   "click-selector",
-  "fill-selector"
+  "fill-selector",
+  // Run several of the commands above in one go. See browserActionSchema.steps.
+  "batch"
 ]);
+
+// One step inside a batch: the same shape as a browser action minus the
+// envelope. It deliberately cannot be "batch" itself, so a batch can never nest
+// and cannot be used to smuggle in an unbounded amount of work.
+export const browserStepSchema = z.object({
+  command: browserCommandSchema.exclude(["batch"]),
+  target: z.string().max(500).optional(),
+  value: z.string().max(10_000).optional(),
+  url: z.string().url().max(2_048).optional(),
+  key: z.string().max(80).optional(),
+  index: z.number().int().min(0).max(100).optional()
+}).strict();
+export type BrowserStep = z.infer<typeof browserStepSchema>;
 
 export const browserActionSchema = z.object({
   kind: z.literal("browser"),
@@ -141,7 +156,11 @@ export const browserActionSchema = z.object({
   value: z.string().max(10_000).optional(),
   url: z.string().url().max(2_048).optional(),
   key: z.string().max(80).optional(),
-  index: z.number().int().min(0).max(100).optional()
+  index: z.number().int().min(0).max(100).optional(),
+  // Only for command "batch": the steps to run in order in a single round trip.
+  // Bounded because every step runs before the model sees any result, so a long
+  // batch is a long stretch spent acting blind.
+  steps: z.array(browserStepSchema).min(1).max(20).optional()
 }).strict();
 
 export const windowsCommandSchema = z.enum([
