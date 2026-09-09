@@ -123,12 +123,16 @@ describe("the bridge to the browser the user already has open", () => {
     const started = await startBridge();
     const { poll } = await attach(started);
     const running = started.run({ kind: "browser", command: "click", target: "e9" });
+    // The expectation is attached before the result is posted. Attaching it
+    // afterwards leaves the rejection briefly unhandled, which Node reports as
+    // an unhandled rejection and fails the run even though every test passed.
+    const settled = expect(running).rejects.toThrow(/no longer on the page/);
     const delivered = JSON.parse((await poll).body) as { id: string };
     await call("/result", {
       method: "POST",
       body: JSON.stringify({ id: delivered.id, ok: false, output: "That element is no longer on the page." })
     });
-    await expect(running).rejects.toThrow(/no longer on the page/);
+    await settled;
   });
 
   it("validates the action here, so the extension is never asked to run a shape the app rejects", async () => {
