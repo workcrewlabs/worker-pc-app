@@ -14,7 +14,6 @@ import {
   chatDeltaFrameSchema,
   createCheckoutSchema,
   createRunSchema,
-  feedbackCreateSchema,
   nextRunStepSchema,
   modelModeSchema,
   type ChatSend,
@@ -603,13 +602,6 @@ function registerIpc(): void {
 
   ipcMain.handle("api:entitlement", () => api.request("/v1/entitlement"));
   ipcMain.handle("api:referral", () => api.request("/v1/referral"));
-  // Send what the user wrote in the feedback box. Validated here again (the
-  // renderer is not trusted) and stamped with the running version, so a report
-  // on the dashboard says which build it came from.
-  ipcMain.handle("api:send-feedback", (_event, raw) => {
-    const body = feedbackCreateSchema.parse(raw);
-    return api.request("/v1/feedback", { method: "POST", body: { ...body, appVersion: app.getVersion() } });
-  });
   // How plans are paid for on this backend, and who to write to when payment is
   // arranged by hand. Public and unauthenticated, so the renderer can ask for it
   // before any session exists. A backend too old to know the route, or simply
