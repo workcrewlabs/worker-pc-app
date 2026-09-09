@@ -59,6 +59,10 @@
       {
         "from": "../../python/windows-agent/dist/workcrew-windows-agent.exe",
         "to": "windows-agent/workcrew-windows-agent.exe"
+      },
+      {
+        "from": "extension",
+        "to": "chrome-extension"
       }
     ],
     "publish": [

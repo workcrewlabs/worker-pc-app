@@ -40,11 +40,42 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
   const [billingError, setBillingError] = useState("");
   const [optOut, setOptOut] = useState(false);
   const [analyticsNotice, setAnalyticsNotice] = useState("");
+  // Browser choice: the app's own window, or the browser the user already has
+  // open (which needs the extension). Refreshed on a timer while this panel is
+  // showing, so plugging the extension in updates the status without a reload.
+  const [browserTarget, setBrowserTargetState] = useState<"workcrew" | "chrome">("workcrew");
+  const [browserCode, setBrowserCode] = useState("");
+  const [browserConnected, setBrowserConnected] = useState(false);
+  const [extensionPath, setExtensionPath] = useState("");
+  const [codeCopied, setCodeCopied] = useState(false);
   // Once the user changes the toggle, ignore a late-arriving initial read so it
   // cannot overwrite the newer choice with the stale stored value.
   const optOutTouchedRef = useRef(false);
   // Appearance: dark (default) or light, stored per device and applied instantly.
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
+
+  useEffect(() => {
+    let live = true;
+    const read = async (): Promise<void> => {
+      const info = await window.workcrew.automation.browserConnection();
+      if (!live) return;
+      setBrowserTargetState(info.target);
+      setBrowserCode(info.token);
+      setBrowserConnected(info.connected);
+      setExtensionPath(info.extensionPath);
+    };
+    void read();
+    const timer = setInterval(() => void read(), 3000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  async function chooseBrowser(target: "workcrew" | "chrome"): Promise<void> {
+    setBrowserTargetState(target);
+    await window.workcrew.automation.setBrowserTarget(target);
+  }
   function chooseTheme(next: Theme) {
     setThemeState(next);
     setTheme(next);
@@ -232,6 +263,61 @@ export function SettingsPanel({ info, onClose }: { info: AppInfo; onClose: () =>
           <span className="always-toggle-label">Share anonymous usage analytics</span>
         </label>
         {analyticsNotice && <p className="notice" role="alert">{analyticsNotice}</p>}
+      </div>
+
+      <div className="save-form update-section">
+        <label className="field-label">Browser</label>
+        <p className="field-hint">
+          WorkCrew can work in its own browser window, which is separate from yours and starts signed out of everything.
+          Or it can work in the browser you already have open, using the accounts you are already signed into. That one needs
+          a small WorkCrew add-on installed in Chrome.
+        </p>
+        <label className="always-toggle">
+          <span className={`switch ${browserTarget === "chrome" ? "switch-on" : ""}`}>
+            <input
+              type="checkbox"
+              checked={browserTarget === "chrome"}
+              onChange={(event) => void chooseBrowser(event.target.checked ? "chrome" : "workcrew")}
+              aria-label="Use the browser I already have open"
+            />
+            <span className="switch-knob" aria-hidden="true" />
+          </span>
+          <span className="always-toggle-label">Work in the browser I already have open</span>
+        </label>
+        {browserTarget === "chrome" && (
+          <>
+            <p className="field-hint" role="status">
+              {browserConnected
+                ? "Connected to your browser."
+                : "Not connected yet. Follow the three steps below, and this line will say connected."}
+            </p>
+            <ol className="field-hint">
+              <li>Open Chrome, go to chrome://extensions, and turn on Developer mode.</li>
+              <li>Choose "Load unpacked" and pick the WorkCrew folder (the button below opens it).</li>
+              <li>Click the WorkCrew add-on and paste the connection code below.</li>
+            </ol>
+            <div className="save-row">
+              <button className="secondary" onClick={() => void window.workcrew.automation.revealExtension()} disabled={!extensionPath}>
+                Open the add-on folder
+              </button>
+              <button
+                className="secondary"
+                onClick={() => {
+                  void navigator.clipboard.writeText(browserCode);
+                  setCodeCopied(true);
+                  setTimeout(() => setCodeCopied(false), 2000);
+                }}
+                disabled={!browserCode}
+              >
+                {codeCopied ? "Copied" : "Copy connection code"}
+              </button>
+            </div>
+            <p className="field-hint">
+              The connection code is like a password for this add-on. It only works on this computer, and it lets nothing
+              else in. Do not share it.
+            </p>
+          </>
+        )}
       </div>
 
       <div className="save-form update-section">

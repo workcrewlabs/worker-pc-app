@@ -5,6 +5,7 @@ import type {
   BillingInterval,
   ChatDeltaFrame,
   ConversationSummary,
+  FeedbackCategory,
   Message,
   ModelTier,
   PlanId,
@@ -113,6 +114,10 @@ const workcrew = {
   api: {
     entitlement: (): Promise<SubscriptionState> => ipcRenderer.invoke("api:entitlement"),
     referral: (): Promise<ReferralInfo> => ipcRenderer.invoke("api:referral"),
+    // Send the feedback box. The main process validates the body again and
+    // stamps the running app version before it leaves the machine.
+    sendFeedback: (message: string, category: FeedbackCategory): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke("api:send-feedback", { message, category }),
     // How this backend takes payment. "manual" means there is no card checkout:
     // the user is told to email billingContactEmail and an admin activates them.
     publicConfig: (): Promise<{ billingMode: string; billingContactEmail: string }> =>
@@ -172,6 +177,18 @@ const workcrew = {
       return { output: action.summary };
     },
     launchBrowser: (): Promise<{ launched: boolean; message: string }> => ipcRenderer.invoke("automation:launch-browser"),
+    // Which browser automation drives, plus the code the extension needs. The
+    // code never leaves this machine: it authorises a loopback port only.
+    browserConnection: (): Promise<{
+      target: "workcrew" | "chrome";
+      token: string;
+      port: number;
+      connected: boolean;
+      extensionPath: string;
+    }> => ipcRenderer.invoke("automation:browser-connection"),
+    setBrowserTarget: (target: "workcrew" | "chrome"): Promise<"workcrew" | "chrome"> =>
+      ipcRenderer.invoke("automation:set-browser-target", target),
+    revealExtension: (): Promise<boolean> => ipcRenderer.invoke("automation:reveal-extension"),
     stop: () => ipcRenderer.invoke("automation:stop"),
     // Show or hide the "do not move the mouse" overlay during a Windows automation.
     overlay: (active: boolean): Promise<{ shown: boolean }> => ipcRenderer.invoke("automation:overlay", active === true)

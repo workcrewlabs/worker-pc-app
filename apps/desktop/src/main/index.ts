@@ -14,6 +14,7 @@ import {
   chatDeltaFrameSchema,
   createCheckoutSchema,
   createRunSchema,
+  feedbackCreateSchema,
   nextRunStepSchema,
   modelModeSchema,
   type ChatSend,
@@ -25,12 +26,16 @@ import { z } from "zod";
 import { ApiClient, RETRY_DELAY_MS, backendUnavailableMessage, neverReachedTheBackend } from "./api-client.js";
 import { AuthVault } from "./auth-vault.js";
 import { BrowserCli } from "./browser-cli.js";
+import { ExtensionBridge, newPairingToken } from "./extension-bridge.js";
 import {
   getAnalyticsOptOut,
   getBackendUrl,
+  getBrowserTarget,
+  getExtensionToken,
   getWindowBounds,
   setAnalyticsOptOut,
   setBackendUrl,
+  setBrowserTarget,
   setWindowBounds
 } from "./settings.js";
 import { chooseStartingBounds, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from "./window-bounds.js";
@@ -53,6 +58,30 @@ import { WindowsAgent } from "./windows-agent.js";
 const auth = new AuthVault();
 const api = new ApiClient(auth);
 const browserCli = new BrowserCli();
+const extensionBridge = new ExtensionBridge();
+
+// Where the unpacked extension lives, so Settings can open the folder the user
+// points Chrome at. Packaged builds ship it under resources; in development it
+// sits in the repo next to the source.
+function extensionFolder(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, "chrome-extension")
+    : join(app.getAppPath(), "extension");
+}
+
+// Started only when the user has actually chosen their own browser, so an
+// install that never uses this feature never opens a local port at all.
+async function startExtensionBridge(): Promise<void> {
+  if (extensionBridge.running()) return;
+  try {
+    await extensionBridge.start(getExtensionToken(newPairingToken));
+  } catch (error) {
+    // A port already in use is the realistic failure. The feature is simply
+    // unavailable until the app restarts; automation still works in the app's
+    // own browser, so nothing else needs to care.
+    console.error("browser bridge could not start", error instanceof Error ? error.message : error);
+  }
+}
 const windowsAgent = new WindowsAgent();
 let mainWindow: BrowserWindow | null = null;
 
@@ -574,6 +603,13 @@ function registerIpc(): void {
 
   ipcMain.handle("api:entitlement", () => api.request("/v1/entitlement"));
   ipcMain.handle("api:referral", () => api.request("/v1/referral"));
+  // Send what the user wrote in the feedback box. Validated here again (the
+  // renderer is not trusted) and stamped with the running version, so a report
+  // on the dashboard says which build it came from.
+  ipcMain.handle("api:send-feedback", (_event, raw) => {
+    const body = feedbackCreateSchema.parse(raw);
+    return api.request("/v1/feedback", { method: "POST", body: { ...body, appVersion: app.getVersion() } });
+  });
   // How plans are paid for on this backend, and who to write to when payment is
   // arranged by hand. Public and unauthenticated, so the renderer can ask for it
   // before any session exists. A backend too old to know the route, or simply
@@ -1069,7 +1105,37 @@ function registerIpc(): void {
   ipcMain.handle("workspace:instructions", async (_event, raw) =>
     readProjectInstructions(typeof raw === "string" ? raw : ""));
 
-  ipcMain.handle("automation:browser", (_event, action) => browserCli.execute(action));
+  // Which browser an action runs in. "chrome" means the browser the user
+  // already has open, reached through the extension; anything else means the
+  // window the app launches itself. If the user has chosen their own Chrome but
+  // the extension is not attached, that is said plainly rather than silently
+  // acting in a different browser than they asked for, which would look like
+  // the action simply did nothing.
+  ipcMain.handle("automation:browser", async (_event, action) => {
+    if (getBrowserTarget() === "chrome") return extensionBridge.run(action);
+    return browserCli.execute(action);
+  });
+
+  // The pairing code plus whether the extension is currently attached, so
+  // Settings can show both without the renderer ever opening a port itself.
+  ipcMain.handle("automation:browser-connection", async () => ({
+    target: getBrowserTarget(),
+    token: getExtensionToken(newPairingToken),
+    port: extensionBridge.listenPort(),
+    connected: extensionBridge.isConnected(),
+    extensionPath: extensionFolder()
+  }));
+
+  ipcMain.handle("automation:set-browser-target", async (_event, value) => {
+    const target = setBrowserTarget(value === "chrome" ? "chrome" : "workcrew");
+    if (target === "chrome") await startExtensionBridge();
+    return target;
+  });
+
+  ipcMain.handle("automation:reveal-extension", async () => {
+    shell.openPath(extensionFolder());
+    return true;
+  });
   // Returns { output, imageBase64? }: a screenshot comes back as the picture
   // itself so the planner can see a window that names none of its controls.
   ipcMain.handle("automation:windows", (_event, action) => windowsAgent.executeWithImage(action));
@@ -1229,6 +1295,9 @@ else {
     await auth.load();
     console.info("[WorkCrew] secure session loaded");
     registerIpc();
+    // Only for a user who has already chosen their own browser, so an install
+    // that never touches this feature never opens a local port.
+    if (getBrowserTarget() === "chrome") void startExtensionBridge();
     createWindow();
     startupUpdateCheck();
 
@@ -1243,6 +1312,7 @@ app.on("before-quit", () => {
   chatStreams.clear();
   closeAutomationOverlay();
   void browserCli.stop();
+  void extensionBridge.stop();
   void windowsAgent.stop();
 });
 

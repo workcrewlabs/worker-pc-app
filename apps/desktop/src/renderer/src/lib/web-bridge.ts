@@ -345,6 +345,17 @@ export function createWebBridge(): WorkCrewBridge {
         return desktopOnly("Running automations");
       },
       launchBrowser: async () => desktopOnly("Browser automation"),
+      // The web build drives no browser at all, so it reports a connection that
+      // is simply never available rather than pretending one could be set up.
+      browserConnection: async () => ({
+        target: "workcrew" as const,
+        token: "",
+        port: 0,
+        connected: false,
+        extensionPath: ""
+      }),
+      setBrowserTarget: async () => "workcrew" as const,
+      revealExtension: async () => false,
       stop: async () => ({ stopped: true }),
       overlay: async () => ({ shown: false })
     },

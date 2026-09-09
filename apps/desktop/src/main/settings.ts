@@ -18,7 +18,16 @@ type DesktopSettings = {
   // Where and how big the window was when it was last closed, so reopening the
   // app gives back the size the user chose instead of the factory default.
   windowBounds?: WindowBounds;
+  // Which browser automation drives: "workcrew" is the separate window the app
+  // launches itself, "chrome" is the browser the user already has open, reached
+  // through the WorkCrew extension.
+  browserTarget?: BrowserTarget;
+  // The shared secret the extension presents to the local bridge. Generated on
+  // first use and shown in Settings for the user to paste into the extension.
+  extensionToken?: string;
 };
+
+export type BrowserTarget = "workcrew" | "chrome";
 
 export type WindowBounds = {
   x: number;
@@ -147,6 +156,29 @@ export function getAnalyticsOptOut(): boolean {
 export function setAnalyticsOptOut(value: boolean): boolean {
   persist({ ...load(), analyticsOptOut: value === true });
   return value === true;
+}
+
+/** Which browser automation drives. Defaults to the app's own window, which
+ * works with no setup at all; using the user's own Chrome needs the extension. */
+export function getBrowserTarget(): BrowserTarget {
+  return load().browserTarget === "chrome" ? "chrome" : "workcrew";
+}
+
+export function setBrowserTarget(value: BrowserTarget): BrowserTarget {
+  const target: BrowserTarget = value === "chrome" ? "chrome" : "workcrew";
+  persist({ ...load(), browserTarget: target });
+  return target;
+}
+
+/** The extension pairing secret, created on first read so it exists by the time
+ * Settings shows it. It never leaves this machine: the extension talks only to
+ * a loopback port, and the backend never sees it. */
+export function getExtensionToken(makeToken: () => string): string {
+  const current = load();
+  if (current.extensionToken && current.extensionToken.length >= 32) return current.extensionToken;
+  const token = makeToken();
+  persist({ ...current, extensionToken: token });
+  return token;
 }
 
 // Nothing outside this range is a window a person meant to have. The upper bound
