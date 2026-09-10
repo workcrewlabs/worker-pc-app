@@ -1,0 +1,50 @@
+name: Build App Blocker APK
+
+on:
+  push:
+    branches:
+      - main
+      - claude/app-blocker-time-limits-m7ikby
+    paths:
+      - 'apps/android-blocker/**'
+      - '.github/workflows/android-blocker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/android-blocker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Run unit tests and build debug APK
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-blocker-apk
+          path: apps/android-blocker/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      # Also publish to a fixed release so the APK has a stable one-tap
+      # download URL (the run artifact is a zip and is hidden in the mobile app).
+      - name: Publish APK to the app-blocker release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create app-blocker \
+            --title "App Blocker APK" \
+            --notes "Latest App Blocker build. Download app-debug.apk below and open it on your phone to install." \
+            --target "${{ github.sha }}" || true
+          gh release upload app-blocker app/build/outputs/apk/debug/app-debug.apk --clobber
