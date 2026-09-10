@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.Process
 import android.provider.Settings
 import android.text.format.DateFormat
@@ -63,6 +64,7 @@ class MainActivity : AppCompatActivity() {
                 )
             )
         }
+        findViewById<Button>(R.id.btn_battery).setOnClickListener { requestBatteryExemption() }
         findViewById<Button>(R.id.btn_watched_app).setOnClickListener {
             pickApp(includeHome = false) { pkg, label ->
                 if (pkg != null && label != null) {
@@ -100,6 +102,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // If something killed the service while the blocker was meant to be on,
+        // opening the app puts it back — no tapping Start again.
+        BlockerLauncher.ensureRunning(this)
         // The Stop countdown ticks down on screen, so refresh once a second.
         handler.removeCallbacks(ticker)
         handler.post(ticker)
@@ -136,6 +141,10 @@ class MainActivity : AppCompatActivity() {
         )
         findViewById<TextView>(R.id.txt_overlay).text = getString(
             if (Settings.canDrawOverlays(this)) R.string.granted else R.string.not_granted
+        )
+        findViewById<TextView>(R.id.txt_battery).text = getString(
+            if (ignoringBatteryOptimizations()) R.string.battery_unrestricted
+            else R.string.battery_restricted
         )
         findViewById<TextView>(R.id.txt_watched_app).text = prefs.watchedLabel
         findViewById<TextView>(R.id.txt_redirect_app).text =
@@ -203,6 +212,9 @@ class MainActivity : AppCompatActivity() {
         }
         val waitMinutes = prefs.stopDelayMinutes
         if (waitMinutes <= 0) {
+            // Clear the intent to block first, or the watchdog restarts it.
+            prefs.blockerEnabled = false
+            BlockerLauncher.cancelWatchdog(this)
             stopService(Intent(this, BlockerService::class.java))
             renderSoon()
             return
@@ -239,6 +251,32 @@ class MainActivity : AppCompatActivity() {
             currentMinutes % 60,
             DateFormat.is24HourFormat(this),
         ).show()
+    }
+
+    private fun ignoringBatteryOptimizations(): Boolean {
+        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return power.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    /**
+     * Battery optimisation is what lets a phone sleep the app overnight and
+     * leave the blocker off the next morning, so offer the one-tap exemption
+     * and fall back to the settings list if the dialog isn't available.
+     */
+    private fun requestBatteryExemption() {
+        val direct = Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:$packageName"),
+        )
+        try {
+            startActivity(direct)
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (e2: Exception) {
+                Toast.makeText(this, R.string.battery_settings_missing, Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun hasUsageAccess(): Boolean {

@@ -75,9 +75,26 @@ If the `gradlew` wrapper is missing its jar on your machine, run
 6. Tap **Start blocking**. The settings grey out — to change them, Stop first
    and wait out the delay you chose.
 
-**Recommended:** in system Settings → Apps → App Blocker → Battery, set
-**Unrestricted**. Some phones (Samsung, Xiaomi, etc.) aggressively kill
-background services, which would stop the timer.
+**Important:** grant the **Unrestricted battery** row on the setup screen (or
+Settings → Apps → App Blocker → Battery → Unrestricted). Phone makers put idle
+apps to sleep overnight, and that is the main thing that can stop the blocker.
+
+## Staying on
+
+Blocking is meant to survive everything short of uninstalling the app, because a
+blocker that quietly switches off overnight is worse than none. The intent to
+block is stored on disk, and it is re-asserted from four places:
+
+- `START_STICKY`, for an ordinary low-memory kill.
+- `BootReceiver`, for a reboot or an app update — without it, a restart leaves
+  the phone unguarded until someone notices.
+- A repeating watchdog alarm (~15 min, allowed to fire in Doze), which covers
+  the case `START_STICKY` does not: an OEM battery manager force-sleeping the
+  app while the phone is idle.
+- Opening the setup screen, which restarts the service immediately if needed.
+
+Only a stop the user waits out clears the stored intent; a restart never
+cancels a stop that is already counting down.
 
 ## Limitations
 

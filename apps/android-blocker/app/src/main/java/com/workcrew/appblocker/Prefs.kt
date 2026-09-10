@@ -76,6 +76,16 @@ class Prefs(context: Context) {
         set(value) = sp.edit().putLong(KEY_STOP_ALLOWED_AT, value).apply()
 
     /**
+     * Whether the user wants the blocker on. Survives the process dying, so a
+     * reboot, an OEM "app sleep" kill, or an app update can all be recovered
+     * from — unlike the service's in-memory running flag. Cleared only when a
+     * requested stop actually takes effect.
+     */
+    var blockerEnabled: Boolean
+        get() = sp.getBoolean(KEY_ENABLED, false)
+        set(value) = sp.edit().putBoolean(KEY_ENABLED, value).apply()
+
+    /**
      * Live session progress, saved every time it changes so that the service
      * being killed and restarted — by the system, a reboot, or a stop/start —
      * cannot hand back budget the user already spent. Restored only when it
@@ -143,6 +153,7 @@ class Prefs(context: Context) {
         private const val KEY_ACTIVE_END = "active_end_min"
         private const val KEY_STOP_DELAY_MIN = "stop_delay_min"
         private const val KEY_STOP_ALLOWED_AT = "stop_allowed_at"
+        private const val KEY_ENABLED = "blocker_enabled"
         private const val KEY_STATE_WATCHED_MS = "state_watched_ms"
         private const val KEY_STATE_LOCKED = "state_locked"
         private const val KEY_STATE_AWAY_SINCE = "state_away_since"

@@ -11,6 +11,12 @@
     <string name="granted">Granted</string>
     <string name="not_granted">Not granted</string>
     <string name="open_settings">Open settings</string>
+    <string name="perm_battery">Unrestricted battery</string>
+    <string name="allow">Allow</string>
+    <string name="battery_unrestricted">Allowed — the blocker can keep running</string>
+    <string name="battery_restricted">Not allowed — your phone may stop the blocker overnight</string>
+    <string name="battery_note">Without this, Android can put the app to sleep while you\'re not using the phone, and blocking stops until you reopen the app.</string>
+    <string name="battery_settings_missing">Open Settings → Apps → App Blocker → Battery and choose Unrestricted.</string>
 
     <string name="section_limits">Limits</string>
     <string name="label_watched_app">App to limit</string>

@@ -48,8 +48,13 @@ class BlockerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val prefs = Prefs(this)
         createChannel()
-        // Starting fresh cancels any stop that was counting down.
-        prefs.stopAllowedAtMs = 0L
+        // A restart after a kill must not quietly cancel a stop the user asked
+        // for; only pressing Start does that.
+        val autoRestart = intent?.getBooleanExtra(EXTRA_AUTO_RESTART, false) == true
+        if (!autoRestart) prefs.stopAllowedAtMs = 0L
+        // Remember the intent to block so a reboot or a kill can be recovered from.
+        prefs.blockerEnabled = true
+        BlockerLauncher.scheduleWatchdog(this)
         startForeground(
             NOTIFICATION_ID,
             buildNotification(
@@ -81,6 +86,13 @@ class BlockerService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Swiping the app out of Recents kills the process on some phones; make
+        // sure a watchdog check is pending before that happens.
+        BlockerLauncher.scheduleWatchdog(this)
+        super.onTaskRemoved(rootIntent)
+    }
+
     private val tick = object : Runnable {
         override fun run() {
             try {
@@ -101,7 +113,11 @@ class BlockerService : Service() {
 
         val stopAllowedAt = prefs.stopAllowedAtMs
         if (stopAllowedAt > 0L && now >= stopAllowedAt) {
+            // A stop the user waited out is the one case where the blocker is
+            // meant to stay off, so clear the flag the watchdog restarts from.
             prefs.stopAllowedAtMs = 0L
+            prefs.blockerEnabled = false
+            BlockerLauncher.cancelWatchdog(this)
             stopSelf()
             return
         }
@@ -296,6 +312,9 @@ class BlockerService : Service() {
         @Volatile
         var isRunning = false
             private set
+
+        /** Marks a start that recovers from a kill rather than a user pressing Start. */
+        const val EXTRA_AUTO_RESTART = "auto_restart"
 
         private const val TAG = "BlockerService"
         private const val CHANNEL_ID = "blocker_status"
