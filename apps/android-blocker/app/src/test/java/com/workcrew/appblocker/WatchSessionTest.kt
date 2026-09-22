@@ -129,37 +129,87 @@ class WatchSessionTest {
     fun lockoutLiftsOnlyAfterTheFullBreak() {
         val session = newSession()
         run(session, 0, 20 * minute + tickMs, foreground = true)
-        val lockedAt = 21 * minute
+        assertTrue(session.locked)
+        val deadline = session.lockoutUntilMs
 
-        // 44 minutes away is not enough.
-        run(session, lockedAt, lockedAt + 44 * minute, foreground = false)
+        // A minute short of the deadline is not enough.
+        run(session, 21 * minute, deadline - minute, foreground = false)
         assertTrue(session.locked)
 
-        // Crossing 45 minutes unlocks and clears the spent budget.
-        run(session, lockedAt + 44 * minute + tickMs, lockedAt + 46 * minute, foreground = false)
+        // Crossing it unlocks and clears the spent budget.
+        run(session, deadline - minute + tickMs, deadline + minute, foreground = false)
         assertFalse(session.locked)
         assertEquals(0, session.watchedMs)
     }
 
     @Test
-    fun returningDuringLockoutRestartsTheBreakClock() {
+    fun returningDuringLockoutDoesNotPushTheDeadlineBack() {
         val session = newSession()
         run(session, 0, 20 * minute + tickMs, foreground = true)
-        var t = 21 * minute
+        val deadline = session.lockoutUntilMs
 
-        // 40 minutes away, then a peek at the app, then 40 more minutes away.
-        run(session, t, t + 40 * minute, foreground = false)
-        t += 40 * minute + tickMs
-        run(session, t, t + 30_000L, foreground = true)
-        t += 30_000L + tickMs
-        run(session, t, t + 40 * minute, foreground = false)
-        // Still locked: neither stretch away reached the full 45 minutes.
-        assertTrue(session.locked)
+        // Two peeks at the locked app. Each is bounced, but neither may move the
+        // deadline — being thrown out within a second is not "watching again",
+        // and charging a stray tap the whole wait over is what made the timer
+        // appear to jump back to full.
+        run(session, 25 * minute, 25 * minute + 30_000L, foreground = true)
+        assertEquals(deadline, session.lockoutUntilMs)
+        run(session, 40 * minute, 40 * minute + 30_000L, foreground = true)
+        assertEquals(deadline, session.lockoutUntilMs)
 
-        // Only a full uninterrupted 45 minutes clears it.
-        t += 40 * minute + tickMs
-        run(session, t, t + 6 * minute, foreground = false)
+        // So the break still ends exactly when it always would have.
+        run(session, deadline - minute, deadline + tickMs, foreground = false)
         assertFalse(session.locked)
+    }
+
+    @Test
+    fun lockoutRemainingCountsDownRatherThanResetting() {
+        val session = newSession()
+        run(session, 0, 20 * minute + tickMs, foreground = true)
+        val lockedAt = session.lockoutUntilMs - 45 * minute
+
+        assertEquals(45 * minute, session.lockoutRemainingMs(lockedAt))
+        assertEquals(15 * minute, session.lockoutRemainingMs(lockedAt + 30 * minute))
+
+        // A bounced entry 30 minutes in still leaves only 15 minutes owed.
+        run(session, lockedAt + 30 * minute, lockedAt + 30 * minute + 10_000L, foreground = true)
+        assertEquals(15 * minute, session.lockoutRemainingMs(lockedAt + 30 * minute))
+    }
+
+    @Test
+    fun lockNowStartsTheBreakEarly() {
+        val session = newSession()
+        // Five minutes watched and they say they are done for now.
+        run(session, 0, 5 * minute, foreground = true)
+        val at = 5 * minute + tickMs
+
+        val event = session.lockNow(at)
+        assertTrue(event.firstTime)
+        assertTrue(session.locked)
+        assertEquals(45 * minute, session.lockoutRemainingMs(at))
+        // The unspent budget goes with it, so this is a real break and not a way
+        // to bank minutes for later.
+        assertEquals(20 * minute, session.watchedMs)
+
+        // It ends on the usual schedule, with the full allowance back.
+        run(session, at + tickMs, at + 46 * minute, foreground = false)
+        assertFalse(session.locked)
+        assertEquals(0, session.watchedMs)
+    }
+
+    @Test
+    fun lockNowBouncesOnTheNextTickWhenStillInTheApp() {
+        val session = newSession()
+        run(session, 0, 5 * minute, foreground = true)
+        val at = 5 * minute + tickMs
+        session.lockNow(at)
+
+        // Pressing it from inside the app must not have to wait out the throttle.
+        val bounces = run(session, at + tickMs, at + 2 * tickMs, foreground = true)
+            .map { it.second }
+            .filterIsInstance<WatchSession.SwitchAway>()
+        assertTrue(bounces.isNotEmpty())
+        assertFalse(bounces.first().firstTime)
     }
 
     @Test
@@ -190,7 +240,7 @@ class WatchSessionTest {
     fun restoreResumesSpentBudgetAfterARestart() {
         val session = newSession()
         val now = 100 * minute
-        session.restore(now, savedWatchedMs = 18 * minute, savedLocked = false, savedAwaySinceMs = -1)
+        session.restore(now, savedWatchedMs = 18 * minute, savedLocked = false, savedLockoutUntilMs = 0)
         assertEquals(18 * minute, session.watchedMs)
 
         // Only two minutes of budget are left, so the limit lands almost at once
@@ -203,7 +253,7 @@ class WatchSessionTest {
     fun restoreDoesNotChargeTheTimeTheServiceWasDown() {
         val session = newSession()
         val now = 100 * minute
-        session.restore(now, savedWatchedMs = 5 * minute, savedLocked = false, savedAwaySinceMs = -1)
+        session.restore(now, savedWatchedMs = 5 * minute, savedLocked = false, savedLockoutUntilMs = 0)
         // First tick after the restore credits nothing, even though the saved
         // state is from long before.
         session.onTick(now, true)
@@ -220,7 +270,7 @@ class WatchSessionTest {
             lockoutMs = 45 * minute,
         )
         val now = 100 * minute
-        session.restore(now, savedWatchedMs = 12 * minute, savedLocked = false, savedAwaySinceMs = -1)
+        session.restore(now, savedWatchedMs = 12 * minute, savedLocked = false, savedLockoutUntilMs = 0)
 
         // The 10-minute reminder is already spent, so nothing fires again for it.
         val events = run(session, now, now + 7 * minute, foreground = true)
@@ -239,10 +289,11 @@ class WatchSessionTest {
             now,
             savedWatchedMs = 20 * minute,
             savedLocked = true,
-            savedAwaySinceMs = now - 10 * minute,
+            savedLockoutUntilMs = now + 35 * minute,
         )
         assertTrue(session.locked)
-        assertEquals(35 * minute, session.lockoutRemainingMs)
+        // Time served while the service was dead counts: 35 minutes left, not 45.
+        assertEquals(35 * minute, session.lockoutRemainingMs(now))
     }
 
     @Test
@@ -253,25 +304,25 @@ class WatchSessionTest {
             now,
             savedWatchedMs = 20 * minute,
             savedLocked = true,
-            savedAwaySinceMs = now - 50 * minute,
+            savedLockoutUntilMs = now - 5 * minute,
         )
         assertFalse(session.locked)
         assertEquals(0, session.watchedMs)
     }
 
     @Test
-    fun restoreIgnoresAnImpossibleSavedAwayTime() {
+    fun restoreCapsADeadlineBeyondAWholeLockout() {
         val session = newSession()
         val now = 100 * minute
-        // A clock change could leave a future timestamp behind; it must not
-        // shorten the lockout.
+        // A clock change could leave a deadline hours out; never honour more
+        // than the configured wait.
         session.restore(
             now,
             savedWatchedMs = 20 * minute,
             savedLocked = true,
-            savedAwaySinceMs = now + 30 * minute,
+            savedLockoutUntilMs = now + 5 * 60 * minute,
         )
         assertTrue(session.locked)
-        assertEquals(45 * minute, session.lockoutRemainingMs)
+        assertEquals(45 * minute, session.lockoutRemainingMs(now))
     }
 }

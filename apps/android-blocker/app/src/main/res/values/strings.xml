@@ -26,7 +26,7 @@
     <string name="to">to</string>
     <string name="label_remind_minutes">Remind me every (minutes)</string>
     <string name="label_limit_minutes">Switch me away after (minutes total)</string>
-    <string name="label_lockout_minutes">Then keep it locked until I\'ve been away (minutes)</string>
+    <string name="label_lockout_minutes">Then keep it locked for (minutes)</string>
     <string name="label_redirect_app">Switch me to</string>
     <string name="change">Change</string>
     <string name="home_screen">Home screen</string>
@@ -51,16 +51,20 @@
     <string name="reminder_take_break">Take a break</string>
 
     <string name="limit_title">Time\'s up</string>
-    <string name="limit_message">%1$d minutes on %2$s — switching you to %3$s. It stays locked until you\'ve been away %4$d minutes.</string>
+    <string name="limit_message">%1$d minutes on %2$s — switching you to %3$s. It stays locked for the next %4$d minutes.</string>
     <string name="limit_ok">OK</string>
 
     <string name="locked_title">Locked</string>
-    <string name="locked_message">%1$s is locked. Stay away %2$d more minutes to unlock it.</string>
+    <string name="locked_message">%1$s is locked for %2$d more minutes.</string>
+
+    <string name="lock_now_title">Break started</string>
+    <string name="lock_now_message">%1$s is locked for the next %2$d minutes. Enjoy the break.</string>
 
     <string name="notification_channel">Blocker status</string>
     <string name="notification_title">App Blocker is watching</string>
     <string name="notification_text">%1$s: %2$d of %3$d min used</string>
-    <string name="notification_locked">%1$s locked — %2$d min away needed</string>
+    <string name="notification_locked">%1$s locked — %2$d min left</string>
     <string name="notification_off_duty">Off duty until %1$s</string>
     <string name="notification_stopping">Stopping in %1$d min</string>
+    <string name="notification_lock_now">Block now</string>
 </resources>

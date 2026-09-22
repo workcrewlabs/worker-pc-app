@@ -18,9 +18,15 @@ A tiny, fully local Android app that limits how long you spend in a chosen app
 - **Hard switch, then lockout** — once you hit your total limit (default 20
   minutes), it shows a "Time's up" screen and launches another app you picked
   (or the home screen). From then on the app stays locked: every attempt to
-  open it bounces you straight back out, and the lock only lifts after you've
-  been *continuously* away for the lockout period (default 45 minutes).
-  Peeking at the app restarts that clock.
+  open it bounces you straight back out, until the lockout period (default 45
+  minutes) has passed. The countdown runs to a fixed deadline, so opening the
+  locked app by reflex gets you bounced but does *not* start the wait over —
+  you are thrown out in under a second, and that shouldn't cost you 45 more.
+- **Block now** — the ongoing notification carries a **Block now** button.
+  Tap it when you've finished watching (or finished eating) early and want the
+  break to start right away instead of leaving unspent minutes tempting you.
+  It spends the rest of the budget and starts the lockout there and then, so it
+  can't be used to bank minutes for later.
 - **A wait before you can quit** — Stop doesn't take effect immediately. It
   starts a countdown (default 5 minutes) during which the blocker keeps
   enforcing; the service performs the stop itself, so closing the app doesn't
@@ -38,8 +44,9 @@ which app is on screen (screen-off time doesn't count). A small state machine
 minutes, fires the switch at the limit, and then holds the lockout until a full
 uninterrupted break has passed. Progress is written to SharedPreferences
 whenever it changes and restored on start — keyed to the current window and
-watched app — so a restart cannot reset the count; the away timer is stored as a
-wall-clock instant, so a lockout served while the service was dead still counts.
+watched app — so a restart cannot reset the count. The lockout is stored as the
+wall-clock instant it lifts, so time served while the service was dead still
+counts and nothing that happens in between can push it back.
 `Schedule` (also unit-tested) decides whether the current time falls in the
 active window and when that window last began. Interruptions use a "display over
 other apps" window; the switch launches the redirect app's launcher intent.
@@ -78,6 +85,12 @@ If the `gradlew` wrapper is missing its jar on your machine, run
 **Important:** grant the **Unrestricted battery** row on the setup screen (or
 Settings → Apps → App Blocker → Battery → Unrestricted). Phone makers put idle
 apps to sleep overnight, and that is the main thing that can stop the blocker.
+
+On Samsung (One UI), there is a second place to check, because its battery
+manager can sleep an app even when Android says it is unrestricted:
+Settings → Battery → **Background usage limits** → make sure App Blocker is not
+listed under **Sleeping apps** or **Deep sleeping apps**, and turn off
+**Put unused apps to sleep**.
 
 ## Staying on
 

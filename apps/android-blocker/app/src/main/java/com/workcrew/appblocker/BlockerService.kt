@@ -32,7 +32,7 @@ class BlockerService : Service() {
     private lateinit var overlay: OverlayReminder
     private lateinit var powerManager: PowerManager
     private var session: WatchSession? = null
-    private var lastNotificationText: String? = null
+    private var lastNotification: Pair<String, Boolean>? = null
     private var lastPersisted: Triple<Long, Boolean, Long>? = null
 
     override fun onCreate() {
@@ -48,18 +48,23 @@ class BlockerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val prefs = Prefs(this)
         createChannel()
+        val lockNowRequested = intent?.action == ACTION_LOCK_NOW
+        if (lockNowRequested && session != null) {
+            // Already running: just start the break, leaving the session alone.
+            startForeground(NOTIFICATION_ID, currentNotification(prefs))
+            startLockoutEarly(prefs)
+            return START_STICKY
+        }
         // A restart after a kill must not quietly cancel a stop the user asked
         // for; only pressing Start does that.
         val autoRestart = intent?.getBooleanExtra(EXTRA_AUTO_RESTART, false) == true
-        if (!autoRestart) prefs.stopAllowedAtMs = 0L
+        if (!autoRestart && !lockNowRequested) prefs.stopAllowedAtMs = 0L
         // Remember the intent to block so a reboot or a kill can be recovered from.
         prefs.blockerEnabled = true
         BlockerLauncher.scheduleWatchdog(this)
         startForeground(
             NOTIFICATION_ID,
-            buildNotification(
-                getString(R.string.notification_text, prefs.watchedLabel, 0, prefs.limitMinutes)
-            ),
+            buildNotification(freshStartText(prefs), showLockNow = false),
         )
 
         // Re-reading settings here means pressing Start again applies changes.
@@ -70,10 +75,11 @@ class BlockerService : Service() {
         )
         restoreSavedProgress(prefs, started, System.currentTimeMillis())
         session = started
-        lastNotificationText = null
+        lastNotification = null
         lastPersisted = null
         handler.removeCallbacks(tick)
         handler.post(tick)
+        if (lockNowRequested) startLockoutEarly(prefs)
         return START_STICKY
     }
 
@@ -132,7 +138,10 @@ class BlockerService : Service() {
             session.onIdle(now)
             prefs.clearSessionState()
             lastPersisted = null
-            updateNotification(status(prefs, session, inWindow = false, stopAllowedAt, now))
+            updateNotification(
+                status(prefs, session, inWindow = false, stopAllowedAt, now),
+                showLockNow = false,
+            )
             return
         }
 
@@ -140,11 +149,14 @@ class BlockerService : Service() {
         val watching = powerManager.isInteractive && tracker.currentPackage == prefs.watchedPackage
         when (val event = session.onTick(now, watching)) {
             is WatchSession.Remind -> showReminder(prefs, event.watchedMs)
-            is WatchSession.SwitchAway -> enforce(prefs, session, event)
+            is WatchSession.SwitchAway -> enforce(prefs, session, event, now)
             null -> Unit
         }
         persistProgress(prefs, session, now)
-        updateNotification(status(prefs, session, inWindow = true, stopAllowedAt, now))
+        updateNotification(
+            status(prefs, session, inWindow = true, stopAllowedAt, now),
+            showLockNow = !session.locked,
+        )
     }
 
     /**
@@ -163,14 +175,14 @@ class BlockerService : Service() {
             prefs.clearSessionState()
             return
         }
-        session.restore(nowMs, prefs.stateWatchedMs, prefs.stateLocked, prefs.stateAwaySinceMs)
+        session.restore(nowMs, prefs.stateWatchedMs, prefs.stateLocked, prefs.stateLockoutUntilMs)
     }
 
     private fun persistProgress(prefs: Prefs, session: WatchSession, nowMs: Long) {
-        val snapshot = Triple(session.watchedMs, session.locked, session.awaySinceMs)
+        val snapshot = Triple(session.watchedMs, session.locked, session.lockoutUntilMs)
         if (snapshot == lastPersisted) return
         lastPersisted = snapshot
-        prefs.saveSessionState(session.watchedMs, session.locked, session.awaySinceMs, nowMs)
+        prefs.saveSessionState(session.watchedMs, session.locked, session.lockoutUntilMs, nowMs)
     }
 
     private fun showReminder(prefs: Prefs, watchedMs: Long) {
@@ -187,7 +199,12 @@ class BlockerService : Service() {
         )
     }
 
-    private fun enforce(prefs: Prefs, session: WatchSession, event: WatchSession.SwitchAway) {
+    private fun enforce(
+        prefs: Prefs,
+        session: WatchSession,
+        event: WatchSession.SwitchAway,
+        nowMs: Long,
+    ) {
         val target = prefs.redirectLabel ?: getString(R.string.home_screen)
         if (event.firstTime) {
             overlay.show(
@@ -210,13 +227,53 @@ class BlockerService : Service() {
                 message = getString(
                     R.string.locked_message,
                     prefs.watchedLabel,
-                    ceilMinutes(session.lockoutRemainingMs),
+                    ceilMinutes(session.lockoutRemainingMs(nowMs)),
                 ),
                 primaryLabel = getString(R.string.limit_ok),
                 autoDismissMs = LOCKED_AUTO_DISMISS_MS,
             )
             handler.postDelayed({ launchRedirect(prefs) }, LOCKED_SWITCH_DELAY_MS)
         }
+    }
+
+    /**
+     * "Block now" from the notification: spend the rest of the budget and start
+     * the lockout immediately, for when the user is done watching (or done
+     * eating) early and would rather not leave unspent minutes tempting them.
+     *
+     * Ignored when off duty or already locked, so a stray tap can never restart
+     * a wait that is already part-served.
+     */
+    private fun startLockoutEarly(prefs: Prefs) {
+        val session = session ?: return
+        val now = System.currentTimeMillis()
+        val inWindow = Schedule.isWithinWindow(
+            minutesOfDay(), prefs.activeStartMinutes, prefs.activeEndMinutes
+        )
+        if (!inWindow || session.locked) return
+
+        session.lockNow(now)
+        persistProgress(prefs, session, now)
+
+        // Only interrupt the screen if they are actually in the watched app;
+        // pressing this from anywhere else should be a quiet confirmation, and
+        // the updated notification in the shade they pressed it from is that.
+        tracker.update(now)
+        if (tracker.currentPackage == prefs.watchedPackage) {
+            overlay.show(
+                title = getString(R.string.lock_now_title),
+                message = getString(
+                    R.string.lock_now_message, prefs.watchedLabel, prefs.lockoutMinutes
+                ),
+                primaryLabel = getString(R.string.limit_ok),
+                autoDismissMs = LIMIT_AUTO_DISMISS_MS,
+            )
+            handler.postDelayed({ launchRedirect(prefs) }, LOCKED_SWITCH_DELAY_MS)
+        }
+        updateNotification(
+            status(prefs, session, inWindow = true, prefs.stopAllowedAtMs, now),
+            showLockNow = false,
+        )
     }
 
     private fun launchRedirect(prefs: Prefs) {
@@ -259,7 +316,7 @@ class BlockerService : Service() {
             session.locked -> getString(
                 R.string.notification_locked,
                 prefs.watchedLabel,
-                ceilMinutes(session.lockoutRemainingMs),
+                ceilMinutes(session.lockoutRemainingMs(nowMs)),
             )
             else -> getString(
                 R.string.notification_text,
@@ -285,27 +342,61 @@ class BlockerService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun buildNotification(text: String): android.app.Notification {
+    /**
+     * [showLockNow] adds the "Block now" action — offered only while there is
+     * still budget left to give up, since during a lockout there is nothing to
+     * start early.
+     */
+    private fun buildNotification(text: String, showLockNow: Boolean): android.app.Notification {
         val openApp = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(text)
             .setContentIntent(openApp)
             .setOngoing(true)
-            .build()
+        if (showLockNow) {
+            val lockNow = PendingIntent.getForegroundService(
+                this,
+                REQUEST_LOCK_NOW,
+                Intent(this, BlockerService::class.java).setAction(ACTION_LOCK_NOW),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            builder.addAction(
+                NotificationCompat.Action.Builder(
+                    R.drawable.ic_notification,
+                    getString(R.string.notification_lock_now),
+                    lockNow,
+                ).build()
+            )
+        }
+        return builder.build()
     }
 
-    private fun updateNotification(text: String) {
-        if (text == lastNotificationText) return
-        lastNotificationText = text
+    /**
+     * The notification as last shown, for re-asserting foreground state without
+     * flashing different text at the user. Falls back to the fresh-start text if
+     * nothing has been shown yet.
+     */
+    private fun currentNotification(prefs: Prefs): android.app.Notification {
+        val (text, showLockNow) = lastNotification ?: (freshStartText(prefs) to false)
+        return buildNotification(text, showLockNow)
+    }
+
+    private fun freshStartText(prefs: Prefs): String =
+        getString(R.string.notification_text, prefs.watchedLabel, 0, prefs.limitMinutes)
+
+    private fun updateNotification(text: String, showLockNow: Boolean) {
+        val next = text to showLockNow
+        if (next == lastNotification) return
+        lastNotification = next
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, buildNotification(text))
+            .notify(NOTIFICATION_ID, buildNotification(text, showLockNow))
     }
 
     companion object {
@@ -316,9 +407,13 @@ class BlockerService : Service() {
         /** Marks a start that recovers from a kill rather than a user pressing Start. */
         const val EXTRA_AUTO_RESTART = "auto_restart"
 
+        /** Notification action: spend the remaining budget and start the break now. */
+        const val ACTION_LOCK_NOW = "com.workcrew.appblocker.action.LOCK_NOW"
+
         private const val TAG = "BlockerService"
         private const val CHANNEL_ID = "blocker_status"
         private const val NOTIFICATION_ID = 1
+        private const val REQUEST_LOCK_NOW = 1
 
         private const val POLL_INTERVAL_MS = 5_000L
         private const val SWITCH_DELAY_MS = 1_500L

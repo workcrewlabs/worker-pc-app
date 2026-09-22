@@ -99,10 +99,10 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_STATE_LOCKED, false)
         set(value) = sp.edit().putBoolean(KEY_STATE_LOCKED, value).apply()
 
-    /** Wall-clock start of the current stretch away, or -1 when not away. */
-    var stateAwaySinceMs: Long
-        get() = sp.getLong(KEY_STATE_AWAY_SINCE, -1L)
-        set(value) = sp.edit().putLong(KEY_STATE_AWAY_SINCE, value).apply()
+    /** Wall-clock instant the lockout lifts, or 0 when not locked. */
+    var stateLockoutUntilMs: Long
+        get() = sp.getLong(KEY_STATE_LOCKOUT_UNTIL, 0L)
+        set(value) = sp.edit().putLong(KEY_STATE_LOCKOUT_UNTIL, value).apply()
 
     /** When the state above was written; 0 when there is nothing saved. */
     var stateSavedAtMs: Long
@@ -114,11 +114,11 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_STATE_PACKAGE, null)
         set(value) = sp.edit().putString(KEY_STATE_PACKAGE, value).apply()
 
-    fun saveSessionState(watchedMs: Long, locked: Boolean, awaySinceMs: Long, nowMs: Long) {
+    fun saveSessionState(watchedMs: Long, locked: Boolean, lockoutUntilMs: Long, nowMs: Long) {
         sp.edit()
             .putLong(KEY_STATE_WATCHED_MS, watchedMs)
             .putBoolean(KEY_STATE_LOCKED, locked)
-            .putLong(KEY_STATE_AWAY_SINCE, awaySinceMs)
+            .putLong(KEY_STATE_LOCKOUT_UNTIL, lockoutUntilMs)
             .putLong(KEY_STATE_SAVED_AT, nowMs)
             .putString(KEY_STATE_PACKAGE, watchedPackage)
             .apply()
@@ -128,7 +128,7 @@ class Prefs(context: Context) {
         sp.edit()
             .remove(KEY_STATE_WATCHED_MS)
             .remove(KEY_STATE_LOCKED)
-            .remove(KEY_STATE_AWAY_SINCE)
+            .remove(KEY_STATE_LOCKOUT_UNTIL)
             .remove(KEY_STATE_SAVED_AT)
             .remove(KEY_STATE_PACKAGE)
             .apply()
@@ -156,7 +156,7 @@ class Prefs(context: Context) {
         private const val KEY_ENABLED = "blocker_enabled"
         private const val KEY_STATE_WATCHED_MS = "state_watched_ms"
         private const val KEY_STATE_LOCKED = "state_locked"
-        private const val KEY_STATE_AWAY_SINCE = "state_away_since"
+        private const val KEY_STATE_LOCKOUT_UNTIL = "state_lockout_until"
         private const val KEY_STATE_SAVED_AT = "state_saved_at"
         private const val KEY_STATE_PACKAGE = "state_package"
     }
