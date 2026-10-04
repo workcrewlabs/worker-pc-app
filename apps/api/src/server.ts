@@ -1,4 +1,12 @@
 import { randomUUID } from "node:crypto";
+import {
+  botForToken,
+  botUsageSummary,
+  createBot,
+  initializeBotUsage,
+  recordBotUsage,
+  setBotActive
+} from "./bot-usage.js";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import cors from "@fastify/cors";
@@ -586,7 +594,7 @@ const token=${JSON.stringify(token)};
 const pw=document.getElementById('pw'),go=document.getElementById('go'),msg=document.getElementById('msg');
 async function submit(attempt){
   var r=await fetch('/v1/auth/reset-confirm',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:token,password:pw.value})});
-  if(r.ok){msg.textContent='✓ Your password is updated. Return to WorkCrew and sign in.';msg.className='ok';pw.disabled=true;go.style.display='none';return;}
+  if(r.ok){msg.textContent='âœ“ Your password is updated. Return to WorkCrew and sign in.';msg.className='ok';pw.disabled=true;go.style.display='none';return;}
   if(r.status>=500&&attempt<1){msg.textContent='Working on it...';msg.className='';return submit(attempt+1);}
   var d=await r.json().catch(function(){return {};});
   if(r.status>=500){msg.textContent='Something went wrong on our side. Please wait a minute and try again.';}
@@ -995,6 +1003,74 @@ app.get("/v1/admin/activity", routeLimit(30), async (request) => {
 app.get("/v1/admin/card-attempts", routeLimit(30), async (request) => {
   await requireAdmin(request);
   return { attempts: await listMpgsAttempts(10) };
+});
+
+// What each WhatsApp chatbot has cost this month. These bots are not WorkCrew
+// accounts: they report their own token counts, and the price is applied
+// backend side from the shared model price table.
+app.get("/v1/admin/bots", routeLimit(60), async (request) => {
+  await requireAdmin(request);
+  return { bots: await botUsageSummary() };
+});
+
+const createBotSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  customer: z.string().trim().max(120).default("")
+}).strict();
+
+app.post("/v1/admin/bots", routeLimit(20), async (request) => {
+  await requireAdmin(request);
+  const body = createBotSchema.parse(request.body);
+  const created = await createBot(body.name, body.customer);
+  // The token is returned exactly once, here. Only its hash is stored, so a
+  // lost token cannot be recovered and has to be replaced.
+  return { bot: created.bot, token: created.token };
+});
+
+const setBotActiveSchema = z.object({
+  id: z.string().uuid(),
+  active: z.boolean()
+}).strict();
+
+app.post("/v1/admin/bots/active", routeLimit(20), async (request) => {
+  await requireAdmin(request);
+  const body = setBotActiveSchema.parse(request.body);
+  return { ok: await setBotActive(body.id, body.active) };
+});
+
+// Where a bot reports one AI call. Authenticated by the bot's own token, never
+// by anything in the body: a report says what it spent, not who it is. Token
+// counts only, because the cost is priced here rather than trusted from a
+// workflow that could be out of date or simply wrong.
+const botUsageSchema = z.object({
+  model: z.enum(["glm", "glm-flash", "minimax", "haiku", "sonnet", "opus"]),
+  inputTokens: z.number().int().min(0).max(10_000_000),
+  outputTokens: z.number().int().min(0).max(10_000_000),
+  // Any stable id for the message this call answered. Sending one makes a retry
+  // safe, because the same id is only ever counted once.
+  dedupeId: z.string().trim().min(1).max(200).optional()
+}).strict();
+
+app.post("/v1/bot-usage", routeLimit(600), async (request, reply) => {
+  const header = request.headers.authorization ?? "";
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  const bot = await botForToken(token);
+  if (!bot) {
+    // No detail about whether the token was unknown or the bot disabled, and
+    // the token itself is never logged.
+    request.log.warn({ event: "bot_usage_rejected" }, "bot usage report refused");
+    void reply.code(401);
+    return { error: "unauthorized" };
+  }
+  const body = botUsageSchema.parse(request.body);
+  const recorded = await recordBotUsage({
+    botId: bot.id,
+    model: body.model,
+    inputTokens: body.inputTokens,
+    outputTokens: body.outputTokens,
+    dedupeId: body.dedupeId ?? null
+  });
+  return { ok: true, costMicrodollars: recorded.costMicrodollars };
 });
 
 // The dashboard itself: one self-contained page that signs in with a normal
@@ -1642,6 +1718,9 @@ app.setErrorHandler((error, request, reply) => {
 });
 
 await initializeDatabase();
+// The chatbot usage tables live alongside the main schema but in their own
+// module, because the bots are not WorkCrew accounts and share nothing with it.
+await initializeBotUsage();
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   await app.listen({ port: config.port, host: config.host });

@@ -163,6 +163,28 @@ export function adminPage(): string {
   </section>
 
   <section class="card">
+    <h1>Chatbot API usage</h1>
+    <p class="sub">What each WhatsApp chatbot has cost in AI usage this calendar month. These are the bots you built, not WorkCrew accounts, so each one reports its own usage and the cost is worked out here.</p>
+    <table class="audit">
+      <thead><tr><th>Bot</th><th>Customer</th><th>This month</th><th>Messages</th><th>Tokens in / out</th><th>All time</th><th>Last used</th><th></th></tr></thead>
+      <tbody id="bot-rows"><tr><td colspan="8" class="muted">Loading...</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h1>Add a chatbot</h1>
+    <p class="sub">Registers a bot and gives you a reporting code to paste into its workflow. The code is shown once, here, and cannot be looked up again.</p>
+    <form id="bot-form">
+      <div class="row">
+        <label class="grow">Bot name<input id="bot-name" type="text" required maxlength="80" placeholder="For example: Cedar Tax bot" /></label>
+        <label class="grow">Customer<input id="bot-customer" type="text" maxlength="120" placeholder="Who it belongs to (optional)" /></label>
+        <button id="bot-button" type="submit">Add</button>
+      </div>
+    </form>
+    <div id="bot-note" class="notice hidden"></div>
+  </section>
+
+  <section class="card">
     <h1>Recent activity</h1>
     <table class="audit">
       <thead><tr><th>When</th><th>Who</th><th>Did what</th><th>To</th></tr></thead>
@@ -359,7 +381,71 @@ export function adminPage(): string {
     });
   }
 
-  function refreshAll() { return Promise.all([loadCustomers(), loadActivity(), loadAttempts()]); }
+  function loadBots() {
+    return api("/v1/admin/bots").then(function (payload) {
+      var bots = payload.bots || [];
+      $("bot-rows").innerHTML = bots.length === 0
+        ? '<tr><td colspan="8" class="muted">No chatbots added yet.</td></tr>'
+        : bots.map(function (row) {
+            var tokens = Number(row.monthInputTokens || 0).toLocaleString("en") + " / " +
+              Number(row.monthOutputTokens || 0).toLocaleString("en");
+            return "<tr>" +
+              "<td>" + escapeText(row.name) + (row.active ? "" : ' <span class="muted">(off)</span>') + "</td>" +
+              "<td>" + escapeText(row.customer || "-") + "</td>" +
+              "<td>" + escapeText(money(row.monthMicrodollars)) + "</td>" +
+              "<td>" + escapeText(String(row.monthMessages || 0)) + "</td>" +
+              "<td>" + escapeText(tokens) + "</td>" +
+              "<td>" + escapeText(money(row.totalMicrodollars)) + "</td>" +
+              "<td>" + escapeText(formatDate(row.lastSeenMs)) + "</td>" +
+              '<td><button type="button" class="ghost" data-bot="' + escapeText(row.id) +
+                '" data-active="' + (row.active ? "0" : "1") + '">' +
+                (row.active ? "Turn off" : "Turn on") + "</button></td>" +
+            "</tr>";
+          }).join("");
+    }).catch(function () {
+      $("bot-rows").innerHTML = '<tr><td colspan="8" class="muted">Could not load.</td></tr>';
+    });
+  }
+
+  // One listener on the table rather than one per button, so rows redrawn by a
+  // refresh keep working without rebinding anything.
+  $("bot-rows").addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-bot]");
+    if (!button) return;
+    button.disabled = true;
+    api("/v1/admin/bots/active", {
+      method: "POST",
+      body: { id: button.getAttribute("data-bot"), active: button.getAttribute("data-active") === "1" }
+    }).then(function () {
+      return loadBots();
+    }).catch(function (error) {
+      note($("bot-note"), error.message, false);
+      button.disabled = false;
+    });
+  });
+
+  $("bot-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var button = $("bot-button");
+    button.disabled = true;
+    api("/v1/admin/bots", {
+      method: "POST",
+      body: { name: $("bot-name").value.trim(), customer: $("bot-customer").value.trim() }
+    }).then(function (payload) {
+      // Shown once and never retrievable, so it is spelled out in full with a
+      // warning rather than tucked away where it could be missed.
+      note($("bot-note"), "Added " + payload.bot.name + ". Reporting code (copy it now, it is not shown again): " + payload.token, true);
+      $("bot-name").value = "";
+      $("bot-customer").value = "";
+      return loadBots();
+    }).catch(function (error) {
+      note($("bot-note"), error.message, false);
+    }).finally(function () {
+      button.disabled = false;
+    });
+  });
+
+  function refreshAll() { return Promise.all([loadCustomers(), loadActivity(), loadAttempts(), loadBots()]); }
 
   $("signin-form").addEventListener("submit", function (event) {
     event.preventDefault();
