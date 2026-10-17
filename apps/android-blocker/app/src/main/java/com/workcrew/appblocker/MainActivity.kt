@@ -17,6 +17,7 @@ import android.text.format.DateFormat
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -26,19 +27,23 @@ import androidx.core.content.ContextCompat
 import java.util.Locale
 
 /**
- * One-screen setup: grant the two special permissions, pick the watched app
- * (YouTube by default), the active hours, the reminder interval, the hard
- * limit, the lockout, and where to be sent when time is up, then start the
- * blocker service.
+ * One-screen setup: grant the special permissions, then build a list of
+ * limited apps. Each app gets its own editor — hours, allowance, reminder
+ * cadence, lockout, where to be sent, and how long Stop has to wait — so
+ * YouTube and Instagram can be governed completely differently.
  *
- * While the service runs the settings are locked and Stop only takes effect
- * after the configured wait — that friction is the point of the app.
+ * While the service runs the list is locked and Stop only takes effect after
+ * the longest of the apps' cancel waits — that friction is the point of the
+ * app.
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
     private val handler = Handler(Looper.getMainLooper())
     private var lastRunningState: Boolean? = null
+
+    /** What the app list was last built from, so the once-a-second re-render can skip it. */
+    private var renderedRules: Pair<List<AppLimit>, Boolean>? = null
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -51,7 +56,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         prefs = Prefs(this)
-        populateFields()
 
         findViewById<Button>(R.id.btn_usage_access).setOnClickListener {
             startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
@@ -65,28 +69,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
         findViewById<Button>(R.id.btn_battery).setOnClickListener { requestBatteryExemption() }
-        findViewById<Button>(R.id.btn_watched_app).setOnClickListener {
-            pickApp(includeHome = false) { pkg, label ->
-                if (pkg != null && label != null) {
-                    prefs.watchedPackage = pkg
-                    prefs.watchedLabel = label
-                }
-                render()
-            }
-        }
-        findViewById<Button>(R.id.btn_redirect_app).setOnClickListener {
-            pickApp(includeHome = true) { pkg, label ->
-                prefs.redirectPackage = pkg
-                prefs.redirectLabel = label
-                render()
-            }
-        }
-        findViewById<Button>(R.id.btn_time_start).setOnClickListener {
-            pickTime(prefs.activeStartMinutes) { prefs.activeStartMinutes = it; render() }
-        }
-        findViewById<Button>(R.id.btn_time_end).setOnClickListener {
-            pickTime(prefs.activeEndMinutes) { prefs.activeEndMinutes = it; render() }
-        }
+        findViewById<Button>(R.id.btn_add_app).setOnClickListener { addApp() }
         findViewById<Button>(R.id.btn_start).setOnClickListener { startBlocker() }
         findViewById<Button>(R.id.btn_stop).setOnClickListener { onStopPressed() }
 
@@ -115,19 +98,11 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
     }
 
-    private fun populateFields() {
-        findViewById<EditText>(R.id.edit_remind).setText(prefs.remindEveryMinutes.toString())
-        findViewById<EditText>(R.id.edit_limit).setText(prefs.limitMinutes.toString())
-        findViewById<EditText>(R.id.edit_lockout).setText(prefs.lockoutMinutes.toString())
-        findViewById<EditText>(R.id.edit_stop_delay).setText(prefs.stopDelayMinutes.toString())
-    }
-
     private fun render() {
         val running = BlockerService.isRunning
+        val limits = prefs.limits
         if (lastRunningState != running) {
             lastRunningState = running
-            // Show what is actually in force once the service takes over.
-            if (running) populateFields()
             setInputsEnabled(!running)
         }
 
@@ -146,22 +121,64 @@ class MainActivity : AppCompatActivity() {
             if (ignoringBatteryOptimizations()) R.string.battery_unrestricted
             else R.string.battery_restricted
         )
-        findViewById<TextView>(R.id.txt_watched_app).text = prefs.watchedLabel
-        findViewById<TextView>(R.id.txt_redirect_app).text =
-            prefs.redirectLabel ?: getString(R.string.home_screen)
-        findViewById<Button>(R.id.btn_time_start).text = Schedule.format(prefs.activeStartMinutes)
-        findViewById<Button>(R.id.btn_time_end).text = Schedule.format(prefs.activeEndMinutes)
-        findViewById<TextView>(R.id.txt_active_hours_note).text =
-            if (prefs.activeStartMinutes == prefs.activeEndMinutes) {
-                getString(R.string.active_hours_all_day)
-            } else {
-                getString(R.string.active_hours_note)
-            }
 
-        renderStopButton(running)
+        renderRules(limits, running)
+        renderStopSection(limits, running)
     }
 
-    private fun renderStopButton(running: Boolean) {
+    /**
+     * Rebuilds the list of limited apps. Only when something about it actually
+     * changed: the Stop countdown re-renders every second, and throwing the
+     * rows away that often would fight whatever the user is tapping.
+     */
+    private fun renderRules(limits: List<AppLimit>, running: Boolean) {
+        if (renderedRules == limits to running) return
+        renderedRules = limits to running
+        val container = findViewById<LinearLayout>(R.id.rules_container)
+        container.removeAllViews()
+        findViewById<TextView>(R.id.txt_no_rules).visibility =
+            if (limits.isEmpty()) View.VISIBLE else View.GONE
+
+        limits.forEach { limit ->
+            val row = layoutInflater.inflate(R.layout.item_rule, container, false)
+            row.findViewById<TextView>(R.id.txt_rule_label).text = limit.label
+            row.findViewById<TextView>(R.id.txt_rule_summary).text = summaryOf(limit)
+            row.findViewById<Button>(R.id.btn_rule_edit).apply {
+                isEnabled = !running
+                setOnClickListener { editRule(limit) }
+            }
+            row.findViewById<Button>(R.id.btn_rule_remove).apply {
+                isEnabled = !running
+                setOnClickListener { confirmRemove(limit) }
+            }
+            container.addView(row)
+        }
+    }
+
+    private fun summaryOf(limit: AppLimit): String = getString(
+        R.string.rule_summary,
+        limit.limitMinutes,
+        if (limit.allDay) {
+            getString(R.string.rule_window_all_day)
+        } else {
+            getString(
+                R.string.rule_window_range,
+                Schedule.format(limit.activeStartMinutes),
+                Schedule.format(limit.activeEndMinutes),
+            )
+        },
+        limit.remindEveryMinutes,
+        limit.lockoutMinutes,
+        limit.redirectLabel ?: getString(R.string.home_screen),
+        limit.cancelWaitMinutes,
+    )
+
+    private fun renderStopSection(limits: List<AppLimit>, running: Boolean) {
+        val wait = cancelWaitMinutes(limits)
+        findViewById<TextView>(R.id.txt_stop_note).text =
+            if (wait > 0) getString(R.string.stop_note_wait, wait)
+            else getString(R.string.stop_note_immediate)
+
         val stop = findViewById<Button>(R.id.btn_stop)
         stop.isEnabled = running
         val pendingAt = prefs.stopAllowedAtMs
@@ -170,25 +187,148 @@ class MainActivity : AppCompatActivity() {
             pendingAt > 0L -> getString(
                 R.string.stop_cancel, countdown(pendingAt - System.currentTimeMillis())
             )
-            prefs.stopDelayMinutes > 0 -> getString(R.string.stop_after_wait, prefs.stopDelayMinutes)
+            wait > 0 -> getString(R.string.stop_after_wait, wait)
             else -> getString(R.string.stop_blocking)
         }
     }
 
+    /**
+     * Stopping the blocker stops every limit at once, so it has to wait out the
+     * strictest app — otherwise a lenient app's short wait would be a back door
+     * to cancelling a strict one early.
+     */
+    private fun cancelWaitMinutes(limits: List<AppLimit>): Int =
+        limits.maxOfOrNull { it.cancelWaitMinutes } ?: 0
+
     private fun setInputsEnabled(enabled: Boolean) {
-        listOf(
-            R.id.edit_remind, R.id.edit_limit, R.id.edit_lockout, R.id.edit_stop_delay,
-            R.id.btn_watched_app, R.id.btn_redirect_app, R.id.btn_time_start, R.id.btn_time_end,
-            R.id.btn_start,
-        ).forEach { findViewById<View>(it).isEnabled = enabled }
+        listOf(R.id.btn_add_app, R.id.btn_start).forEach {
+            findViewById<View>(it).isEnabled = enabled
+        }
+    }
+
+    private fun addApp() {
+        pickApp(includeHome = false) { pkg, label ->
+            if (pkg == null || label == null) return@pickApp
+            val existing = prefs.limitFor(pkg)
+            if (existing != null) {
+                Toast.makeText(
+                    this, getString(R.string.already_limited, existing.label), Toast.LENGTH_LONG
+                ).show()
+                editRule(existing)
+                return@pickApp
+            }
+            editRule(AppLimit.of(packageName = pkg, label = label))
+        }
+    }
+
+    /**
+     * The per-app editor. Edits are collected into [draft] and only written on
+     * Save, so backing out of the dialog leaves the stored rules untouched.
+     */
+    private fun editRule(limit: AppLimit) {
+        var draft = limit
+        val view = layoutInflater.inflate(R.layout.dialog_rule, null)
+        val limitField = view.findViewById<EditText>(R.id.edit_rule_limit)
+        val remindField = view.findViewById<EditText>(R.id.edit_rule_remind)
+        val lockoutField = view.findViewById<EditText>(R.id.edit_rule_lockout)
+        val cancelField = view.findViewById<EditText>(R.id.edit_rule_cancel_wait)
+        val startButton = view.findViewById<Button>(R.id.btn_rule_start)
+        val endButton = view.findViewById<Button>(R.id.btn_rule_end)
+        val redirectButton = view.findViewById<Button>(R.id.btn_rule_redirect)
+
+        limitField.setText(draft.limitMinutes.toString())
+        remindField.setText(draft.remindEveryMinutes.toString())
+        lockoutField.setText(draft.lockoutMinutes.toString())
+        cancelField.setText(draft.cancelWaitMinutes.toString())
+
+        // The hour and redirect pickers are dialogs of their own, so the parts
+        // of this one they change are redrawn when they come back.
+        fun refresh() {
+            startButton.text = Schedule.format(draft.activeStartMinutes)
+            endButton.text = Schedule.format(draft.activeEndMinutes)
+            view.findViewById<TextView>(R.id.txt_rule_redirect).text =
+                draft.redirectLabel ?: getString(R.string.home_screen)
+            view.findViewById<TextView>(R.id.txt_rule_window_note).text = getString(
+                if (draft.allDay) R.string.active_hours_all_day else R.string.active_hours_note
+            )
+        }
+        refresh()
+
+        startButton.setOnClickListener {
+            pickTime(draft.activeStartMinutes) {
+                draft = draft.copy(activeStartMinutes = it)
+                refresh()
+            }
+        }
+        endButton.setOnClickListener {
+            pickTime(draft.activeEndMinutes) {
+                draft = draft.copy(activeEndMinutes = it)
+                refresh()
+            }
+        }
+        redirectButton.setOnClickListener {
+            pickApp(includeHome = true) { pkg, label ->
+                draft = draft.copy(redirectPackage = pkg, redirectLabel = label)
+                refresh()
+            }
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(draft.label)
+            .setView(view)
+            .setPositiveButton(R.string.save) { _, _ ->
+                // AppLimit.of is what clamps the typed values, so a blank or
+                // silly entry can never become a zero-length timer.
+                saveRule(
+                    AppLimit.of(
+                        packageName = draft.packageName,
+                        label = draft.label,
+                        remindEveryMinutes = minutesIn(remindField, draft.remindEveryMinutes),
+                        limitMinutes = minutesIn(limitField, draft.limitMinutes),
+                        lockoutMinutes = minutesIn(lockoutField, draft.lockoutMinutes),
+                        activeStartMinutes = draft.activeStartMinutes,
+                        activeEndMinutes = draft.activeEndMinutes,
+                        redirectPackage = draft.redirectPackage,
+                        redirectLabel = draft.redirectLabel,
+                        cancelWaitMinutes = minutesIn(
+                            cancelField, draft.cancelWaitMinutes, minimum = 0
+                        ),
+                    )
+                )
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun saveRule(limit: AppLimit) {
+        val existing = prefs.limits
+        val index = existing.indexOfFirst { it.packageName == limit.packageName }
+        prefs.limits = if (index >= 0) {
+            existing.toMutableList().also { it[index] = limit }
+        } else {
+            existing + limit
+        }
+        render()
+    }
+
+    private fun confirmRemove(limit: AppLimit) {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.remove_rule_title, limit.label))
+            .setMessage(R.string.remove_rule_message)
+            .setPositiveButton(R.string.remove) { _, _ ->
+                // Clearing the rules also drops this app's saved progress.
+                prefs.limits = prefs.limits.filterNot { it.packageName == limit.packageName }
+                render()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun startBlocker() {
-        prefs.remindEveryMinutes = fieldMinutes(R.id.edit_remind, prefs.remindEveryMinutes)
-        prefs.limitMinutes = fieldMinutes(R.id.edit_limit, prefs.limitMinutes)
-        prefs.lockoutMinutes = fieldMinutes(R.id.edit_lockout, prefs.lockoutMinutes)
-        prefs.stopDelayMinutes =
-            fieldMinutes(R.id.edit_stop_delay, prefs.stopDelayMinutes, minimum = 0)
+        if (prefs.limits.isEmpty()) {
+            Toast.makeText(this, R.string.need_a_rule, Toast.LENGTH_LONG).show()
+            return
+        }
         if (!hasUsageAccess()) {
             Toast.makeText(this, R.string.need_usage_access, Toast.LENGTH_LONG).show()
             return
@@ -210,7 +350,7 @@ class MainActivity : AppCompatActivity() {
             render()
             return
         }
-        val waitMinutes = prefs.stopDelayMinutes
+        val waitMinutes = cancelWaitMinutes(prefs.limits)
         if (waitMinutes <= 0) {
             // Clear the intent to block first, or the watchdog restarts it.
             prefs.blockerEnabled = false
@@ -233,9 +373,9 @@ class MainActivity : AppCompatActivity() {
         window.decorView.postDelayed({ if (!isDestroyed) render() }, 500)
     }
 
-    private fun fieldMinutes(id: Int, fallback: Int, minimum: Int = Prefs.MIN_MINUTES): Int {
-        val value = findViewById<EditText>(id).text.toString().toIntOrNull() ?: fallback
-        return value.coerceIn(minimum, Prefs.MAX_MINUTES)
+    private fun minutesIn(field: EditText, fallback: Int, minimum: Int = AppLimit.MIN_MINUTES): Int {
+        val value = field.text.toString().toIntOrNull() ?: fallback
+        return value.coerceIn(minimum, AppLimit.MAX_MINUTES)
     }
 
     private fun countdown(remainingMs: Long): String {

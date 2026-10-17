@@ -16,14 +16,20 @@ import androidx.core.app.NotificationCompat
 import java.util.Calendar
 
 /**
- * Foreground service that polls "which app is on screen" every few seconds,
- * feeds a [WatchSession], and acts on its events: a full-screen overlay
- * reminder every N minutes, and a forced switch to the redirect app (or home
- * screen) once the limit is hit, repeated for as long as the lockout holds.
+ * Foreground service that polls "which app is on screen" every few seconds and
+ * feeds one [WatchSession] per limited app, acting on whatever each one asks
+ * for: a full-screen overlay reminder every N minutes of use, and a forced
+ * switch to that app's redirect target once its limit is hit, repeated for as
+ * long as its lockout holds.
  *
- * It also owns the two pieces of self-control friction: enforcement only runs
- * inside the configured daily window, and a requested stop only takes effect
- * after the configured wait. Everything runs on-device; no network.
+ * Every app's rules are independent — its own window, reminder cadence, limit,
+ * lockout and redirect — so only the app actually on screen accrues time, and
+ * one app being locked says nothing about the others.
+ *
+ * It also owns the self-control friction: enforcement only runs inside each
+ * app's configured window, and a requested stop only takes effect once the
+ * longest of the apps' cancel waits is up. Everything runs on-device; no
+ * network.
  */
 class BlockerService : Service() {
 
@@ -31,9 +37,18 @@ class BlockerService : Service() {
     private lateinit var tracker: ForegroundAppTracker
     private lateinit var overlay: OverlayReminder
     private lateinit var powerManager: PowerManager
-    private var session: WatchSession? = null
-    private var lastNotification: Pair<String, Boolean>? = null
-    private var lastPersisted: Triple<Long, Boolean, Long>? = null
+
+    private var limits: List<AppLimit> = emptyList()
+    private val sessions = mutableMapOf<String, WatchSession>()
+    private val lastPersisted = mutableMapOf<String, Triple<Long, Boolean, Long>>()
+    private var lastNotification: NotificationState? = null
+
+    /** The notification as last shown, so re-asserting it can't flash new text. */
+    private data class NotificationState(
+        val text: String,
+        val detail: String,
+        val showLockNow: Boolean,
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -49,9 +64,9 @@ class BlockerService : Service() {
         val prefs = Prefs(this)
         createChannel()
         val lockNowRequested = intent?.action == ACTION_LOCK_NOW
-        if (lockNowRequested && session != null) {
-            // Already running: just start the break, leaving the session alone.
-            startForeground(NOTIFICATION_ID, currentNotification(prefs))
+        if (lockNowRequested && sessions.isNotEmpty()) {
+            // Already running: just start the break, leaving the sessions alone.
+            startForeground(NOTIFICATION_ID, currentNotification())
             startLockoutEarly(prefs)
             return START_STICKY
         }
@@ -62,21 +77,21 @@ class BlockerService : Service() {
         // Remember the intent to block so a reboot or a kill can be recovered from.
         prefs.blockerEnabled = true
         BlockerLauncher.scheduleWatchdog(this)
+        // Re-reading settings here means pressing Start again applies changes.
+        limits = prefs.limits
         startForeground(
             NOTIFICATION_ID,
-            buildNotification(freshStartText(prefs), showLockNow = false),
+            buildNotification(freshStartText(), detail = "", showLockNow = false),
         )
 
-        // Re-reading settings here means pressing Start again applies changes.
-        val started = WatchSession(
-            remindEveryMs = prefs.remindEveryMinutes * 60_000L,
-            limitMs = prefs.limitMinutes * 60_000L,
-            lockoutMs = prefs.lockoutMinutes * 60_000L,
-        )
-        restoreSavedProgress(prefs, started, System.currentTimeMillis())
-        session = started
+        val now = System.currentTimeMillis()
+        sessions.clear()
+        lastPersisted.clear()
+        limits.forEach { limit ->
+            sessions[limit.packageName] = limit.newSession()
+                .also { restoreSavedProgress(prefs, limit, it, now) }
+        }
         lastNotification = null
-        lastPersisted = null
         handler.removeCallbacks(tick)
         handler.post(tick)
         if (lockNowRequested) startLockoutEarly(prefs)
@@ -113,12 +128,14 @@ class BlockerService : Service() {
     }
 
     private fun pollOnce() {
-        val session = session ?: return
         val prefs = Prefs(this)
         val now = System.currentTimeMillis()
 
         val stopAllowedAt = prefs.stopAllowedAtMs
-        if (stopAllowedAt > 0L && now >= stopAllowedAt) {
+        val stopDue = stopAllowedAt > 0L && now >= stopAllowedAt
+        // No rules left is the same as being stopped — a foreground service
+        // with nothing to limit would just sit there holding a notification.
+        if (stopDue || limits.isEmpty()) {
             // A stop the user waited out is the one case where the blocker is
             // meant to stay off, so clear the flag the watchdog restarts from.
             prefs.stopAllowedAtMs = 0L
@@ -129,110 +146,120 @@ class BlockerService : Service() {
         }
 
         tracker.update(now)
+        // Screen off doesn't count as using an app, even if one is still "resumed".
+        val foreground = tracker.currentPackage?.takeIf { powerManager.isInteractive }
+        val minutesOfDay = minutesOfDay()
 
-        val inWindow = Schedule.isWithinWindow(
-            minutesOfDay(), prefs.activeStartMinutes, prefs.activeEndMinutes
-        )
-        if (!inWindow) {
-            // Off duty: drop all progress so the next window starts clean.
-            session.onIdle(now)
-            prefs.clearSessionState()
-            lastPersisted = null
-            updateNotification(
-                status(prefs, session, inWindow = false, stopAllowedAt, now),
-                showLockNow = false,
+        // Only the app on screen can raise an event — time accrues for it
+        // alone, and a lockout only bounces someone who just opened that app —
+        // so at most one of these interrupts the screen per poll.
+        limits.forEach { limit ->
+            val session = sessions[limit.packageName] ?: return@forEach
+            val inWindow = Schedule.isWithinWindow(
+                minutesOfDay, limit.activeStartMinutes, limit.activeEndMinutes
             )
-            return
+            if (!inWindow) {
+                // Off duty: drop this app's progress so its next window starts clean.
+                session.onIdle(now)
+                prefs.clearSessionState(limit.packageName)
+                lastPersisted.remove(limit.packageName)
+                return@forEach
+            }
+            when (val event = session.onTick(now, foreground == limit.packageName)) {
+                is WatchSession.Remind -> showReminder(limit, event.watchedMs)
+                is WatchSession.SwitchAway -> enforce(limit, session, event, now)
+                null -> Unit
+            }
+            persistProgress(prefs, limit, session, now)
         }
 
-        // Screen off doesn't count as watching, even if the app is still "resumed".
-        val watching = powerManager.isInteractive && tracker.currentPackage == prefs.watchedPackage
-        when (val event = session.onTick(now, watching)) {
-            is WatchSession.Remind -> showReminder(prefs, event.watchedMs)
-            is WatchSession.SwitchAway -> enforce(prefs, session, event, now)
-            null -> Unit
-        }
-        persistProgress(prefs, session, now)
-        updateNotification(
-            status(prefs, session, inWindow = true, stopAllowedAt, now),
-            showLockNow = !session.locked,
-        )
+        renderNotification(prefs, foreground, minutesOfDay, stopAllowedAt, now)
     }
 
     /**
      * Progress from earlier in the same window is picked back up, so a service
      * restart — system kill, reboot, or a stop and start — cannot refund spent
-     * budget. Progress from an earlier window, or against a different app, is
-     * dropped instead.
+     * budget. Progress from an earlier window of this app is dropped instead.
      */
-    private fun restoreSavedProgress(prefs: Prefs, session: WatchSession, nowMs: Long) {
-        val savedAt = prefs.stateSavedAtMs
-        if (savedAt <= 0L) return
+    private fun restoreSavedProgress(
+        prefs: Prefs,
+        limit: AppLimit,
+        session: WatchSession,
+        nowMs: Long,
+    ) {
+        val saved = prefs.sessionState(limit.packageName) ?: return
         val windowStart = Schedule.currentWindowStartMs(
-            nowMs, minutesOfDay(), prefs.activeStartMinutes
+            nowMs, minutesOfDay(), limit.activeStartMinutes
         )
-        if (savedAt < windowStart || savedAt > nowMs || prefs.statePackage != prefs.watchedPackage) {
-            prefs.clearSessionState()
+        if (saved.savedAtMs < windowStart || saved.savedAtMs > nowMs) {
+            prefs.clearSessionState(limit.packageName)
             return
         }
-        session.restore(nowMs, prefs.stateWatchedMs, prefs.stateLocked, prefs.stateLockoutUntilMs)
+        session.restore(nowMs, saved.watchedMs, saved.locked, saved.lockoutUntilMs)
     }
 
-    private fun persistProgress(prefs: Prefs, session: WatchSession, nowMs: Long) {
+    private fun persistProgress(
+        prefs: Prefs,
+        limit: AppLimit,
+        session: WatchSession,
+        nowMs: Long,
+    ) {
         val snapshot = Triple(session.watchedMs, session.locked, session.lockoutUntilMs)
-        if (snapshot == lastPersisted) return
-        lastPersisted = snapshot
-        prefs.saveSessionState(session.watchedMs, session.locked, session.lockoutUntilMs, nowMs)
+        if (snapshot == lastPersisted[limit.packageName]) return
+        lastPersisted[limit.packageName] = snapshot
+        prefs.saveSessionState(
+            limit.packageName, session.watchedMs, session.locked, session.lockoutUntilMs, nowMs
+        )
     }
 
-    private fun showReminder(prefs: Prefs, watchedMs: Long) {
+    private fun showReminder(limit: AppLimit, watchedMs: Long) {
         val minutes = (watchedMs / 60_000L).toInt()
         overlay.show(
             title = getString(R.string.reminder_title),
             message = getString(
-                R.string.reminder_message, prefs.watchedLabel, minutes, prefs.limitMinutes
+                R.string.reminder_message, limit.label, minutes, limit.limitMinutes
             ),
             primaryLabel = getString(R.string.reminder_keep_watching),
             secondaryLabel = getString(R.string.reminder_take_break),
-            onSecondary = { launchRedirect(prefs) },
+            onSecondary = { launchRedirect(limit) },
             autoDismissMs = REMINDER_AUTO_DISMISS_MS,
         )
     }
 
     private fun enforce(
-        prefs: Prefs,
+        limit: AppLimit,
         session: WatchSession,
         event: WatchSession.SwitchAway,
         nowMs: Long,
     ) {
-        val target = prefs.redirectLabel ?: getString(R.string.home_screen)
+        val target = limit.redirectLabel ?: getString(R.string.home_screen)
         if (event.firstTime) {
             overlay.show(
                 title = getString(R.string.limit_title),
                 message = getString(
                     R.string.limit_message,
-                    prefs.limitMinutes,
-                    prefs.watchedLabel,
+                    limit.limitMinutes,
+                    limit.label,
                     target,
-                    prefs.lockoutMinutes,
+                    limit.lockoutMinutes,
                 ),
                 primaryLabel = getString(R.string.limit_ok),
                 autoDismissMs = LIMIT_AUTO_DISMISS_MS,
             )
             // Small delay so the user sees why they are being moved.
-            handler.postDelayed({ launchRedirect(prefs) }, SWITCH_DELAY_MS)
+            handler.postDelayed({ launchRedirect(limit) }, SWITCH_DELAY_MS)
         } else {
             overlay.show(
                 title = getString(R.string.locked_title),
                 message = getString(
                     R.string.locked_message,
-                    prefs.watchedLabel,
+                    limit.label,
                     ceilMinutes(session.lockoutRemainingMs(nowMs)),
                 ),
                 primaryLabel = getString(R.string.limit_ok),
                 autoDismissMs = LOCKED_AUTO_DISMISS_MS,
             )
-            handler.postDelayed({ launchRedirect(prefs) }, LOCKED_SWITCH_DELAY_MS)
+            handler.postDelayed({ launchRedirect(limit) }, LOCKED_SWITCH_DELAY_MS)
         }
     }
 
@@ -241,43 +268,58 @@ class BlockerService : Service() {
      * the lockout immediately, for when the user is done watching (or done
      * eating) early and would rather not leave unspent minutes tempting them.
      *
-     * Ignored when off duty or already locked, so a stray tap can never restart
-     * a wait that is already part-served.
+     * With several apps limited, pressing it while in one of them starts that
+     * app's break only — the obvious reading of "I'm done with this". Pressed
+     * from anywhere else it starts the break for every app currently on duty,
+     * which is what the button means when it isn't about one app in particular.
+     *
+     * Apps that are off duty or already locked are skipped either way, so a
+     * stray tap can never restart a wait that is already part-served.
      */
     private fun startLockoutEarly(prefs: Prefs) {
-        val session = session ?: return
         val now = System.currentTimeMillis()
-        val inWindow = Schedule.isWithinWindow(
-            minutesOfDay(), prefs.activeStartMinutes, prefs.activeEndMinutes
-        )
-        if (!inWindow || session.locked) return
-
-        session.lockNow(now)
-        persistProgress(prefs, session, now)
-
-        // Only interrupt the screen if they are actually in the watched app;
-        // pressing this from anywhere else should be a quiet confirmation, and
-        // the updated notification in the shade they pressed it from is that.
+        val minutesOfDay = minutesOfDay()
         tracker.update(now)
-        if (tracker.currentPackage == prefs.watchedPackage) {
+        val foreground = tracker.currentPackage
+
+        val eligible = limits.filter { lockNowEligible(it, minutesOfDay) }
+        if (eligible.isEmpty()) return
+        val inForeground = eligible.firstOrNull { it.packageName == foreground }
+        val targets = inForeground?.let { listOf(it) } ?: eligible
+
+        targets.forEach { limit ->
+            val session = sessions[limit.packageName] ?: return@forEach
+            session.lockNow(now)
+            persistProgress(prefs, limit, session, now)
+        }
+
+        // Only interrupt the screen if they are actually in the app being
+        // locked; pressing this from anywhere else should be a quiet
+        // confirmation, and the updated notification in the shade is that.
+        if (inForeground != null) {
             overlay.show(
                 title = getString(R.string.lock_now_title),
                 message = getString(
-                    R.string.lock_now_message, prefs.watchedLabel, prefs.lockoutMinutes
+                    R.string.lock_now_message, inForeground.label, inForeground.lockoutMinutes
                 ),
                 primaryLabel = getString(R.string.limit_ok),
                 autoDismissMs = LIMIT_AUTO_DISMISS_MS,
             )
-            handler.postDelayed({ launchRedirect(prefs) }, LOCKED_SWITCH_DELAY_MS)
+            handler.postDelayed({ launchRedirect(inForeground) }, LOCKED_SWITCH_DELAY_MS)
         }
-        updateNotification(
-            status(prefs, session, inWindow = true, prefs.stopAllowedAtMs, now),
-            showLockNow = false,
+        renderNotification(prefs, foreground, minutesOfDay, prefs.stopAllowedAtMs, now)
+    }
+
+    private fun lockNowEligible(limit: AppLimit, minutesOfDay: Int): Boolean {
+        val session = sessions[limit.packageName] ?: return false
+        if (session.locked) return false
+        return Schedule.isWithinWindow(
+            minutesOfDay, limit.activeStartMinutes, limit.activeEndMinutes
         )
     }
 
-    private fun launchRedirect(prefs: Prefs) {
-        val redirect = prefs.redirectPackage
+    private fun launchRedirect(limit: AppLimit) {
+        val redirect = limit.redirectPackage
             ?.let { packageManager.getLaunchIntentForPackage(it) }
             ?: homeIntent()
         redirect.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -302,32 +344,73 @@ class BlockerService : Service() {
         it.get(Calendar.HOUR_OF_DAY) * 60 + it.get(Calendar.MINUTE)
     }
 
-    private fun status(
+    /**
+     * One status line per limited app, with the one that matters most first:
+     * an app being locked beats the app on screen, which beats one that has
+     * started accruing time, which beats an idle or off-duty one. The leader
+     * becomes the collapsed notification text and the rest fill out the
+     * expanded view.
+     */
+    private fun renderNotification(
         prefs: Prefs,
-        session: WatchSession,
-        inWindow: Boolean,
+        foreground: String?,
+        minutesOfDay: Int,
         stopAllowedAtMs: Long,
         nowMs: Long,
-    ): String {
-        val core = when {
-            !inWindow -> getString(
-                R.string.notification_off_duty, Schedule.format(prefs.activeStartMinutes)
+    ) {
+        val ranked = limits.mapNotNull { limit ->
+            val session = sessions[limit.packageName] ?: return@mapNotNull null
+            val inWindow = Schedule.isWithinWindow(
+                minutesOfDay, limit.activeStartMinutes, limit.activeEndMinutes
             )
-            session.locked -> getString(
-                R.string.notification_locked,
-                prefs.watchedLabel,
-                ceilMinutes(session.lockoutRemainingMs(nowMs)),
-            )
-            else -> getString(
-                R.string.notification_text,
-                prefs.watchedLabel,
-                (session.watchedMs / 60_000L).toInt(),
-                prefs.limitMinutes,
-            )
+            val rank = when {
+                session.locked -> 0
+                limit.packageName == foreground -> 1
+                !inWindow -> 4
+                session.watchedMs > 0 -> 2
+                else -> 3
+            }
+            Triple(rank, -session.watchedMs, statusLine(limit, session, inWindow, nowMs))
+        }.sortedWith(compareBy({ it.first }, { it.second }))
+
+        val lines = ranked.map { it.third }
+        val headline = lines.firstOrNull() ?: getString(R.string.notification_idle)
+        val text = if (stopAllowedAtMs <= 0L) {
+            headline
+        } else {
+            getString(R.string.notification_stopping, ceilMinutes(stopAllowedAtMs - nowMs)) +
+                " · " + headline
         }
-        if (stopAllowedAtMs <= 0L) return core
-        return getString(R.string.notification_stopping, ceilMinutes(stopAllowedAtMs - nowMs)) +
-            " · " + core
+        updateNotification(
+            text = text,
+            // A single app says everything in the collapsed line already.
+            detail = if (lines.size > 1) lines.joinToString("\n") else "",
+            showLockNow = limits.any { lockNowEligible(it, minutesOfDay) },
+        )
+    }
+
+    private fun statusLine(
+        limit: AppLimit,
+        session: WatchSession,
+        inWindow: Boolean,
+        nowMs: Long,
+    ): String = when {
+        !inWindow -> getString(
+            R.string.notification_off_duty,
+            limit.label,
+            Schedule.format(limit.activeStartMinutes),
+        )
+        session.locked -> getString(
+            R.string.notification_locked,
+            limit.label,
+            ceilMinutes(session.lockoutRemainingMs(nowMs)),
+        )
+        else -> getString(
+            R.string.notification_text,
+            limit.label,
+            (session.watchedMs / 60_000L).toInt(),
+            limit.limitMinutes,
+        )
     }
 
     private fun ceilMinutes(ms: Long): Int =
@@ -343,11 +426,17 @@ class BlockerService : Service() {
     }
 
     /**
-     * [showLockNow] adds the "Block now" action — offered only while there is
-     * still budget left to give up, since during a lockout there is nothing to
-     * start early.
+     * [detail] is the per-app breakdown shown when the notification is
+     * expanded, empty when the collapsed line already says it all.
+     * [showLockNow] adds the "Block now" action — offered only while some app
+     * still has budget left to give up, since during a lockout there is
+     * nothing to start early.
      */
-    private fun buildNotification(text: String, showLockNow: Boolean): android.app.Notification {
+    private fun buildNotification(
+        text: String,
+        detail: String,
+        showLockNow: Boolean,
+    ): android.app.Notification {
         val openApp = PendingIntent.getActivity(
             this,
             0,
@@ -360,6 +449,9 @@ class BlockerService : Service() {
             .setContentText(text)
             .setContentIntent(openApp)
             .setOngoing(true)
+        if (detail.isNotEmpty()) {
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+        }
         if (showLockNow) {
             val lockNow = PendingIntent.getForegroundService(
                 this,
@@ -383,20 +475,23 @@ class BlockerService : Service() {
      * flashing different text at the user. Falls back to the fresh-start text if
      * nothing has been shown yet.
      */
-    private fun currentNotification(prefs: Prefs): android.app.Notification {
-        val (text, showLockNow) = lastNotification ?: (freshStartText(prefs) to false)
-        return buildNotification(text, showLockNow)
+    private fun currentNotification(): android.app.Notification {
+        val last = lastNotification
+            ?: NotificationState(freshStartText(), detail = "", showLockNow = false)
+        return buildNotification(last.text, last.detail, last.showLockNow)
     }
 
-    private fun freshStartText(prefs: Prefs): String =
-        getString(R.string.notification_text, prefs.watchedLabel, 0, prefs.limitMinutes)
+    private fun freshStartText(): String {
+        val first = limits.firstOrNull() ?: return getString(R.string.notification_idle)
+        return getString(R.string.notification_text, first.label, 0, first.limitMinutes)
+    }
 
-    private fun updateNotification(text: String, showLockNow: Boolean) {
-        val next = text to showLockNow
+    private fun updateNotification(text: String, detail: String, showLockNow: Boolean) {
+        val next = NotificationState(text, detail, showLockNow)
         if (next == lastNotification) return
         lastNotification = next
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, buildNotification(text, showLockNow))
+            .notify(NOTIFICATION_ID, buildNotification(text, detail, showLockNow))
     }
 
     companion object {

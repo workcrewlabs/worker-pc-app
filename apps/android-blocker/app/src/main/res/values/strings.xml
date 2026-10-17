@@ -18,23 +18,41 @@
     <string name="battery_note">Without this, Android can put the app to sleep while you\'re not using the phone, and blocking stops until you reopen the app.</string>
     <string name="battery_settings_missing">Open Settings → Apps → App Blocker → Battery and choose Unrestricted.</string>
 
-    <string name="section_limits">Limits</string>
-    <string name="label_watched_app">App to limit</string>
-    <string name="label_active_hours">Enforce only between</string>
-    <string name="active_hours_note">Outside these hours the limit is off.</string>
+    <string name="section_limits">Limited apps</string>
+    <string name="limits_note">Every app gets its own hours, allowance, lock and wait — nothing is shared between them.</string>
+    <string name="no_rules">No apps limited yet. Add one to get started.</string>
+    <string name="add_app">Add an app</string>
+    <string name="edit">Edit</string>
+    <string name="remove">Remove</string>
+    <string name="remove_rule_title">Stop limiting %1$s?</string>
+    <string name="remove_rule_message">Its rules and the time used today are forgotten.</string>
+    <string name="save">Save</string>
+    <string name="already_limited">%1$s is already limited — edit it instead.</string>
+    <string name="need_a_rule">Add at least one app to limit first.</string>
+
+    <!-- Two lines under each app\'s name in the list. -->
+    <string name="rule_summary">%1$d min allowed · %2$s\nReminder every %3$d min · locks %4$d min · → %5$s · wait %6$d min to cancel</string>
+    <string name="rule_window_range">%1$s–%2$s</string>
+    <string name="rule_window_all_day">all day</string>
+
+    <string name="label_rule_window">Enforce only between</string>
+    <string name="active_hours_note">Outside these hours this app\'s limit is off.</string>
     <string name="active_hours_all_day">Same start and end means all day.</string>
     <string name="to">to</string>
     <string name="label_remind_minutes">Remind me every (minutes)</string>
     <string name="label_limit_minutes">Switch me away after (minutes total)</string>
     <string name="label_lockout_minutes">Then keep it locked for (minutes)</string>
+    <string name="rule_lockout_note">The allowance resets when the lock ends, so this is also how long until the app is usable again.</string>
     <string name="label_redirect_app">Switch me to</string>
+    <string name="label_rule_cancel_wait">Wait before this limit can be cancelled (minutes)</string>
+    <string name="rule_cancel_wait_note">Stop keeps enforcing for this long, so quitting takes a real decision. 0 cancels right away.</string>
     <string name="change">Change</string>
     <string name="home_screen">Home screen</string>
     <string name="pick_app">Pick an app</string>
 
     <string name="section_stop">Stopping</string>
-    <string name="label_stop_delay">Wait before Stop takes effect (minutes)</string>
-    <string name="stop_delay_note">The blocker keeps enforcing during this wait, so quitting takes a real decision. 0 stops right away.</string>
+    <string name="stop_note_wait">Stop waits %1$d min — the longest cancel wait of your limited apps — and everything keeps being enforced until then.</string>
+    <string name="stop_note_immediate">None of your apps has a cancel wait, so Stop takes effect right away.</string>
 
     <string name="start_blocking">Start blocking</string>
     <string name="stop_blocking">Stop</string>
@@ -64,7 +82,8 @@
     <string name="notification_title">App Blocker is watching</string>
     <string name="notification_text">%1$s: %2$d of %3$d min used</string>
     <string name="notification_locked">%1$s locked — %2$d min left</string>
-    <string name="notification_off_duty">Off duty until %1$s</string>
+    <string name="notification_off_duty">%1$s off duty until %2$s</string>
+    <string name="notification_idle">No apps limited</string>
     <string name="notification_stopping">Stopping in %1$d min</string>
     <string name="notification_lock_now">Block now</string>
 </resources>

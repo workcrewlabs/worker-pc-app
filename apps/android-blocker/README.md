@@ -1,55 +1,92 @@
 # App Blocker (Android)
 
-A tiny, fully local Android app that limits how long you spend in a chosen app
-(YouTube by default):
+A tiny, fully local Android app that limits how long you spend in the apps you
+choose. Add as many as you like — each one carries its own complete set of
+rules, so YouTube can get 20 minutes between 08:00 and 20:00 with a 45 minute
+lock while Instagram gets 10 minutes all day with a 2 hour one. Nothing is
+shared between apps: time spent in one never counts against another, and one
+being locked says nothing about the rest.
 
-- **Active hours** — the limit only applies inside a daily window you set
-  (default 08:00–20:00). Outside it the blocker stands down completely, and
-  progress is cleared so each day's window starts fresh. Windows that cross
-  midnight (e.g. 22:00–06:00) work; setting both times the same means all day.
-- **Reminder** — after every 10 minutes of watching (configurable), a
+Per app, you set:
+
+- **Active hours** — the limit only applies inside that app's own daily window
+  (default 08:00–20:00). Outside it the limit stands down completely for that
+  app, and its progress is cleared so each day's window starts fresh. Windows
+  that cross midnight (e.g. 22:00–06:00) work; setting both times the same
+  means all day.
+- **Reminder** — after every 10 minutes in the app (configurable), a
   full-screen overlay interrupts whatever you were watching: *"You've been on
   YouTube for 10 minutes"*, with **Keep watching** and **Take a break** buttons.
-- **One budget for the whole window** — the limit is a running total, not a
-  per-sitting allowance. Breaks never refund time: five minutes now and five
-  minutes an hour later still add up to ten. The total is kept across a service
-  restart, a reboot, or a stop and start, so nothing hands back time you already
-  spent. It resets only when you serve a full lockout or the active window ends.
-- **Hard switch, then lockout** — once you hit your total limit (default 20
-  minutes), it shows a "Time's up" screen and launches another app you picked
-  (or the home screen). From then on the app stays locked: every attempt to
-  open it bounces you straight back out, until the lockout period (default 45
-  minutes) has passed. The countdown runs to a fixed deadline, so opening the
-  locked app by reflex gets you bounced but does *not* start the wait over —
-  you are thrown out in under a second, and that shouldn't cost you 45 more.
+- **One budget for the whole window** — the limit is a running total for that
+  app, not a per-sitting allowance. Breaks never refund time: five minutes now
+  and five minutes an hour later still add up to ten. The total is kept across
+  a service restart, a reboot, or a stop and start, so nothing hands back time
+  you already spent. It resets only when you serve that app's full lock or its
+  window ends.
+- **Hard switch, then lock** — once you hit an app's total limit (default 20
+  minutes), it shows a "Time's up" screen and launches the app you picked for
+  it (or the home screen). From then on *that* app stays locked: every attempt
+  to open it bounces you straight back out, until its lock period (default 45
+  minutes) has passed — which is also when its allowance comes back. The
+  countdown runs to a fixed deadline, so opening the locked app by reflex gets
+  you bounced but does *not* start the wait over — you are thrown out in under
+  a second, and that shouldn't cost you 45 more.
+- **A wait before that app's limit can be cancelled** — default 5 minutes. See
+  *Stopping* below.
+
+Across all of them:
+
 - **Block now** — the ongoing notification carries a **Block now** button.
   Tap it when you've finished watching (or finished eating) early and want the
   break to start right away instead of leaving unspent minutes tempting you.
-  It spends the rest of the budget and starts the lockout there and then, so it
-  can't be used to bank minutes for later.
-- **A wait before you can quit** — Stop doesn't take effect immediately. It
-  starts a countdown (default 5 minutes) during which the blocker keeps
-  enforcing; the service performs the stop itself, so closing the app doesn't
-  shortcut it. Settings are locked while the blocker runs, so you can't weaken
-  the limit without going through that wait first. Set the wait to 0 to stop
-  right away.
+  It spends the rest of the budget and starts the lock there and then, so it
+  can't be used to bank minutes for later. Pressed while you're in one of the
+  limited apps it starts that app's break only; pressed from anywhere else it
+  starts the break for every app currently on duty. Apps that are off duty or
+  already locked are skipped, so a stray tap can't restart a wait that is
+  already part-served.
+- **Status at a glance** — the ongoing notification shows the app that matters
+  most right now (something locked beats the app you're in, which beats one
+  that has started accruing time). Expand it for a line per limited app.
+- **Stopping** — Stop doesn't take effect immediately. It starts a countdown
+  during which every limit keeps being enforced; the service performs the stop
+  itself, so closing the app doesn't shortcut it. Because Stop stops every
+  limit at once, the wait is the **longest** cancel wait among your apps —
+  otherwise a lenient app's short wait would be a back door to cancelling a
+  strict one early. The list of apps is locked while the blocker runs, so you
+  can't weaken or delete a limit without going through that wait first. Set
+  every app's wait to 0 to stop right away.
 
 Everything runs on-device: no accounts, no network calls, no data collection.
 
 ## How it works
 
 A foreground service polls Android's `UsageStatsManager` every 5 seconds to see
-which app is on screen (screen-off time doesn't count). A small state machine
-(`WatchSession`, unit-tested) accumulates watch time, fires a reminder every N
-minutes, fires the switch at the limit, and then holds the lockout until a full
-uninterrupted break has passed. Progress is written to SharedPreferences
-whenever it changes and restored on start — keyed to the current window and
-watched app — so a restart cannot reset the count. The lockout is stored as the
+which app is on screen (screen-off time doesn't count). It runs one state
+machine per limited app, built from that app's own timings: `WatchSession`
+(unit-tested) accumulates time, fires a reminder every N minutes, fires the
+switch at the limit, and then holds the lock until the break has been served.
+Only the app actually on screen accrues time, so at most one of them can
+interrupt the screen in a given poll.
+
+Each app's rules live in an `AppLimit` (unit-tested), and the whole list is
+stored in one SharedPreferences string by `LimitCodec` (unit-tested), which is
+deliberately forgiving when reading it back: missing trailing fields take
+defaults, extra ones are ignored, unreadable numbers fall back and are clamped,
+and a record with no package name — or a second record for an app already seen,
+which would race — is dropped. Settings written by the earlier single-app
+version are migrated into one rule on first read, so an update keeps whatever
+you had set.
+
+Progress is written per app whenever it changes and restored on start — checked
+against that app's current window — so a restart cannot reset the count, and one
+app's spent budget is never mistaken for another's. A lock is stored as the
 wall-clock instant it lifts, so time served while the service was dead still
-counts and nothing that happens in between can push it back.
-`Schedule` (also unit-tested) decides whether the current time falls in the
-active window and when that window last began. Interruptions use a "display over
-other apps" window; the switch launches the redirect app's launcher intent.
+counts and nothing in between can push it back. Progress for an app you stop
+limiting is dropped with it. `Schedule` (also unit-tested) decides whether the
+current time falls in a given window and when that window last began.
+Interruptions use a "display over other apps" window; the switch launches that
+app's redirect target's launcher intent.
 
 ## Build
 
@@ -76,11 +113,13 @@ If the `gradlew` wrapper is missing its jar on your machine, run
    reminders interrupt the screen and lets the app switch you away.
 4. Allow notifications when prompted (Android 13+), so the ongoing
    "X of Y min used" status notification shows.
-5. Set it up: the app to limit (defaults to YouTube), the active hours, your
-   reminder interval, your total limit, the lockout length, the app to be
-   switched to, and how long Stop should take to take effect.
-6. Tap **Start blocking**. The settings grey out — to change them, Stop first
-   and wait out the delay you chose.
+5. Set it up. **Limited apps** starts with one rule for YouTube; tap **Edit**
+   to change its hours, allowance, reminder interval, lock length, where to be
+   switched, and how long cancelling it has to wait. Tap **Add an app** for
+   each further app you want limited and fill in its own values —
+   **Remove** drops one.
+6. Tap **Start blocking**. The list greys out — to change it, Stop first and
+   wait out the longest cancel wait you set.
 
 **Important:** grant the **Unrestricted battery** row on the setup screen (or
 Settings → Apps → App Blocker → Battery → Unrestricted). Phone makers put idle
@@ -112,8 +151,8 @@ cancels a stop that is already counting down.
 ## Limitations
 
 - Polling is every 5 seconds, so timings are accurate to within a few seconds.
-- This is a self-control tool, not a parental control. The stop delay and
-  locked settings add real friction, but the phone's owner can still force-stop
+- This is a self-control tool, not a parental control. The cancel waits and
+  locked list add real friction, but the phone's owner can still force-stop
   the app, revoke its permissions, or uninstall it from system settings.
 - Picture-in-picture playback may not always register as "on screen" since
   another app holds the foreground.
