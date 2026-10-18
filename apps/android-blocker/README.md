@@ -5,7 +5,10 @@ choose. Add as many as you like — each one carries its own complete set of
 rules, so YouTube can get 20 minutes between 08:00 and 20:00 with a 45 minute
 lock while Instagram gets 10 minutes all day with a 2 hour one. Nothing is
 shared between apps: time spent in one never counts against another, and one
-being locked says nothing about the rest.
+being locked says nothing about the rest. Run YouTube's allowance out and
+YouTube locks — Instagram still opens, still has its own full allowance, and
+when it runs out later it serves its own lock on its own clock while YouTube
+is already free again.
 
 Per app, you set:
 
@@ -30,7 +33,11 @@ Per app, you set:
   minutes) has passed — which is also when its allowance comes back. The
   countdown runs to a fixed deadline, so opening the locked app by reflex gets
   you bounced but does *not* start the wait over — you are thrown out in under
-  a second, and that shouldn't cost you 45 more.
+  a second, and that shouldn't cost you 45 more. If you point an app at
+  another limited app and that one happens to be locked too, you land on the
+  home screen instead: being thrown from one locked app into another would
+  only bounce you back, and two pointing at each other would ping-pong you
+  between them until both locks expired.
 - **A wait before that app's limit can be cancelled** — default 5 minutes. See
   *Stopping* below.
 
@@ -40,11 +47,11 @@ Across all of them:
   Tap it when you've finished watching (or finished eating) early and want the
   break to start right away instead of leaving unspent minutes tempting you.
   It spends the rest of the budget and starts the lock there and then, so it
-  can't be used to bank minutes for later. Pressed while you're in one of the
-  limited apps it starts that app's break only; pressed from anywhere else it
-  starts the break for every app currently on duty. Apps that are off duty or
-  already locked are skipped, so a stray tap can't restart a wait that is
-  already part-served.
+  can't be used to bank minutes for later. It only ever affects **one** app:
+  the limited app you're in, or — pressed from the home screen — the one you
+  were in last, which is what "I've just finished with that" means. It does
+  nothing if that app is off duty or already locked, so a stray tap can't
+  restart a part-served wait or reach past a locked app to another one.
 - **Status at a glance** — the ongoing notification shows the app that matters
   most right now (something locked beats the app you're in, which beats one
   that has started accruing time). Expand it for a line per limited app.
@@ -62,12 +69,20 @@ Everything runs on-device: no accounts, no network calls, no data collection.
 ## How it works
 
 A foreground service polls Android's `UsageStatsManager` every 5 seconds to see
-which app is on screen (screen-off time doesn't count). It runs one state
-machine per limited app, built from that app's own timings: `WatchSession`
-(unit-tested) accumulates time, fires a reminder every N minutes, fires the
-switch at the limit, and then holds the lock until the break has been served.
-Only the app actually on screen accrues time, so at most one of them can
-interrupt the screen in a given poll.
+which app is on screen (screen-off time doesn't count) and hands that to
+`BlockerEngine` (unit-tested), which owns the whole multi-app picture: one
+`WatchSession` per limited app, built from that app's own timings. Each
+session (also unit-tested) accumulates time, fires a reminder every N minutes,
+fires the switch at the limit, and then holds the lock until the break has been
+served. Only the app actually on screen accrues time, so at most one of them
+can interrupt the screen in a given poll.
+
+Keeping that coordination in an Android-free class is what makes the separation
+testable rather than merely intended: the suite asserts that running YouTube
+out leaves Instagram unlocked with its budget untouched, that each lock keeps
+its own deadline when both are serving one, that time in one app is never
+charged to the other, that Block now reaches exactly one app, and that no
+redirect ever lands you in an app that is itself locked.
 
 Each app's rules live in an `AppLimit` (unit-tested), and the whole list is
 stored in one SharedPreferences string by `LimitCodec` (unit-tested), which is

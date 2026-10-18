@@ -38,8 +38,7 @@ class BlockerService : Service() {
     private lateinit var overlay: OverlayReminder
     private lateinit var powerManager: PowerManager
 
-    private var limits: List<AppLimit> = emptyList()
-    private val sessions = mutableMapOf<String, WatchSession>()
+    private var engine: BlockerEngine? = null
     private val lastPersisted = mutableMapOf<String, Triple<Long, Boolean, Long>>()
     private var lastNotification: NotificationState? = null
 
@@ -64,7 +63,7 @@ class BlockerService : Service() {
         val prefs = Prefs(this)
         createChannel()
         val lockNowRequested = intent?.action == ACTION_LOCK_NOW
-        if (lockNowRequested && sessions.isNotEmpty()) {
+        if (lockNowRequested && engine != null) {
             // Already running: just start the break, leaving the sessions alone.
             startForeground(NOTIFICATION_ID, currentNotification())
             startLockoutEarly(prefs)
@@ -78,18 +77,17 @@ class BlockerService : Service() {
         prefs.blockerEnabled = true
         BlockerLauncher.scheduleWatchdog(this)
         // Re-reading settings here means pressing Start again applies changes.
-        limits = prefs.limits
+        val started = BlockerEngine(prefs.limits)
+        engine = started
         startForeground(
             NOTIFICATION_ID,
             buildNotification(freshStartText(), detail = "", showLockNow = false),
         )
 
         val now = System.currentTimeMillis()
-        sessions.clear()
         lastPersisted.clear()
-        limits.forEach { limit ->
-            sessions[limit.packageName] = limit.newSession()
-                .also { restoreSavedProgress(prefs, limit, it, now) }
+        started.limits.forEach { limit ->
+            started.sessionFor(limit.packageName)?.let { restoreSavedProgress(prefs, limit, it, now) }
         }
         lastNotification = null
         handler.removeCallbacks(tick)
@@ -129,13 +127,14 @@ class BlockerService : Service() {
 
     private fun pollOnce() {
         val prefs = Prefs(this)
+        val engine = engine ?: return
         val now = System.currentTimeMillis()
 
         val stopAllowedAt = prefs.stopAllowedAtMs
         val stopDue = stopAllowedAt > 0L && now >= stopAllowedAt
         // No rules left is the same as being stopped — a foreground service
         // with nothing to limit would just sit there holding a notification.
-        if (stopDue || limits.isEmpty()) {
+        if (stopDue || engine.limits.isEmpty()) {
             // A stop the user waited out is the one case where the blocker is
             // meant to stay off, so clear the flag the watchdog restarts from.
             prefs.stopAllowedAtMs = 0L
@@ -150,27 +149,21 @@ class BlockerService : Service() {
         val foreground = tracker.currentPackage?.takeIf { powerManager.isInteractive }
         val minutesOfDay = minutesOfDay()
 
-        // Only the app on screen can raise an event — time accrues for it
-        // alone, and a lockout only bounces someone who just opened that app —
-        // so at most one of these interrupts the screen per poll.
-        limits.forEach { limit ->
-            val session = sessions[limit.packageName] ?: return@forEach
-            val inWindow = Schedule.isWithinWindow(
-                minutesOfDay, limit.activeStartMinutes, limit.activeEndMinutes
-            )
-            if (!inWindow) {
-                // Off duty: drop this app's progress so its next window starts clean.
-                session.onIdle(now)
-                prefs.clearSessionState(limit.packageName)
-                lastPersisted.remove(limit.packageName)
-                return@forEach
+        engine.poll(now, minutesOfDay, foreground).forEach { outcome ->
+            when (outcome) {
+                is BlockerEngine.Remind ->
+                    showReminder(outcome.limit, outcome.watchedMs, minutesOfDay)
+                is BlockerEngine.SwitchAway ->
+                    enforce(outcome.limit, outcome.firstTime, now, minutesOfDay)
+                // Off duty: drop that app's progress so its next window starts clean.
+                is BlockerEngine.OffDuty -> {
+                    prefs.clearSessionState(outcome.limit.packageName)
+                    lastPersisted.remove(outcome.limit.packageName)
+                }
             }
-            when (val event = session.onTick(now, foreground == limit.packageName)) {
-                is WatchSession.Remind -> showReminder(limit, event.watchedMs)
-                is WatchSession.SwitchAway -> enforce(limit, session, event, now)
-                null -> Unit
-            }
-            persistProgress(prefs, limit, session, now)
+        }
+        engine.limits.forEach { limit ->
+            if (engine.isOnDuty(limit, minutesOfDay)) persistProgress(prefs, limit, now)
         }
 
         renderNotification(prefs, foreground, minutesOfDay, stopAllowedAt, now)
@@ -198,12 +191,8 @@ class BlockerService : Service() {
         session.restore(nowMs, saved.watchedMs, saved.locked, saved.lockoutUntilMs)
     }
 
-    private fun persistProgress(
-        prefs: Prefs,
-        limit: AppLimit,
-        session: WatchSession,
-        nowMs: Long,
-    ) {
+    private fun persistProgress(prefs: Prefs, limit: AppLimit, nowMs: Long) {
+        val session = engine?.sessionFor(limit.packageName) ?: return
         val snapshot = Triple(session.watchedMs, session.locked, session.lockoutUntilMs)
         if (snapshot == lastPersisted[limit.packageName]) return
         lastPersisted[limit.packageName] = snapshot
@@ -212,7 +201,7 @@ class BlockerService : Service() {
         )
     }
 
-    private fun showReminder(limit: AppLimit, watchedMs: Long) {
+    private fun showReminder(limit: AppLimit, watchedMs: Long, minutesOfDay: Int) {
         val minutes = (watchedMs / 60_000L).toInt()
         overlay.show(
             title = getString(R.string.reminder_title),
@@ -221,19 +210,20 @@ class BlockerService : Service() {
             ),
             primaryLabel = getString(R.string.reminder_keep_watching),
             secondaryLabel = getString(R.string.reminder_take_break),
-            onSecondary = { launchRedirect(limit) },
+            onSecondary = { launchRedirect(limit, minutesOfDay) },
             autoDismissMs = REMINDER_AUTO_DISMISS_MS,
         )
     }
 
     private fun enforce(
         limit: AppLimit,
-        session: WatchSession,
-        event: WatchSession.SwitchAway,
+        firstTime: Boolean,
         nowMs: Long,
+        minutesOfDay: Int,
     ) {
-        val target = limit.redirectLabel ?: getString(R.string.home_screen)
-        if (event.firstTime) {
+        val session = engine?.sessionFor(limit.packageName) ?: return
+        val target = redirectLabelFor(limit, nowMs, minutesOfDay)
+        if (firstTime) {
             overlay.show(
                 title = getString(R.string.limit_title),
                 message = getString(
@@ -247,7 +237,7 @@ class BlockerService : Service() {
                 autoDismissMs = LIMIT_AUTO_DISMISS_MS,
             )
             // Small delay so the user sees why they are being moved.
-            handler.postDelayed({ launchRedirect(limit) }, SWITCH_DELAY_MS)
+            handler.postDelayed({ launchRedirect(limit, minutesOfDay) }, SWITCH_DELAY_MS)
         } else {
             overlay.show(
                 title = getString(R.string.locked_title),
@@ -259,67 +249,60 @@ class BlockerService : Service() {
                 primaryLabel = getString(R.string.limit_ok),
                 autoDismissMs = LOCKED_AUTO_DISMISS_MS,
             )
-            handler.postDelayed({ launchRedirect(limit) }, LOCKED_SWITCH_DELAY_MS)
+            handler.postDelayed({ launchRedirect(limit, minutesOfDay) }, LOCKED_SWITCH_DELAY_MS)
         }
     }
 
     /**
-     * "Block now" from the notification: spend the rest of the budget and start
-     * the lockout immediately, for when the user is done watching (or done
+     * "Block now" from the notification: spend the rest of one app's budget and
+     * start its lock immediately, for when the user is done watching (or done
      * eating) early and would rather not leave unspent minutes tempting them.
      *
-     * With several apps limited, pressing it while in one of them starts that
-     * app's break only — the obvious reading of "I'm done with this". Pressed
-     * from anywhere else it starts the break for every app currently on duty,
-     * which is what the button means when it isn't about one app in particular.
+     * It starts a break for exactly one app — the limited app on screen, or
+     * failing that the one most recently on screen, which is what "I've just
+     * finished with that" means when the button is pressed from the home
+     * screen. The apps are separate, so a tap meant for one must never spend
+     * the budget of the others.
      *
-     * Apps that are off duty or already locked are skipped either way, so a
-     * stray tap can never restart a wait that is already part-served.
+     * Does nothing when that app is off duty or already locked, so a stray tap
+     * can neither restart a wait that is part-served nor lock something out of
+     * hours.
      */
     private fun startLockoutEarly(prefs: Prefs) {
+        val engine = engine ?: return
         val now = System.currentTimeMillis()
         val minutesOfDay = minutesOfDay()
         tracker.update(now)
         val foreground = tracker.currentPackage
 
-        val eligible = limits.filter { lockNowEligible(it, minutesOfDay) }
-        if (eligible.isEmpty()) return
-        val inForeground = eligible.firstOrNull { it.packageName == foreground }
-        val targets = inForeground?.let { listOf(it) } ?: eligible
-
-        targets.forEach { limit ->
-            val session = sessions[limit.packageName] ?: return@forEach
-            session.lockNow(now)
-            persistProgress(prefs, limit, session, now)
-        }
+        val target = engine.lockNowTarget(minutesOfDay, foreground) ?: return
+        engine.lockNow(target, now)
+        persistProgress(prefs, target, now)
 
         // Only interrupt the screen if they are actually in the app being
         // locked; pressing this from anywhere else should be a quiet
         // confirmation, and the updated notification in the shade is that.
-        if (inForeground != null) {
+        if (target.packageName == foreground) {
             overlay.show(
                 title = getString(R.string.lock_now_title),
                 message = getString(
-                    R.string.lock_now_message, inForeground.label, inForeground.lockoutMinutes
+                    R.string.lock_now_message, target.label, target.lockoutMinutes
                 ),
                 primaryLabel = getString(R.string.limit_ok),
                 autoDismissMs = LIMIT_AUTO_DISMISS_MS,
             )
-            handler.postDelayed({ launchRedirect(inForeground) }, LOCKED_SWITCH_DELAY_MS)
+            handler.postDelayed({ launchRedirect(target, minutesOfDay) }, LOCKED_SWITCH_DELAY_MS)
         }
         renderNotification(prefs, foreground, minutesOfDay, prefs.stopAllowedAtMs, now)
     }
 
-    private fun lockNowEligible(limit: AppLimit, minutesOfDay: Int): Boolean {
-        val session = sessions[limit.packageName] ?: return false
-        if (session.locked) return false
-        return Schedule.isWithinWindow(
-            minutesOfDay, limit.activeStartMinutes, limit.activeEndMinutes
-        )
-    }
-
-    private fun launchRedirect(limit: AppLimit) {
-        val redirect = limit.redirectPackage
+    /**
+     * Sends the user where [limit] says to — except into an app that is itself
+     * locked right now, which the engine substitutes the home screen for.
+     */
+    private fun launchRedirect(limit: AppLimit, minutesOfDay: Int) {
+        val now = System.currentTimeMillis()
+        val redirect = engine?.redirectFor(limit, now, minutesOfDay)
             ?.let { packageManager.getLaunchIntentForPackage(it) }
             ?: homeIntent()
         redirect.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -358,22 +341,11 @@ class BlockerService : Service() {
         stopAllowedAtMs: Long,
         nowMs: Long,
     ) {
-        val ranked = limits.mapNotNull { limit ->
-            val session = sessions[limit.packageName] ?: return@mapNotNull null
-            val inWindow = Schedule.isWithinWindow(
-                minutesOfDay, limit.activeStartMinutes, limit.activeEndMinutes
-            )
-            val rank = when {
-                session.locked -> 0
-                limit.packageName == foreground -> 1
-                !inWindow -> 4
-                session.watchedMs > 0 -> 2
-                else -> 3
-            }
-            Triple(rank, -session.watchedMs, statusLine(limit, session, inWindow, nowMs))
-        }.sortedWith(compareBy({ it.first }, { it.second }))
-
-        val lines = ranked.map { it.third }
+        val engine = engine ?: return
+        val lines = engine.byRelevance(minutesOfDay, foreground).mapNotNull { limit ->
+            val session = engine.sessionFor(limit.packageName) ?: return@mapNotNull null
+            statusLine(limit, session, engine.isOnDuty(limit, minutesOfDay), nowMs)
+        }
         val headline = lines.firstOrNull() ?: getString(R.string.notification_idle)
         val text = if (stopAllowedAtMs <= 0L) {
             headline
@@ -385,7 +357,7 @@ class BlockerService : Service() {
             text = text,
             // A single app says everything in the collapsed line already.
             detail = if (lines.size > 1) lines.joinToString("\n") else "",
-            showLockNow = limits.any { lockNowEligible(it, minutesOfDay) },
+            showLockNow = engine.lockNowTarget(minutesOfDay, foreground) != null,
         )
     }
 
@@ -411,6 +383,16 @@ class BlockerService : Service() {
             (session.watchedMs / 60_000L).toInt(),
             limit.limitMinutes,
         )
+    }
+
+    /**
+     * The name of where [limit] will actually send them, which is the home
+     * screen when its own target is an app that is locked right now.
+     */
+    private fun redirectLabelFor(limit: AppLimit, nowMs: Long, minutesOfDay: Int): String {
+        val target = engine?.redirectFor(limit, nowMs, minutesOfDay)
+        return if (target == null) getString(R.string.home_screen)
+        else limit.redirectLabel ?: target
     }
 
     private fun ceilMinutes(ms: Long): Int =
@@ -482,7 +464,8 @@ class BlockerService : Service() {
     }
 
     private fun freshStartText(): String {
-        val first = limits.firstOrNull() ?: return getString(R.string.notification_idle)
+        val first = engine?.limits?.firstOrNull()
+            ?: return getString(R.string.notification_idle)
         return getString(R.string.notification_text, first.label, 0, first.limitMinutes)
     }
 
