@@ -34,13 +34,46 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.gradle/wrapper/dists
+            ~/gradle-dist
             ~/.gradle/caches
           key: gradle-${{ hashFiles('apps/android-blocker/gradle/wrapper/gradle-wrapper.properties', 'apps/android-blocker/**/*.gradle.kts') }}
           restore-keys: gradle-
 
+      # The wrapper makes exactly one attempt at the download, and Gradle's
+      # distribution endpoint has been answering 504 intermittently, which
+      # fails the build before a line of code is compiled. Fetching it here
+      # with retries rides that out. Deliberately a separate step from the
+      # build: a retry must never be able to mask a real build or test
+      # failure, and `curl -f` still fails the job if the endpoint stays down.
+      # The version comes from the wrapper properties so there is one source
+      # of truth, and ./gradlew stays the way to build locally.
+      - name: Fetch Gradle
+        run: |
+          set -euo pipefail
+          version="$(sed -n \
+            's#^distributionUrl=.*gradle-\([0-9][0-9.]*\)-\(all\|bin\)\.zip#\1#p' \
+            gradle/wrapper/gradle-wrapper.properties)"
+          if [ -z "$version" ]; then
+            echo "could not read the Gradle version from gradle-wrapper.properties" >&2
+            exit 1
+          fi
+          bin="$HOME/gradle-dist/gradle-$version/bin"
+          if [ ! -x "$bin/gradle" ]; then
+            echo "fetching Gradle $version"
+            curl -fL --retry 12 --retry-delay 15 --retry-all-errors \
+              --connect-timeout 30 --max-time 1800 -o "$RUNNER_TEMP/gradle.zip" \
+              "https://services.gradle.org/distributions/gradle-$version-all.zip"
+            mkdir -p "$HOME/gradle-dist"
+            unzip -q "$RUNNER_TEMP/gradle.zip" -d "$HOME/gradle-dist"
+            rm -f "$RUNNER_TEMP/gradle.zip"
+          else
+            echo "using cached Gradle $version"
+          fi
+          "$bin/gradle" --version
+          echo "$bin" >> "$GITHUB_PATH"
+
       - name: Run unit tests and build debug APK
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
+        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
