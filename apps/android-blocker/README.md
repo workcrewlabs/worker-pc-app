@@ -63,6 +63,15 @@ Across all of them:
   strict one early. The list of apps is locked while the blocker runs, so you
   can't weaken or delete a limit without going through that wait first. Set
   every app's wait to 0 to stop right away.
+- **Blocking comes back by itself** — set *Turn blocking back on after* and a
+  stop becomes a pause: once that long has passed, blocking switches itself on
+  again with all your apps, so you can't forget to turn it back on. The setup
+  screen counts down to it, and Start brings it back early. The return is
+  pinned to a clock instant the moment the stop takes effect, so time with the
+  phone off or the app killed still counts, a reboot doesn't lose it, and
+  changing the setting afterwards can't push away a return already counting
+  down — the new value applies to the next stop. Leave it at 0 for the old
+  behaviour, where a stop is final until you press Start.
 
 Everything runs on-device: no accounts, no network calls, no data collection.
 
@@ -128,12 +137,15 @@ If the `gradlew` wrapper is missing its jar on your machine, run
    reminders interrupt the screen and lets the app switch you away.
 4. Allow notifications when prompted (Android 13+), so the ongoing
    "X of Y min used" status notification shows.
-5. Set it up. **Limited apps** starts with one rule for YouTube; tap **Edit**
+5. Under **Stopping**, set *Turn blocking back on after* if you want a stop to
+   be temporary — blocking switches itself back on once that long has passed.
+   0 means a stop is final.
+6. Set it up. **Limited apps** starts with one rule for YouTube; tap **Edit**
    to change its hours, allowance, reminder interval, lock length, where to be
    switched, and how long cancelling it has to wait. Tap **Add an app** for
    each further app you want limited and fill in its own values —
    **Remove** drops one.
-6. Tap **Start blocking**. The list greys out — to change it, Stop first and
+7. Tap **Start blocking**. The list greys out — to change it, Stop first and
    wait out the longest cancel wait you set.
 
 **Important:** grant the **Unrestricted battery** row on the setup screen (or
@@ -162,6 +174,14 @@ block is stored on disk, and it is re-asserted from four places:
 
 Only a stop the user waits out clears the stored intent; a restart never
 cancels a stop that is already counting down.
+
+If *Turn blocking back on after* is set, that stop also stores the instant
+blocking is due back and arms a one-shot Doze-permitted alarm for it. Because
+the deadline is on disk rather than being a running timer, it survives a
+reboot — `ensureRunning` re-arms the alarm on every check — and the wait is
+served by the clock, not by the app staying alive. A force-stop does clear the
+alarm, as it clears the watchdog's; blocking then comes back the next time
+anything calls `ensureRunning`, which includes simply opening the app.
 
 ## Limitations
 

@@ -75,6 +75,8 @@ class BlockerService : Service() {
         if (!autoRestart && !lockNowRequested) prefs.stopAllowedAtMs = 0L
         // Remember the intent to block so a reboot or a kill can be recovered from.
         prefs.blockerEnabled = true
+        // Blocking is on now, so a pending return has nothing left to do.
+        BlockerLauncher.clearPendingResume(this)
         BlockerLauncher.scheduleWatchdog(this)
         // Re-reading settings here means pressing Start again applies changes.
         val started = BlockerEngine(prefs.limits)
@@ -131,14 +133,21 @@ class BlockerService : Service() {
         val now = System.currentTimeMillis()
 
         val stopAllowedAt = prefs.stopAllowedAtMs
-        val stopDue = stopAllowedAt > 0L && now >= stopAllowedAt
-        // No rules left is the same as being stopped — a foreground service
-        // with nothing to limit would just sit there holding a notification.
-        if (stopDue || engine.limits.isEmpty()) {
-            // A stop the user waited out is the one case where the blocker is
-            // meant to stay off, so clear the flag the watchdog restarts from.
+        if (stopAllowedAt > 0L && now >= stopAllowedAt) {
+            // The stop the user waited out. This arms the automatic return if
+            // they set one, so stopping is a pause rather than the end of it.
+            BlockerLauncher.recordStop(this, now)
+            stopSelf()
+            return
+        }
+        if (engine.limits.isEmpty()) {
+            // Nothing left to limit is the same as being stopped — a foreground
+            // service with nothing to enforce would just sit there holding a
+            // notification. No return to arm either: there is nothing to come
+            // back to until the user adds an app.
             prefs.stopAllowedAtMs = 0L
             prefs.blockerEnabled = false
+            BlockerLauncher.clearPendingResume(this)
             BlockerLauncher.cancelWatchdog(this)
             stopSelf()
             return

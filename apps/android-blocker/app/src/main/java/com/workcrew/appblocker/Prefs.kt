@@ -70,6 +70,29 @@ class Prefs(context: Context) {
         set(value) = sp.edit().putLong(KEY_STOP_ALLOWED_AT, value).apply()
 
     /**
+     * How long after a stop blocking turns itself back on. Zero leaves a stop
+     * as a stop. Editing it only affects the next stop — see [resumeAtMs].
+     */
+    var autoResumeMinutes: Int
+        get() = sp.getInt(KEY_AUTO_RESUME_MIN, AutoResume.OFF)
+            .coerceIn(AutoResume.OFF, AutoResume.MAX_WAIT_MINUTES)
+        set(value) = sp.edit()
+            .putInt(
+                KEY_AUTO_RESUME_MIN,
+                value.coerceIn(AutoResume.OFF, AutoResume.MAX_WAIT_MINUTES),
+            ).apply()
+
+    /**
+     * Wall-clock instant blocking comes back by itself, or 0 when a stop is
+     * final. Absolute and fixed when the stop takes effect, so shortening the
+     * setting afterwards cannot call off a return already under way, and time
+     * with the app killed or the phone off still counts towards it.
+     */
+    var resumeAtMs: Long
+        get() = sp.getLong(KEY_RESUME_AT, 0L)
+        set(value) = sp.edit().putLong(KEY_RESUME_AT, value).apply()
+
+    /**
      * Whether the user wants the blocker on. Survives the process dying, so a
      * reboot, an OEM "app sleep" kill, or an app update can all be recovered
      * from — unlike the service's in-memory running flag. Cleared only when a
@@ -144,6 +167,8 @@ class Prefs(context: Context) {
     companion object {
         private const val KEY_LIMITS = "app_limits"
         private const val KEY_STOP_ALLOWED_AT = "stop_allowed_at"
+        private const val KEY_AUTO_RESUME_MIN = "auto_resume_min"
+        private const val KEY_RESUME_AT = "resume_at"
         private const val KEY_ENABLED = "blocker_enabled"
 
         // A character package names cannot contain, so splitting a stored key

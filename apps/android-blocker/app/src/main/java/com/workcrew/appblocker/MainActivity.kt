@@ -47,6 +47,16 @@ class MainActivity : AppCompatActivity() {
 
     private val ticker = object : Runnable {
         override fun run() {
+            // With the screen open, the countdown reaching zero should start
+            // blocking there and then rather than waiting for the alarm. Only
+            // once it is actually due: every other tick would just re-arm the
+            // alarm a second later than it already is.
+            val resumeAt = prefs.resumeAtMs
+            if (!BlockerService.isRunning && resumeAt > 0L &&
+                AutoResume.remainingMs(resumeAt, System.currentTimeMillis()) <= 0L
+            ) {
+                BlockerLauncher.ensureRunning(this@MainActivity)
+            }
             render()
             handler.postDelayed(this, 1_000L)
         }
@@ -56,6 +66,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         prefs = Prefs(this)
+        findViewById<EditText>(R.id.edit_auto_resume)
+            .setText(prefs.autoResumeMinutes.toString())
 
         findViewById<Button>(R.id.btn_usage_access).setOnClickListener {
             startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
@@ -106,9 +118,17 @@ class MainActivity : AppCompatActivity() {
             setInputsEnabled(!running)
         }
 
-        findViewById<TextView>(R.id.txt_service_status).text = getString(
-            if (running) R.string.status_running else R.string.status_stopped
-        )
+        val resumeInMs = AutoResume.remainingMs(prefs.resumeAtMs, System.currentTimeMillis())
+        findViewById<TextView>(R.id.txt_service_status).text = when {
+            running -> getString(R.string.status_running)
+            resumeInMs > 0L -> getString(R.string.status_stopped_resuming, countdown(resumeInMs))
+            else -> getString(R.string.status_stopped)
+        }
+        findViewById<TextView>(R.id.txt_auto_resume_note).text = when {
+            resumeInMs > 0L -> getString(R.string.auto_resume_pending, countdown(resumeInMs))
+            prefs.autoResumeMinutes > AutoResume.OFF -> getString(R.string.auto_resume_note)
+            else -> getString(R.string.auto_resume_note_off)
+        }
         findViewById<TextView>(R.id.txt_settings_hint).visibility =
             if (running) View.VISIBLE else View.GONE
         findViewById<TextView>(R.id.txt_usage_access).text = getString(
@@ -179,6 +199,11 @@ class MainActivity : AppCompatActivity() {
             if (wait > 0) getString(R.string.stop_note_wait, wait)
             else getString(R.string.stop_note_immediate)
 
+        findViewById<Button>(R.id.btn_start).text = getString(
+            if (!running && prefs.resumeAtMs > 0L) R.string.start_now
+            else R.string.start_blocking
+        )
+
         val stop = findViewById<Button>(R.id.btn_stop)
         stop.isEnabled = running
         val pendingAt = prefs.stopAllowedAtMs
@@ -201,7 +226,7 @@ class MainActivity : AppCompatActivity() {
         limits.maxOfOrNull { it.cancelWaitMinutes } ?: 0
 
     private fun setInputsEnabled(enabled: Boolean) {
-        listOf(R.id.btn_add_app, R.id.btn_start).forEach {
+        listOf(R.id.btn_add_app, R.id.btn_start, R.id.edit_auto_resume).forEach {
             findViewById<View>(it).isEnabled = enabled
         }
     }
@@ -325,6 +350,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startBlocker() {
+        prefs.autoResumeMinutes = minutesIn(
+            findViewById(R.id.edit_auto_resume), prefs.autoResumeMinutes, minimum = AutoResume.OFF
+        )
         if (prefs.limits.isEmpty()) {
             Toast.makeText(this, R.string.need_a_rule, Toast.LENGTH_LONG).show()
             return
@@ -352,10 +380,11 @@ class MainActivity : AppCompatActivity() {
         }
         val waitMinutes = cancelWaitMinutes(prefs.limits)
         if (waitMinutes <= 0) {
-            // Clear the intent to block first, or the watchdog restarts it.
-            prefs.blockerEnabled = false
-            BlockerLauncher.cancelWatchdog(this)
+            // Clears the intent to block first, or the watchdog restarts it,
+            // and arms the automatic return if one is set.
+            BlockerLauncher.recordStop(this, System.currentTimeMillis())
             stopService(Intent(this, BlockerService::class.java))
+            announceResume()
             renderSoon()
             return
         }
@@ -365,6 +394,17 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, getString(R.string.stop_scheduled, waitMinutes), Toast.LENGTH_LONG)
             .show()
         render()
+    }
+
+    /** Confirms a return that is now counting down, so a stop is never silent. */
+    private fun announceResume() {
+        val remaining = AutoResume.remainingMs(prefs.resumeAtMs, System.currentTimeMillis())
+        if (remaining <= 0L) return
+        Toast.makeText(
+            this,
+            getString(R.string.auto_resume_pending, countdown(remaining)),
+            Toast.LENGTH_LONG,
+        ).show()
     }
 
     // The service flips isRunning asynchronously; re-render after it settles.
@@ -378,9 +418,14 @@ class MainActivity : AppCompatActivity() {
         return value.coerceIn(minimum, AppLimit.MAX_MINUTES)
     }
 
+    /** m:ss, or h:mm:ss once there is an hour or more left to read. */
     private fun countdown(remainingMs: Long): String {
         val totalSeconds = (remainingMs.coerceAtLeast(0L) + 999L) / 1000L
-        return String.format(Locale.US, "%d:%02d", totalSeconds / 60, totalSeconds % 60)
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return if (hours > 0) String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+        else String.format(Locale.US, "%d:%02d", minutes, seconds)
     }
 
     private fun pickTime(currentMinutes: Int, onPicked: (Int) -> Unit) {
