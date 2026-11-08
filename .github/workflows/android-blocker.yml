@@ -27,6 +27,18 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # A cold run downloads the whole Gradle distribution, and an outage of
+      # that one download is enough to fail the build however healthy the code
+      # is. Keeping it between runs removes that as a way for CI to break.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/wrapper/dists
+            ~/.gradle/caches
+          key: gradle-${{ hashFiles('apps/android-blocker/gradle/wrapper/gradle-wrapper.properties', 'apps/android-blocker/**/*.gradle.kts') }}
+          restore-keys: gradle-
+
       - name: Run unit tests and build debug APK
         run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
 
